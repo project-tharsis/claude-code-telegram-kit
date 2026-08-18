@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Telegram processing reaction lifecycle: official-channel `👀` acknowledgement and deterministic renderer `👍`/`👎` finalization.
+- Confirmed `/reset` acceptance replaces `👀` with `👍` before the reset job is scheduled.
+- Required inbound `message_id` on `send_reply` so final reactions target the exact triggering message.
+
+### Changed
+
+- Monorepo and MCP server versions advance to `0.2.0`.
+- All Telegram Bot API clients reject redirects, cap JSON responses at 64 KiB, and reject lossy numeric message IDs.
+
 ## [0.1.0] - 2026-08-18
 
 ### Added

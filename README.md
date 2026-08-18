@@ -17,8 +17,8 @@ The same Markdown document, both paths. The official `reply` tool defaults to `f
 
 Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control capabilities beside it, without a second `getUpdates` consumer:
 
-- **Telegram Renderer MCP** — one canonical `send_reply(raw Markdown)` tool with deterministic Rich Message vs MarkdownV2 routing, and fallback only on permanent failure.
-- **Session Control MCP** — an approval-gated `/reset` path backed by a root-owned, fail-closed local reset helper that PID 1 executes.
+- **Telegram Renderer MCP** — one canonical `send_reply(raw Markdown)` tool with deterministic Rich Message vs MarkdownV2 routing, permanent-only fallback, and `👀 → 👍/👎` processing reactions.
+- **Session Control MCP** — an approval-gated `/reset` path that finalizes the confirmed acceptance reaction, then hands execution to a root-owned, fail-closed local reset helper that PID 1 executes.
 
 Both gaps are open upstream. This kit is the interim answer:
 
@@ -39,7 +39,7 @@ sha=$(git rev-parse HEAD)
 python3 scripts/deploy_local.py install --repo . --ref "$sha" --bun "$(command -v bun)"
 ```
 
-Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` with your own paths. Send a message with a GFM table; the renderer should report `mode: rich`.
+Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` with your own paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message with a GFM table; the renderer should report `mode: rich` and replace `👀` with `👍`.
 
 The renderer works on its own. `/reset` additionally needs the root helper, installed separately by the exact-commit procedure in the [session-control README](packages/session-control-mcp/README.md).
 

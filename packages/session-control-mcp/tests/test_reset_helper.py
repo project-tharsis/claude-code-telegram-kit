@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "claude_code_session_reset.py"
 spec = importlib.util.spec_from_file_location("claude_code_session_reset", MODULE_PATH)
@@ -99,6 +100,50 @@ class AuthorityTests(unittest.TestCase):
             self.assertFalse(reset.transcript_has_ready(path, "other"))
             path.write_text(json.dumps({"sessionId": "x", "message": {"role": "assistant", "content": "not ready"}}) + "\n")
             self.assertFalse(reset.transcript_has_ready(path, "x"))
+
+
+class NotificationTransportTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+            self.read_sizes = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            self.read_sizes.append(size)
+            return self.body if size < 0 else self.body[:size]
+
+    class FakeOpener:
+        def __init__(self, response):
+            self.response = response
+            self.calls = []
+
+        def open(self, request, timeout):
+            self.calls.append((request, timeout))
+            return self.response
+
+    def test_notify_uses_no_redirect_opener_and_bounded_read(self):
+        body = json.dumps({"ok": True, "result": {"message_id": 71}}).encode()
+        response = self.FakeResponse(body)
+        opener = self.FakeOpener(response)
+        with mock.patch.object(reset.urllib.request, "build_opener", return_value=opener) as build:
+            self.assertEqual(reset._notify(TEST_TOKEN, TEST_CHAT_ID, "done"), 71)
+        handler = build.call_args.args[0]
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {}, "https://example.invalid"))
+        self.assertEqual(response.read_sizes, [reset.MAX_TELEGRAM_RESPONSE_BYTES + 1])
+        self.assertEqual(opener.calls[0][1], 20)
+
+    def test_notify_rejects_oversized_response_before_json_parse(self):
+        response = self.FakeResponse(b"x" * (reset.MAX_TELEGRAM_RESPONSE_BYTES + 1))
+        opener = self.FakeOpener(response)
+        with mock.patch.object(reset.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, "response too large"):
+                reset._notify(TEST_TOKEN, TEST_CHAT_ID, "done")
 
 
 class RequestIdempotencyTests(unittest.TestCase):

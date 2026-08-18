@@ -6,21 +6,38 @@ describe("canonical raw Markdown contract", () => {
   test("accepts one raw Markdown document and applies bounded defaults", () => {
     const input = UnifiedReplyInputSchema.parse({
       chat_id: "123456789",
+      message_id: "51",
       content: "## 状态\n\n**在线**"
     });
     expect(input).toEqual({
       chat_id: "123456789",
+      message_id: "51",
       content: "## 状态\n\n**在线**",
       disable_notification: false
     });
   });
 
   test("rejects empty or unbounded content", () => {
-    expect(() => UnifiedReplyInputSchema.parse({ chat_id: "1", content: "   " })).toThrow();
+    expect(() => UnifiedReplyInputSchema.parse({ chat_id: "1", message_id: "2", content: "   " })).toThrow();
     expect(() => UnifiedReplyInputSchema.parse({
       chat_id: "1",
+      message_id: "2",
       content: "x".repeat(100_001)
     })).toThrow("content exceeds 100000 characters");
+  });
+
+  test("rejects unsafe Telegram message IDs before delivery", () => {
+    expect(() => UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "9007199254740992",
+      content: "done"
+    })).toThrow();
+    expect(() => UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      reply_to: "9007199254740993",
+      content: "done"
+    })).toThrow();
   });
 
   test("converts ordinary CommonMark to valid Telegram MarkdownV2", () => {

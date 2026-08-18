@@ -56,10 +56,12 @@ Verify from the real destination:
 
 1. ordinary Markdown reply returns `mode: markdownv2`;
 2. a GFM table returns `mode: rich`;
-3. `/reset` requires approval;
-4. reset sends accepted and completion messages;
-5. the new session transcript contains exact `READY`;
-6. Claude, the official Telegram poller, renderer MCP, and control MCP are alive.
+3. a direct message receives `👀`, then a confirmed reply replaces it with `👍`;
+4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
+5. `/reset` requires approval;
+6. reset sends accepted and completion messages;
+7. the new session transcript contains exact `READY`;
+8. Claude, the official Telegram poller, renderer MCP, and control MCP are alive.
 
 ## Rollback
 
