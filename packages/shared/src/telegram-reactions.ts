@@ -2,7 +2,10 @@ import {
   assertAuthorizedChat,
   type RuntimeConfig
 } from "./telegram-authority.js";
-import { readTelegramJson } from "./telegram-response.js";
+import {
+  readTelegramJson,
+  TELEGRAM_REACTION_TIMEOUT_MS
+} from "./telegram-response.js";
 
 export type TelegramReactionFetch = (
   input: string | URL | Request,
@@ -40,7 +43,7 @@ export async function finalizeTelegramReaction(
           message_id: parsedMessageId,
           reaction: [{ type: "emoji", emoji: state === "success" ? "👍" : "👎" }]
         }),
-        signal: AbortSignal.timeout(3_000)
+        signal: AbortSignal.timeout(TELEGRAM_REACTION_TIMEOUT_MS)
       }
     );
     const body = await readTelegramJson(response) as { ok?: unknown; result?: unknown };

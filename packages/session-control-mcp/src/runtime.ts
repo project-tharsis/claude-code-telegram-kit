@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import {
   assertAuthorizedChat,
   readTelegramJson,
+  TELEGRAM_SEND_TIMEOUT_MS,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 
@@ -34,7 +35,7 @@ export async function sendTelegramMessage(
         redirect: "error",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: chatId, text }),
-        signal: AbortSignal.timeout(3_000)
+        signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
       }
     );
   } catch {

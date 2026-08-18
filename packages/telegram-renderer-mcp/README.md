@@ -37,6 +37,7 @@ The renderer then replaces the triggering message reaction deterministically:
 - successful Telegram reply → `👍`
 - definitive local/parser/delivery rejection → `👎`
 - timeout, rate limit, server error, or unknown delivery outcome → leave `👀`
+- input rejected before delivery (empty, oversized, malformed) → `👎`
 
 Install [`examples/access-ux.json`](../../examples/access-ux.json) to enable the initial `👀`; no Claude hook is required. Reaction calls are bounded, do not follow redirects, and are best-effort: a reaction failure never changes a confirmed reply result.
 

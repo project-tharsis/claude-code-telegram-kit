@@ -4,11 +4,15 @@ import { needsRichRendering, normalizeRichMarkdown } from "./router.js";
 import {
   assertAuthorizedChat,
   readTelegramJson,
+  TELEGRAM_SEND_TIMEOUT_MS,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 import type { UnifiedReplyInput } from "./unified-contract.js";
 
 export type UnifiedFetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/** Thrown when Telegram's outcome is unknown. The 👀 acknowledgement must survive it. */
+export class TelegramUncertainOutcomeError extends Error {}
 
 export interface UnifiedDeliveryReceipt {
   mode: "rich" | "markdownv2" | "text";
@@ -38,7 +42,7 @@ async function attemptTelegram(
       redirect: "error",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(3_000)
+      signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
     });
   } catch {
     return { kind: "uncertain" };
@@ -60,14 +64,13 @@ async function attemptTelegram(
   return { kind: "uncertain" };
 }
 
-async function finalizeReactionBestEffort(
+async function finalizeSuccessReaction(
   config: RuntimeConfig,
   input: UnifiedReplyInput,
-  state: "success" | "failure",
   fetchImpl: UnifiedFetchLike
 ): Promise<void> {
   try {
-    await finalizeReaction(config, input.chat_id, input.message_id, state, { fetchImpl });
+    await finalizeReaction(config, input.chat_id, input.message_id, "success", { fetchImpl });
   } catch {
     // Reactions are UX only. They never alter a confirmed reply outcome.
   }
@@ -93,18 +96,17 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
         fetchImpl
       );
       if (richAttempt.kind === "success") {
-        await finalizeReactionBestEffort(config, input, "success", fetchImpl);
+        await finalizeSuccessReaction(config, input, fetchImpl);
         return { mode: "rich", messageIds: [richAttempt.messageId] };
       }
       if (richAttempt.kind === "uncertain") {
-        throw new Error("Telegram rich delivery outcome unknown; no fallback sent");
+        throw new TelegramUncertainOutcomeError("Telegram rich delivery outcome unknown; no fallback sent");
       }
       if (richAttempt.disableCapability) richDisabled = true;
     }
 
     const rendered = toMarkdownV2(input.content);
     if (rendered.length > 4_096) {
-      await finalizeReactionBestEffort(config, input, "failure", fetchImpl);
       throw new Error("content does not fit in a single Telegram message");
     }
     const markdownAttempt = await attemptTelegram(
@@ -114,15 +116,14 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
       fetchImpl
     );
     if (markdownAttempt.kind === "success") {
-      await finalizeReactionBestEffort(config, input, "success", fetchImpl);
+      await finalizeSuccessReaction(config, input, fetchImpl);
       return { mode: "markdownv2", messageIds: [markdownAttempt.messageId] };
     }
     if (markdownAttempt.kind === "uncertain") {
-      throw new Error("Telegram MarkdownV2 delivery outcome unknown; no fallback sent");
+      throw new TelegramUncertainOutcomeError("Telegram MarkdownV2 delivery outcome unknown; no fallback sent");
     }
 
     if (input.content.length > 4_096) {
-      await finalizeReactionBestEffort(config, input, "failure", fetchImpl);
       throw new Error("content does not fit in a single Telegram message");
     }
     const textAttempt = await attemptTelegram(
@@ -132,13 +133,12 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
       fetchImpl
     );
     if (textAttempt.kind === "success") {
-      await finalizeReactionBestEffort(config, input, "success", fetchImpl);
+      await finalizeSuccessReaction(config, input, fetchImpl);
       return { mode: "text", messageIds: [textAttempt.messageId] };
     }
     if (textAttempt.kind === "uncertain") {
-      throw new Error("Telegram text delivery outcome unknown; no retry sent");
+      throw new TelegramUncertainOutcomeError("Telegram text delivery outcome unknown; no retry sent");
     }
-    await finalizeReactionBestEffort(config, input, "failure", fetchImpl);
     throw new Error("Telegram delivery rejected");
   };
 }

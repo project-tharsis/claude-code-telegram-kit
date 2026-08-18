@@ -11,6 +11,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 - Rich fallback occurs only after clearly permanent parser or capability rejection.
 - Timeouts, 429s, 5xx responses, and unknown outcomes never trigger a resend.
 - Every Bot API request rejects redirects; JSON responses are capped at 64 KiB before parsing.
+- User-facing sends allow 10 s for Telegram tail latency; reactions abort at 3 s so UX never delays a reply.
 - Telegram message IDs converted to numbers must be positive safe integers.
 - A proven endpoint capability failure latches Rich off for the MCP process lifetime.
 - Single-chat allowlisting is the default; multi-chat routing requires an explicit opt-in.
@@ -19,7 +20,8 @@ The README lists the five invariants that define the project's blast radius. Thi
 
 - The official Channel owns the initial `👀` acknowledgement.
 - A confirmed user-facing reply may replace `👀` with `👍`.
-- Only a definitive local/parser/delivery failure may replace `👀` with `👎`.
+- Only a definitive local/parser/delivery failure may replace `👀` with `👎`, including inputs the tool rejects before any send.
+- The reply tool owns every `👎`; delivery raises a typed unknown-outcome error the tool never converts into one.
 - Timeout, rate-limit, server, transport, and unknown outcomes leave `👀` unchanged.
 - Reaction failures are best-effort and never change the main reply result.
 - Cancellation and `StopFailure` leave `👀` unchanged in v0.2 because the official Channel exposes no trusted per-turn lifecycle correlation to sidecars.

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { UnifiedReplyInputSchema } from "../src/unified-contract.js";
-import { createUnifiedDeliverer, type UnifiedFetchLike } from "../src/unified-delivery.js";
+import {
+  createUnifiedDeliverer,
+  TelegramUncertainOutcomeError,
+  type UnifiedFetchLike
+} from "../src/unified-delivery.js";
 import {
   MAX_TELEGRAM_RESPONSE_BYTES,
   type RuntimeConfig
@@ -234,4 +238,57 @@ describe("unified deterministic delivery", () => {
       else process.env.TELEGRAM_STATUS_STATE_DIR = previous;
     }
   });
+
+  test("types an unknown outcome so the acknowledgement survives it", async () => {
+    const deliver = createUnifiedDeliverer(async () => { throw new TypeError("connection reset"); });
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      content: "done"
+    });
+
+    await expect(deliver(input, config)).rejects.toBeInstanceOf(TelegramUncertainOutcomeError);
+  });
+
+  test("leaves failure reactions to the tool handler", async () => {
+    const methods: string[] = [];
+    const deliver = createUnifiedDeliverer(async input => {
+      methods.push(String(input).split("/").pop()!);
+      return new Response(JSON.stringify({ ok: false }), { status: 400 });
+    });
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      content: "done"
+    });
+
+    await expect(deliver(input, config)).rejects.toThrow("Telegram delivery rejected");
+    expect(methods).toEqual(["sendMessage", "sendMessage"]);
+  });
+
+  test("absorbs Telegram tail latency instead of reporting an unknown outcome", async () => {
+    const slow = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        if (new URL(request.url).pathname.endsWith("/setMessageReaction")) {
+          return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+        }
+        await Bun.sleep(3_500);
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 91 } }), { status: 200 });
+      }
+    });
+    try {
+      const deliver = createUnifiedDeliverer((url, init) =>
+        fetch(`http://127.0.0.1:${slow.port}/${String(url).split("/").pop()}`, init));
+      const receipt = await deliver(UnifiedReplyInputSchema.parse({
+        chat_id: "123456789",
+        message_id: "51",
+        content: "slow but delivered"
+      }), config);
+
+      expect(receipt).toEqual({ mode: "markdownv2", messageIds: [91] });
+    } finally {
+      slow.stop(true);
+    }
+  }, 20_000);
 });

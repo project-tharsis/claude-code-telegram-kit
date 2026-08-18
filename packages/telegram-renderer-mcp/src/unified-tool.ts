@@ -1,7 +1,14 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ZodError } from "zod";
-import { UnifiedReplyInputSchema, type UnifiedReplyInput } from "./unified-contract.js";
-import type { UnifiedDeliveryReceipt } from "./unified-delivery.js";
+import {
+  ReactionTargetSchema,
+  UnifiedReplyInputSchema,
+  type UnifiedReplyInput
+} from "./unified-contract.js";
+import {
+  TelegramUncertainOutcomeError,
+  type UnifiedDeliveryReceipt
+} from "./unified-delivery.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
 export const SEND_REPLY_TOOL = {
@@ -47,6 +54,28 @@ export const SEND_REPLY_TOOL = {
 export interface UnifiedToolDeps {
   loadConfig: () => RuntimeConfig;
   deliver: (input: UnifiedReplyInput, config: RuntimeConfig) => Promise<UnifiedDeliveryReceipt>;
+  react: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string,
+    state: "success" | "failure"
+  ) => Promise<boolean>;
+}
+
+/**
+ * Every definitive local failure ends the turn as 👎, including inputs rejected before
+ * delivery. Only an unknown Telegram outcome leaves the 👀 acknowledgement in place.
+ */
+async function reactToLocalFailure(
+  deps: UnifiedToolDeps,
+  arguments_: unknown
+): Promise<void> {
+  try {
+    const target = ReactionTargetSchema.parse(arguments_);
+    await deps.react(deps.loadConfig(), target.chat_id, target.message_id, "failure");
+  } catch {
+    // An unusable target, an unauthorized chat, or an unreachable API leaves 👀 untouched.
+  }
 }
 
 export function createUnifiedToolHandler(deps: UnifiedToolDeps) {
@@ -67,6 +96,9 @@ export function createUnifiedToolHandler(deps: UnifiedToolDeps) {
         }]
       };
     } catch (error) {
+      if (!(error instanceof TelegramUncertainOutcomeError)) {
+        await reactToLocalFailure(deps, arguments_);
+      }
       const message = error instanceof ZodError
         ? `invalid input: ${error.issues.map(issue => issue.message).join("; ")}`
         : "send_reply failed";
