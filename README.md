@@ -55,7 +55,7 @@ scripts/                   Versioned local install and rollback
 
 ## Requirements
 
-- Linux with systemd
+- Linux with systemd and procfs mounted at `/proc`
 - Claude Code 2.1.234 or newer
 - Bun 1.3.14 or newer
 - Python 3.11 or newer

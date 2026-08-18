@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertAuthorizedChat, loadRuntimeConfig } from "../src/telegram-authority.js";
@@ -79,5 +86,28 @@ describe("runtime authority", () => {
     chmodSync(access, 0o600);
     expect(() => loadRuntimeConfig(dir)).toThrow("exactly one allowlisted chat");
     expect(loadRuntimeConfig(dir, { allowMultipleChats: true }).allowedChatIds.size).toBe(2);
+  });
+
+  test("keeps reading the opened directory when its pathname is replaced", () => {
+    const dir = validState();
+    const held = `${dir}-held`;
+    dirs.push(held);
+    const replacementToken = `123456789:${"B".repeat(32)}`;
+
+    const config = loadRuntimeConfig(dir, {
+      onDirectoryOpened: () => {
+        renameSync(dir, held);
+        mkdirSync(dir, { mode: 0o700 });
+        writeFileSync(join(dir, ".env"), `TELEGRAM_BOT_TOKEN=${replacementToken}\n`, { mode: 0o600 });
+        writeFileSync(join(dir, "access.json"), JSON.stringify({
+          dmPolicy: "allowlist",
+          allowFrom: [TEST_CHAT_ID],
+          groups: {},
+          pending: {}
+        }), { mode: 0o600 });
+      }
+    });
+
+    expect(config.token).toBe(TEST_TOKEN);
   });
 });

@@ -7,7 +7,7 @@ import {
   readFileSync,
   realpathSync
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
 export interface RuntimeConfig {
   token: string;
@@ -16,6 +16,8 @@ export interface RuntimeConfig {
 
 export interface RuntimeConfigOptions {
   allowMultipleChats?: boolean;
+  /** Test hook used to verify directory-fd anchoring under pathname replacement. */
+  onDirectoryOpened?: () => void;
 }
 
 export function assertAuthorizedChat(config: RuntimeConfig, chatId: string): void {
@@ -26,33 +28,39 @@ function currentUid(): number | undefined {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 
-function assertPrivateDirectory(path: string): void {
-  const info = lstatSync(path);
-  if (!info.isDirectory() || info.isSymbolicLink()) {
+function openPrivateDirectory(path: string): number {
+  const before = lstatSync(path);
+  if (!before.isDirectory() || before.isSymbolicLink()) {
     throw new Error("channel state directory must be a real directory");
-  }
-  if ((info.mode & 0o777) !== 0o700) {
-    throw new Error("channel state directory must have mode 0700");
-  }
-  const uid = currentUid();
-  if (uid !== undefined && info.uid !== uid) {
-    throw new Error("channel state directory must be owned by the sidecar user");
   }
   if (realpathSync(path) !== resolve(path)) {
     throw new Error("channel state directory must not traverse symlinks");
   }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const opened = fstatSync(fd);
+  if (opened.dev !== before.dev || opened.ino !== before.ino) {
+    closeSync(fd);
+    throw new Error("channel state directory changed during validation");
+  }
+  if ((opened.mode & 0o777) !== 0o700) {
+    closeSync(fd);
+    throw new Error("channel state directory must have mode 0700");
+  }
+  const uid = currentUid();
+  if (uid !== undefined && opened.uid !== uid) {
+    closeSync(fd);
+    throw new Error("channel state directory must be owned by the sidecar user");
+  }
+  return fd;
 }
 
-function readSecureFile(path: string): string {
-  const before = lstatSync(path);
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
-    throw new Error("channel state must be a single regular file");
-  }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+function readSecureFileAt(directoryFd: number, name: ".env" | "access.json"): string {
+  const anchoredPath = `/proc/self/fd/${directoryFd}/${name}`;
+  const fd = openSync(anchoredPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = fstatSync(fd);
-    if (opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new Error("channel state changed during validation");
+    if (!opened.isFile() || opened.nlink !== 1) {
+      throw new Error("channel state must be a single regular file");
     }
     if ((opened.mode & 0o777) !== 0o600) {
       throw new Error("channel state must have mode 0600");
@@ -71,9 +79,16 @@ function readSecureFile(path: string): string {
 }
 
 export function loadRuntimeConfig(stateDir: string, options: RuntimeConfigOptions = {}): RuntimeConfig {
-  assertPrivateDirectory(stateDir);
-  const envText = readSecureFile(join(stateDir, ".env"));
-  const accessText = readSecureFile(join(stateDir, "access.json"));
+  const directoryFd = openPrivateDirectory(stateDir);
+  let envText: string;
+  let accessText: string;
+  try {
+    options.onDirectoryOpened?.();
+    envText = readSecureFileAt(directoryFd, ".env");
+    accessText = readSecureFileAt(directoryFd, "access.json");
+  } finally {
+    closeSync(directoryFd);
+  }
 
   const tokenLines = envText
     .split(/\r?\n/)
