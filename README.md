@@ -96,7 +96,7 @@ The deploy script extracts a Git archive with a Python 3.11-compatible no-link/n
 
 Keep Telegram credentials and allowlists under Claude's state directory, and keep reset configuration root-owned under `/etc/claude-code-telegram-kit/`.
 
-See [`examples/`](examples/) and the package READMEs for integration details.
+See [`examples/`](examples/), the package READMEs, and the [`operations runbook`](docs/operations.md) for integration and rollback details.
 
 ## Session reset
 
