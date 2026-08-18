@@ -23,6 +23,7 @@ describe("unified MCP tool", () => {
 
     const result = await handler("send_reply", {
       chat_id: "123456789",
+      message_id: "51",
       content: "## 状态\n\n| Layer | State |\n|---|---|\n| Claude | online |"
     });
 

@@ -11,12 +11,18 @@ export const SEND_REPLY_TOOL = {
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["chat_id", "content"],
+    required: ["chat_id", "message_id", "content"],
     properties: {
       chat_id: {
         type: "string",
         pattern: "^-?\\d+$",
         description: "Allowlisted chat_id from the inbound Telegram channel event."
+      },
+      message_id: {
+        type: "string",
+        pattern: "^\\d+$",
+        maxLength: 16,
+        description: "Inbound Telegram message ID whose processing reaction will be finalized."
       },
       content: {
         type: "string",
@@ -27,6 +33,7 @@ export const SEND_REPLY_TOOL = {
       reply_to: {
         type: "string",
         pattern: "^\\d+$",
+        maxLength: 16,
         description: "Optional inbound message_id to quote."
       },
       disable_notification: {

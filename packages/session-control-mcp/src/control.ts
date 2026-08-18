@@ -22,6 +22,12 @@ export interface ResetReceipt {
 export interface ResetControllerDeps {
   loadConfig: () => RuntimeConfig;
   sendMessage: (config: RuntimeConfig, chatId: string, text: string) => Promise<number>;
+  react: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string,
+    state: "success" | "failure"
+  ) => Promise<boolean>;
   schedule: (chatId: string, messageId: string) => Promise<string>;
 }
 
@@ -36,6 +42,12 @@ export function createResetController(deps: ResetControllerDeps) {
       ackMessageId = await deps.sendMessage(config, request.chat_id, RESET_ACCEPTED_TEXT);
     } catch {
       throw new Error("ACK delivery failed; reset was not scheduled");
+    }
+
+    try {
+      await deps.react(config, request.chat_id, request.message_id, "success");
+    } catch {
+      // Reaction UX is best-effort and never blocks a confirmed reset ACK.
     }
 
     let unit: string;

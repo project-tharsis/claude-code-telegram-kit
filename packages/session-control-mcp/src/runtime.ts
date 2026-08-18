@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
-import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  assertAuthorizedChat,
+  readTelegramJson,
+  type RuntimeConfig
+} from "@project-tharsis/claude-code-telegram-shared";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 export type CommandRunner = (argv: string[]) => Promise<{ exitCode: number; stderr: string }>;
@@ -20,14 +24,17 @@ export async function sendTelegramMessage(
   text: string,
   fetchImpl: FetchLike = fetch
 ): Promise<number> {
+  assertAuthorizedChat(config, chatId);
   let response: Response;
   try {
     response = await fetchImpl(
       `https://api.telegram.org/bot${config.token}/sendMessage`,
       {
         method: "POST",
+        redirect: "error",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text })
+        body: JSON.stringify({ chat_id: chatId, text }),
+        signal: AbortSignal.timeout(3_000)
       }
     );
   } catch {
@@ -35,7 +42,7 @@ export async function sendTelegramMessage(
   }
   let envelope: TelegramEnvelope;
   try {
-    envelope = await response.json() as TelegramEnvelope;
+    envelope = await readTelegramJson(response) as TelegramEnvelope;
   } catch {
     throw new Error("Telegram control notification failed");
   }

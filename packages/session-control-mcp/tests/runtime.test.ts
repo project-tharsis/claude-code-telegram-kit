@@ -6,7 +6,10 @@ import {
   type CommandRunner,
   type FetchLike
 } from "../src/runtime.js";
-import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  MAX_TELEGRAM_RESPONSE_BYTES,
+  type RuntimeConfig
+} from "@project-tharsis/claude-code-telegram-shared";
 
 const TEST_TOKEN = `123456789:${"A".repeat(32)}`;
 const config: RuntimeConfig = {
@@ -16,9 +19,9 @@ const config: RuntimeConfig = {
 
 describe("control runtime boundaries", () => {
   test("sends the exact ACK wire and requires a message receipt", async () => {
-    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const calls: Array<{ url: string; body: Record<string, unknown>; init: RequestInit | undefined }> = [];
     const fetchImpl: FetchLike = async (input, init) => {
-      calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body)), init });
       return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), {
         status: 200,
         headers: { "content-type": "application/json" }
@@ -30,7 +33,27 @@ describe("control runtime boundaries", () => {
     expect(id).toBe(71);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url.endsWith("/sendMessage")).toBe(true);
+    expect(calls[0]!.init?.redirect).toBe("error");
+    expect(calls[0]!.init?.signal).toBeDefined();
     expect(calls[0]!.body).toEqual({ chat_id: "123456789", text: "Reset accepted" });
+  });
+
+  test("rejects an unauthorized chat before the Telegram request", async () => {
+    let calls = 0;
+    await expect(sendTelegramMessage(config, "999", "Reset accepted", async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), { status: 200 });
+    })).rejects.toThrow("chat is not authorized");
+    expect(calls).toBe(0);
+  });
+
+  test("rejects an oversized ACK response", async () => {
+    await expect(sendTelegramMessage(
+      config,
+      "123456789",
+      "Reset accepted",
+      async () => new Response("x".repeat(MAX_TELEGRAM_RESPONSE_BYTES + 1), { status: 200 })
+    )).rejects.toThrow("notification failed");
   });
 
   test("constructs one fixed no-shell systemd-run command", async () => {

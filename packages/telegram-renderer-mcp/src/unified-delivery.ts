@@ -1,6 +1,11 @@
 import { toMarkdownV2 } from "./markdown.js";
+import { finalizeReaction } from "./reactions.js";
 import { needsRichRendering, normalizeRichMarkdown } from "./router.js";
-import { assertAuthorizedChat, type RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  assertAuthorizedChat,
+  readTelegramJson,
+  type RuntimeConfig
+} from "@project-tharsis/claude-code-telegram-shared";
 import type { UnifiedReplyInput } from "./unified-contract.js";
 
 export type UnifiedFetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -30,8 +35,10 @@ async function attemptTelegram(
   try {
     response = await fetchImpl(`https://api.telegram.org/bot${config.token}/${method}`, {
       method: "POST",
+      redirect: "error",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(3_000)
     });
   } catch {
     return { kind: "uncertain" };
@@ -39,7 +46,7 @@ async function attemptTelegram(
 
   let envelope: TelegramEnvelope;
   try {
-    envelope = await response.json() as TelegramEnvelope;
+    envelope = await readTelegramJson(response) as TelegramEnvelope;
   } catch {
     return { kind: "uncertain" };
   }
@@ -51,6 +58,19 @@ async function attemptTelegram(
     return { kind: "permanent", disableCapability: response.status === 404 };
   }
   return { kind: "uncertain" };
+}
+
+async function finalizeReactionBestEffort(
+  config: RuntimeConfig,
+  input: UnifiedReplyInput,
+  state: "success" | "failure",
+  fetchImpl: UnifiedFetchLike
+): Promise<void> {
+  try {
+    await finalizeReaction(config, input.chat_id, input.message_id, state, { fetchImpl });
+  } catch {
+    // Reactions are UX only. They never alter a confirmed reply outcome.
+  }
 }
 
 export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
@@ -73,6 +93,7 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
         fetchImpl
       );
       if (richAttempt.kind === "success") {
+        await finalizeReactionBestEffort(config, input, "success", fetchImpl);
         return { mode: "rich", messageIds: [richAttempt.messageId] };
       }
       if (richAttempt.kind === "uncertain") {
@@ -83,6 +104,7 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
 
     const rendered = toMarkdownV2(input.content);
     if (rendered.length > 4_096) {
+      await finalizeReactionBestEffort(config, input, "failure", fetchImpl);
       throw new Error("content does not fit in a single Telegram message");
     }
     const markdownAttempt = await attemptTelegram(
@@ -92,6 +114,7 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
       fetchImpl
     );
     if (markdownAttempt.kind === "success") {
+      await finalizeReactionBestEffort(config, input, "success", fetchImpl);
       return { mode: "markdownv2", messageIds: [markdownAttempt.messageId] };
     }
     if (markdownAttempt.kind === "uncertain") {
@@ -99,6 +122,7 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
     }
 
     if (input.content.length > 4_096) {
+      await finalizeReactionBestEffort(config, input, "failure", fetchImpl);
       throw new Error("content does not fit in a single Telegram message");
     }
     const textAttempt = await attemptTelegram(
@@ -108,11 +132,13 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
       fetchImpl
     );
     if (textAttempt.kind === "success") {
+      await finalizeReactionBestEffort(config, input, "success", fetchImpl);
       return { mode: "text", messageIds: [textAttempt.messageId] };
     }
     if (textAttempt.kind === "uncertain") {
       throw new Error("Telegram text delivery outcome unknown; no retry sent");
     }
+    await finalizeReactionBestEffort(config, input, "failure", fetchImpl);
     throw new Error("Telegram delivery rejected");
   };
 }

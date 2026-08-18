@@ -34,7 +34,15 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{24}$")
 REQUEST_STATE_ROOT = Path("/var/lib/claude-code-telegram-kit/reset-requests")
+MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 _ALLOWED_CONFIG_FIELDS = {
     "service_name",
     "service_user",
@@ -530,8 +538,12 @@ def _notify(token: str, chat_id: str, text: str) -> int:
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    opener = urllib.request.build_opener(_NoRedirectHandler())
+    with opener.open(request, timeout=20) as response:
+        raw = response.read(MAX_TELEGRAM_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_TELEGRAM_RESPONSE_BYTES:
+        raise RuntimeError("Telegram response too large")
+    result = json.loads(raw.decode("utf-8"))
     message_id = result.get("result", {}).get("message_id")
     if result.get("ok") is not True or not isinstance(message_id, int):
         raise RuntimeError("Telegram notification failed")

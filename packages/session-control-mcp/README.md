@@ -14,9 +14,10 @@ The tool is marked destructive and should be listed under Claude Code `permissio
 
 1. Validate official Channel state and allowlist.
 2. Send a Telegram acceptance message and require a message receipt.
-3. Submit a fixed, no-shell `systemd-run --no-block` command.
-4. Let the root-owned reset helper create and verify the fresh session.
-5. Send completion or failure directly from the helper.
+3. Best-effort replace the triggering message's `👀` with `👍`; reaction failure never blocks reset.
+4. Submit a fixed, no-shell `systemd-run --no-block` command.
+5. Let the root-owned reset helper create and verify the fresh session.
+6. Send completion or failure directly from the helper.
 
 The MCP does not accept command, path, unit, service, or helper arguments from the model.
 

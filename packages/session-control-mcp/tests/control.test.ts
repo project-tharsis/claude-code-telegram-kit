@@ -21,6 +21,10 @@ describe("reset control plane", () => {
         events.push(`ack:${chatId}:${text}`);
         return 71;
       },
+      react: async (_cfg, chatId, messageId, state) => {
+        events.push(`react:${chatId}:${messageId}:${state}`);
+        return true;
+      },
       schedule: async chatId => {
         events.push(`schedule:${chatId}`);
         return "claude-session-reset-test";
@@ -40,7 +44,30 @@ describe("reset control plane", () => {
       unit: "claude-session-reset-test"
     });
     expect(events[0]?.startsWith("ack:123456789:")).toBe(true);
-    expect(events[1]).toBe("schedule:123456789");
+    expect(events[1]).toBe("react:123456789:51:success");
+    expect(events[2]).toBe("schedule:123456789");
+  });
+
+  test("keeps scheduling after the confirmed ACK when reaction finalization fails", async () => {
+    let scheduleCalls = 0;
+    const controller = createResetController({
+      loadConfig: () => config,
+      sendMessage: async () => 71,
+      react: async () => { throw new TypeError("reaction timeout"); },
+      schedule: async () => {
+        scheduleCalls += 1;
+        return "claude-session-reset-test";
+      }
+    });
+
+    const receipt = await controller({
+      chat_id: "123456789",
+      message_id: "51",
+      confirmation: CONFIRMATION
+    });
+
+    expect(receipt.status).toBe("scheduled");
+    expect(scheduleCalls).toBe(1);
   });
 
   test("never schedules when the ACK outcome is unknown", async () => {
@@ -48,6 +75,7 @@ describe("reset control plane", () => {
     const controller = createResetController({
       loadConfig: () => config,
       sendMessage: async () => { throw new TypeError("timeout"); },
+      react: async () => true,
       schedule: async () => {
         scheduleCalls += 1;
         return "unexpected";
@@ -65,6 +93,7 @@ describe("reset control plane", () => {
     const controller = createResetController({
       loadConfig: () => config,
       sendMessage: async () => { ackCalls += 1; return 1; },
+      react: async () => true,
       schedule: async () => "unexpected"
     });
 
@@ -82,6 +111,7 @@ describe("reset control plane", () => {
         messages.push(text);
         return messages.length;
       },
+      react: async () => true,
       schedule: async () => { throw new Error("systemd rejected"); }
     });
 

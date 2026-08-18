@@ -5,7 +5,7 @@ A project-scoped MCP server that accepts one raw CommonMark/GFM document and det
 ## Tool
 
 ```text
-send_reply(chat_id, content, reply_to?, disable_notification?)
+send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
 ```
 
 ## Routing
@@ -21,6 +21,24 @@ send_reply(chat_id, content, reply_to?, disable_notification?)
 - Permanent MarkdownV2 rejection may fall back to plain text.
 - Timeout, 429, 5xx, transport, and unknown outcomes never trigger a resend.
 - A proven endpoint capability failure latches Rich off for the MCP process lifetime.
+
+## Processing reactions
+
+Enable the official Channel acknowledgement in `access.json`:
+
+```json
+{
+  "ackReaction": "👀"
+}
+```
+
+The renderer then replaces the triggering message reaction deterministically:
+
+- successful Telegram reply → `👍`
+- definitive local/parser/delivery rejection → `👎`
+- timeout, rate limit, server error, or unknown delivery outcome → leave `👀`
+
+Install [`examples/access-ux.json`](../../examples/access-ux.json) to enable the initial `👀`; no Claude hook is required. Reaction calls are bounded, do not follow redirects, and are best-effort: a reaction failure never changes a confirmed reply result.
 
 ## Authority
 
