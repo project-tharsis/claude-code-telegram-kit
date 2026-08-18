@@ -1,0 +1,25 @@
+[Unit]
+Description=Claude Code Telegram Channel
+Documentation=https://code.claude.com/docs/en/channels
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=USER
+Group=USER
+WorkingDirectory=/home/USER/claude-bot-workspace
+Environment=HOME=/home/USER
+Environment=PATH=/home/USER/.bun/bin:/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TERM=xterm-256color
+ExecStart=/usr/bin/script -qefc "/home/USER/.local/bin/claude --continue --channels plugin:telegram@claude-plugins-official --add-dir /home/USER --permission-mode auto --settings /home/USER/claude-bot-workspace/telegram-settings.json" /dev/null
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

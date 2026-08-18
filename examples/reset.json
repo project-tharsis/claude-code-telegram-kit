@@ -1,0 +1,13 @@
+{
+  "service_name": "claude-telegram.service",
+  "service_user": "USER",
+  "workspace": "/home/USER/claude-bot-workspace",
+  "project_sessions": "/home/USER/.claude/projects/-home-USER-claude-bot-workspace",
+  "channel_state": "/home/USER/.claude/channels/telegram",
+  "lock_path": "/run/lock/claude-telegram-session-reset.lock",
+  "poller_process_marker": "bun server.ts",
+  "required_process_markers": [
+    "telegram-renderer-mcp/src/server.ts",
+    "session-control-mcp/src/server.ts"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@project-tharsis/session-control-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "session-control-mcp": "./src/server.ts"
+  },
+  "scripts": {
+    "start": "bun run src/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@project-tharsis/claude-code-telegram-shared": "workspace:*",
+    "zod": "3.25.76"
+  },
+  "license": "Apache-2.0"
+}
