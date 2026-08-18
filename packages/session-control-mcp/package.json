@@ -12,7 +12,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@project-tharsis/claude-code-telegram-shared": "workspace:*",
-    "zod": "3.25.76"
+    "zod": "4.4.3"
   },
   "license": "Apache-2.0"
 }
