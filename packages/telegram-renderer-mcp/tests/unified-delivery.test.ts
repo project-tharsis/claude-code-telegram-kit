@@ -115,33 +115,20 @@ describe("unified deterministic delivery", () => {
     expect(methods).toEqual(["sendRichMessage", "sendMessage", "sendMessage"]);
   });
 
-  test("chunks oversized ordinary Markdown before sending", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    let id = 200;
-    const fakeFetch: UnifiedFetchLike = async (_input, init) => {
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      bodies.push(body);
-      id += 1;
-      return new Response(JSON.stringify({ ok: true, result: { message_id: id } }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      });
-    };
-    const deliver = createUnifiedDeliverer(fakeFetch);
+  test("rejects oversized ordinary Markdown before any network call", async () => {
+    let calls = 0;
+    const deliver = createUnifiedDeliverer(async () => {
+      calls += 1;
+      throw new Error("network must not be called");
+    });
     const input = UnifiedReplyInputSchema.parse({
       chat_id: "123456789",
       reply_to: "51",
       content: "a".repeat(5_000)
     });
 
-    const receipt = await deliver(input, config);
-
-    expect(receipt).toEqual({ mode: "markdownv2", messageIds: [201, 202] });
-    expect(bodies).toHaveLength(2);
-    expect(bodies.every(body => String(body.text).length <= 4_096)).toBe(true);
-    expect(bodies.map(body => String(body.text)).join("")).toBe("a".repeat(5_000));
-    expect(bodies[0]!.reply_parameters).toEqual({ message_id: 51 });
-    expect(bodies[1]!.reply_parameters).toBeUndefined();
+    await expect(deliver(input, config)).rejects.toThrow("single Telegram message");
+    expect(calls).toBe(0);
   });
 
   test("never resends after an uncertain Rich transport failure", async () => {

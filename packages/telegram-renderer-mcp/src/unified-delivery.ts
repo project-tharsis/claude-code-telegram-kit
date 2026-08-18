@@ -1,4 +1,4 @@
-import { splitMarkdownV2 } from "./markdown.js";
+import { toMarkdownV2 } from "./markdown.js";
 import { needsRichRendering, normalizeRichMarkdown } from "./router.js";
 import { assertAuthorizedChat, type RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 import type { UnifiedReplyInput } from "./unified-contract.js";
@@ -6,7 +6,7 @@ import type { UnifiedReplyInput } from "./unified-contract.js";
 export type UnifiedFetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface UnifiedDeliveryReceipt {
-  mode: "rich" | "markdownv2" | "text" | "mixed";
+  mode: "rich" | "markdownv2" | "text";
   messageIds: number[];
 }
 
@@ -81,49 +81,38 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
       if (richAttempt.disableCapability) richDisabled = true;
     }
 
-    const chunks = splitMarkdownV2(input.content);
-    const messageIds: number[] = [];
-    let usedMarkdown = false;
-    let usedText = false;
-
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index]!;
-      const chunkCommon = { ...common };
-      if (index > 0) delete chunkCommon.reply_parameters;
-
-      const markdownAttempt = await attemptTelegram(
-        "sendMessage",
-        { ...chunkCommon, parse_mode: "MarkdownV2", text: chunk.rendered },
-        config,
-        fetchImpl
-      );
-      if (markdownAttempt.kind === "success") {
-        usedMarkdown = true;
-        messageIds.push(markdownAttempt.messageId);
-        continue;
-      }
-      if (markdownAttempt.kind === "uncertain") {
-        throw new Error("Telegram MarkdownV2 delivery outcome unknown; no fallback sent");
-      }
-
-      const textAttempt = await attemptTelegram(
-        "sendMessage",
-        { ...chunkCommon, text: chunk.raw },
-        config,
-        fetchImpl
-      );
-      if (textAttempt.kind === "success") {
-        usedText = true;
-        messageIds.push(textAttempt.messageId);
-        continue;
-      }
-      if (textAttempt.kind === "uncertain") {
-        throw new Error("Telegram text delivery outcome unknown; no retry sent");
-      }
-      throw new Error("Telegram delivery rejected");
+    const rendered = toMarkdownV2(input.content);
+    if (rendered.length > 4_096) {
+      throw new Error("content does not fit in a single Telegram message");
+    }
+    const markdownAttempt = await attemptTelegram(
+      "sendMessage",
+      { ...common, parse_mode: "MarkdownV2", text: rendered },
+      config,
+      fetchImpl
+    );
+    if (markdownAttempt.kind === "success") {
+      return { mode: "markdownv2", messageIds: [markdownAttempt.messageId] };
+    }
+    if (markdownAttempt.kind === "uncertain") {
+      throw new Error("Telegram MarkdownV2 delivery outcome unknown; no fallback sent");
     }
 
-    const mode = usedMarkdown && usedText ? "mixed" : usedText ? "text" : "markdownv2";
-    return { mode, messageIds };
+    if (input.content.length > 4_096) {
+      throw new Error("content does not fit in a single Telegram message");
+    }
+    const textAttempt = await attemptTelegram(
+      "sendMessage",
+      { ...common, text: input.content },
+      config,
+      fetchImpl
+    );
+    if (textAttempt.kind === "success") {
+      return { mode: "text", messageIds: [textAttempt.messageId] };
+    }
+    if (textAttempt.kind === "uncertain") {
+      throw new Error("Telegram text delivery outcome unknown; no retry sent");
+    }
+    throw new Error("Telegram delivery rejected");
   };
 }

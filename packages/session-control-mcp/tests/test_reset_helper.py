@@ -22,7 +22,7 @@ BASE_UNIT = """[Service]\nWorkingDirectory=/srv/claude-bot\nExecStart=/usr/bin/s
 
 class UnitContractTests(unittest.TestCase):
     def test_fresh_unit_replaces_continue_and_adds_exact_seed(self):
-        unit = reset.fresh_unit_from_continue(BASE_UNIT, NEW_SESSION, reset.DEFAULT_FRESH_SEED)
+        unit = reset.fresh_unit_from_continue(BASE_UNIT, NEW_SESSION)
         self.assertIn(f"--session-id {NEW_SESSION}", unit)
         self.assertNotIn("--continue", unit)
         self.assertIn(reset.DEFAULT_FRESH_SEED, unit)
@@ -35,7 +35,7 @@ class UnitContractTests(unittest.TestCase):
 
     def test_rejects_noncanonical_unit(self):
         with self.assertRaisesRegex(ValueError, "exactly one --continue"):
-            reset.fresh_unit_from_continue(BASE_UNIT.replace("--continue", ""), NEW_SESSION, reset.DEFAULT_FRESH_SEED)
+            reset.fresh_unit_from_continue(BASE_UNIT.replace("--continue", ""), NEW_SESSION)
 
 
 class ConfigTests(unittest.TestCase):
@@ -99,6 +99,24 @@ class AuthorityTests(unittest.TestCase):
             self.assertFalse(reset.transcript_has_ready(path, "other"))
             path.write_text(json.dumps({"sessionId": "x", "message": {"role": "assistant", "content": "not ready"}}) + "\n")
             self.assertFalse(reset.transcript_has_ready(path, "x"))
+
+
+class RequestIdempotencyTests(unittest.TestCase):
+    def test_request_receipt_prevents_a_second_reset(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            request_id = "a" * 24
+            first = reset.claim_request(state, request_id, "123456789", expected_uid=os.getuid())
+            self.assertTrue(first["claimed"])
+            second = reset.claim_request(state, request_id, "123456789", expected_uid=os.getuid())
+            self.assertFalse(second["claimed"])
+            self.assertEqual(second["receipt"]["status"], "in_progress")
+
+            reset.finish_request(state, request_id, "complete", {"new_session": NEW_SESSION}, expected_uid=os.getuid())
+            third = reset.claim_request(state, request_id, "123456789", expected_uid=os.getuid())
+            self.assertFalse(third["claimed"])
+            self.assertEqual(third["receipt"]["status"], "complete")
+            self.assertEqual(third["receipt"]["new_session"], NEW_SESSION)
 
 
 if __name__ == "__main__":

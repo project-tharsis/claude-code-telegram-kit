@@ -7,6 +7,7 @@ export const RESET_SCHEDULER_FAILED_TEXT = "Session reset scheduling failed. No 
 
 export const ResetRequestSchema = z.object({
   chat_id: z.string().regex(/^\d+$/),
+  message_id: z.string().regex(/^\d+$/),
   confirmation: z.literal(CONFIRMATION)
 }).strict();
 
@@ -21,7 +22,7 @@ export interface ResetReceipt {
 export interface ResetControllerDeps {
   loadConfig: () => RuntimeConfig;
   sendMessage: (config: RuntimeConfig, chatId: string, text: string) => Promise<number>;
-  schedule: (chatId: string) => Promise<string>;
+  schedule: (chatId: string, messageId: string) => Promise<string>;
 }
 
 export function createResetController(deps: ResetControllerDeps) {
@@ -39,7 +40,7 @@ export function createResetController(deps: ResetControllerDeps) {
 
     let unit: string;
     try {
-      unit = await deps.schedule(request.chat_id);
+      unit = await deps.schedule(request.chat_id, request.message_id);
     } catch {
       try {
         await deps.sendMessage(config, request.chat_id, RESET_SCHEDULER_FAILED_TEXT);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   createResetScheduler,
   sendTelegramMessage,
@@ -40,25 +41,27 @@ describe("control runtime boundaries", () => {
     };
     const schedule = createResetScheduler({
       run: runner,
-      requestId: () => "abcdef123456",
       verifyHelper: () => undefined
     });
+    const requestId = createHash("sha256").update("123456789:51").digest("hex").slice(0, 24);
 
-    const unit = await schedule("123456789");
+    const unit = await schedule("123456789", "51");
 
-    expect(unit).toBe("claude-session-reset-abcdef123456");
+    expect(unit).toBe(`claude-session-reset-${requestId}`);
     expect(argvSeen).toEqual([[
       "/usr/bin/sudo",
       "-n",
       "/usr/bin/systemd-run",
-      "--unit=claude-session-reset-abcdef123456",
+      `--unit=${requestId ? `claude-session-reset-${requestId}` : ""}`,
       "--collect",
       "--no-block",
       "/usr/local/sbin/claude-code-session-reset",
       "--config",
       "/etc/claude-code-telegram-kit/reset.json",
       "--chat-id",
-      "123456789"
+      "123456789",
+      "--request-id",
+      requestId
     ]]);
   });
 
@@ -66,11 +69,10 @@ describe("control runtime boundaries", () => {
     let calls = 0;
     const schedule = createResetScheduler({
       run: async () => { calls += 1; return { exitCode: 0, stderr: "" }; },
-      requestId: () => "abcdef123456",
       verifyHelper: () => undefined
     });
 
-    await expect(schedule("1;rm -rf /")).rejects.toThrow("invalid chat ID");
+    await expect(schedule("1;rm -rf /", "51")).rejects.toThrow("invalid chat ID");
     expect(calls).toBe(0);
   });
 });

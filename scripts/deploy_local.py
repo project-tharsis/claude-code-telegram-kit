@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -13,12 +14,35 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_PREFIX = Path.home() / ".local" / "share" / "claude-code-telegram-kit"
-DEFAULT_HELPER = Path("/usr/local/sbin/claude-code-session-reset")
+
+
+def _secure_prefix(prefix: Path) -> Path:
+    expanded = prefix.expanduser()
+    if expanded.is_symlink():
+        raise ValueError("install prefix must not be a symlink")
+    expanded.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = expanded.lstat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise ValueError("install prefix must be a real directory")
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+        raise ValueError("install prefix must be owned by the current user and not group/world writable")
+    return expanded.resolve(strict=True)
+
+
+def _lock_prefix(prefix: Path) -> int:
+    lock_path = prefix / ".deploy.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        os.close(fd)
+        raise ValueError("deploy lock ownership or mode is invalid")
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
 
 
 def validate_sha(value: str) -> str:
@@ -47,6 +71,32 @@ def _release_sha(path: Path) -> str:
     return validate_sha(path.name)
 
 
+def _verify_release(path: Path, expected_sha: str | None = None) -> str:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("release must be a real directory")
+    sha = _release_sha(path)
+    if expected_sha is not None and sha != expected_sha:
+        raise ValueError("release directory does not match requested commit")
+
+    receipt_path = path / ".installed.json"
+    receipt_info = receipt_path.lstat()
+    if not stat.S_ISREG(receipt_info.st_mode) or stat.S_ISLNK(receipt_info.st_mode) or receipt_info.st_nlink != 1:
+        raise ValueError("release receipt must be a single regular file")
+    fd = os.open(receipt_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        if opened.st_dev != receipt_info.st_dev or opened.st_ino != receipt_info.st_ino:
+            raise ValueError("release receipt changed during validation")
+        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as handle:
+            data = json.load(handle)
+    finally:
+        os.close(fd)
+    if not isinstance(data, dict) or data.get("commit") != sha:
+        raise ValueError("release receipt commit does not match directory")
+    return sha
+
+
 def _resolved_link(link: Path, releases: Path) -> Path | None:
     if not link.exists() and not link.is_symlink():
         return None
@@ -55,7 +105,7 @@ def _resolved_link(link: Path, releases: Path) -> Path | None:
     target = link.resolve(strict=True)
     if target.parent != releases or not target.is_dir():
         raise ValueError(f"{link.name} must point to a direct release directory")
-    _release_sha(target)
+    _verify_release(target)
     return target
 
 
@@ -63,10 +113,13 @@ def activate_release(prefix: Path, target: Path) -> dict[str, str | None]:
     prefix = prefix.expanduser().resolve()
     releases = prefix / "releases"
     releases.mkdir(parents=True, exist_ok=True)
-    target = target.resolve(strict=True)
+    target_input = target.expanduser()
+    if target_input.is_symlink():
+        raise ValueError("target release must not be a symlink")
+    target = target_input.resolve(strict=True)
     if target.parent != releases.resolve() or not target.is_dir():
         raise ValueError("target must be inside the release directory")
-    new_sha = _release_sha(target)
+    new_sha = _verify_release(target)
 
     current_link = prefix / "current"
     previous_link = prefix / "previous"
@@ -114,15 +167,44 @@ def _run(argv: list[str], *, cwd: Path | None = None) -> str:
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:
+    max_member_size = 100 * 1024 * 1024
+    max_total_size = 512 * 1024 * 1024
+    total_size = 0
     with tarfile.open(archive, "r") as tar:
-        destination_real = destination.resolve()
         for member in tar.getmembers():
-            if member.issym() or member.islnk():
-                raise ValueError("release archive must not contain links")
-            target = (destination / member.name).resolve()
-            if target != destination_real and destination_real not in target.parents:
+            relative = PurePosixPath(member.name)
+            if relative.is_absolute() or not relative.parts or ".." in relative.parts:
                 raise ValueError("release archive contains an unsafe path")
-        tar.extractall(destination, filter="data")
+            if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+                raise ValueError("release archive may contain only regular files and directories")
+            if member.size < 0 or member.size > max_member_size:
+                raise ValueError("release archive member is too large")
+            total_size += member.size
+            if total_size > max_total_size:
+                raise ValueError("release archive is too large")
+
+            target = destination.joinpath(*relative.parts)
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            if member.isdir():
+                target.mkdir(exist_ok=True, mode=0o755)
+                continue
+
+            source = tar.extractfile(member)
+            if source is None:
+                raise ValueError("release archive file has no content")
+            mode = 0o755 if member.mode & 0o111 else 0o644
+            fd = os.open(
+                target,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                mode,
+            )
+            try:
+                with os.fdopen(fd, "wb", closefd=False) as out:
+                    shutil.copyfileobj(source, out)
+                    out.flush()
+                    os.fsync(out.fileno())
+            finally:
+                os.close(fd)
 
 
 def install_release(repo: Path, sha: str, prefix: Path, bun: str) -> dict[str, str | None]:
@@ -156,36 +238,12 @@ def install_release(repo: Path, sha: str, prefix: Path, bun: str) -> dict[str, s
             archive.unlink(missing_ok=True)
             if temp.exists():
                 shutil.rmtree(temp)
-    elif not (target / ".installed.json").is_file():
-        raise ValueError("existing release is missing its installation receipt")
+    else:
+        _verify_release(target, sha)
 
-    return activate_release(prefix, target)
-
-
-def install_helper(prefix: Path, destination: Path) -> dict[str, str]:
-    if os.geteuid() != 0:
-        raise PermissionError("install-helper must run as root")
-    prefix = prefix.expanduser().resolve(strict=True)
-    releases = (prefix / "releases").resolve(strict=True)
-    current = _resolved_link(prefix / "current", releases)
-    if current is None:
-        raise ValueError("no current release")
-    source = current / "packages" / "session-control-mcp" / "scripts" / "claude_code_session_reset.py"
-    info = source.stat()
-    if not stat.S_ISREG(info.st_mode):
-        raise ValueError("reset helper source is not a regular file")
-    destination = destination.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp = destination.with_name(f".{destination.name}.tmp.{uuid.uuid4().hex}")
-    with source.open("rb") as source_fh, open(temp, "xb") as target_fh:
-        shutil.copyfileobj(source_fh, target_fh)
-        target_fh.flush()
-        os.fsync(target_fh.fileno())
-    os.chown(temp, 0, 0)
-    os.chmod(temp, 0o755)
-    os.replace(temp, destination)
-    _fsync_dir(destination.parent)
-    return {"source_commit": _release_sha(current), "helper": str(destination)}
+    activation = activate_release(prefix, target)
+    activation["commit"] = sha
+    return activation
 
 
 def status(prefix: Path) -> dict[str, str | None]:
@@ -215,18 +273,18 @@ def main() -> int:
     sub.add_parser("rollback")
     sub.add_parser("status")
 
-    helper = sub.add_parser("install-helper")
-    helper.add_argument("--destination", type=Path, default=DEFAULT_HELPER)
-
     args = parser.parse_args()
-    if args.command == "install":
-        receipt: dict[str, Any] = install_release(args.repo, args.ref, args.prefix, args.bun)
-    elif args.command == "rollback":
-        receipt = rollback(args.prefix)
-    elif args.command == "install-helper":
-        receipt = install_helper(args.prefix, args.destination)
-    else:
-        receipt = status(args.prefix)
+    prefix = _secure_prefix(args.prefix)
+    lock_fd = _lock_prefix(prefix)
+    try:
+        if args.command == "install":
+            receipt: dict[str, Any] = install_release(args.repo, args.ref, prefix, args.bun)
+        elif args.command == "rollback":
+            receipt = rollback(prefix)
+        else:
+            receipt = status(prefix)
+    finally:
+        os.close(lock_fd)
     print(json.dumps(receipt, separators=(",", ":")))
     return 0
 

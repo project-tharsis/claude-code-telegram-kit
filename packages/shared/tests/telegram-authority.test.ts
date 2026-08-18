@@ -42,6 +42,12 @@ describe("runtime authority", () => {
     expect(() => loadRuntimeConfig(dir)).toThrow("must have mode 0600");
   });
 
+  test("rejects a channel state directory that is not private", () => {
+    const dir = validState();
+    chmodSync(dir, 0o755);
+    expect(() => loadRuntimeConfig(dir)).toThrow("directory must have mode 0700");
+  });
+
   test("allows only chat IDs from the live allowlist", () => {
     const config = loadRuntimeConfig(validState());
     expect(() => assertAuthorizedChat(config, TEST_CHAT_ID)).not.toThrow();
@@ -59,5 +65,19 @@ describe("runtime authority", () => {
     }));
     chmodSync(access, 0o600);
     expect(() => loadRuntimeConfig(dir)).toThrow("dmPolicy must be allowlist");
+  });
+
+  test("requires exactly one allowlisted chat unless explicitly configured", () => {
+    const dir = validState();
+    const access = join(dir, "access.json");
+    writeFileSync(access, JSON.stringify({
+      dmPolicy: "allowlist",
+      allowFrom: [TEST_CHAT_ID, "987654321"],
+      groups: {},
+      pending: {}
+    }));
+    chmodSync(access, 0o600);
+    expect(() => loadRuntimeConfig(dir)).toThrow("exactly one allowlisted chat");
+    expect(loadRuntimeConfig(dir, { allowMultipleChats: true }).allowedChatIds.size).toBe(2);
   });
 });

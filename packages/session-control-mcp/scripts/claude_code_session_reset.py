@@ -32,6 +32,8 @@ DEFAULT_FRESH_SEED = (
 )
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
+REQUEST_ID_RE = re.compile(r"^[a-f0-9]{24}$")
+REQUEST_STATE_ROOT = Path("/var/lib/claude-code-telegram-kit/reset-requests")
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 _ALLOWED_CONFIG_FIELDS = {
     "service_name",
@@ -42,9 +44,9 @@ _ALLOWED_CONFIG_FIELDS = {
     "lock_path",
     "poller_process_marker",
     "required_process_markers",
-    "fresh_seed",
+    "allow_multiple_chats",
 }
-_REQUIRED_CONFIG_FIELDS = _ALLOWED_CONFIG_FIELDS - {"fresh_seed"}
+_REQUIRED_CONFIG_FIELDS = _ALLOWED_CONFIG_FIELDS - {"allow_multiple_chats"}
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,7 @@ class ResetConfig:
     lock_path: Path
     poller_process_marker: str
     required_process_markers: tuple[str, ...]
-    fresh_seed: str = DEFAULT_FRESH_SEED
+    allow_multiple_chats: bool = False
 
     @property
     def unit_path(self) -> Path:
@@ -70,17 +72,155 @@ def _validate_uuid(value: str) -> None:
         raise ValueError("invalid session UUID")
 
 
-def _secure_regular_file(path: Path, expected_uid: int, mode: int, label: str) -> os.stat_result:
-    info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise ValueError(f"{label} must be a regular non-symlink file")
+def _validate_file_info(info: os.stat_result, expected_uid: int, mode: int, label: str) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{label} must be a regular file")
     if stat.S_IMODE(info.st_mode) != mode:
         raise ValueError(f"{label} must have mode {mode:04o}")
     if info.st_uid != expected_uid:
         raise ValueError(f"{label} has the wrong owner")
     if info.st_nlink != 1:
         raise ValueError(f"{label} must have one hardlink")
+
+
+def _secure_regular_file(path: Path, expected_uid: int, mode: int, label: str) -> os.stat_result:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"{label} must be a regular non-symlink file")
+    _validate_file_info(info, expected_uid, mode, label)
     return info
+
+
+def _read_fd_text(fd: int, max_bytes: int, label: str) -> str:
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        chunk = os.read(fd, min(64 * 1024, max_bytes + 1 - size))
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > max_bytes:
+            raise ValueError(f"{label} is too large")
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8")
+
+
+def _read_secure_regular(
+    path: Path,
+    expected_uid: int,
+    mode: int,
+    label: str,
+    *,
+    max_bytes: int = 256 * 1024,
+) -> str:
+    before = _secure_regular_file(path, expected_uid, mode, label)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        _validate_file_info(opened, expected_uid, mode, label)
+        if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+            raise ValueError(f"{label} changed during validation")
+        return _read_fd_text(fd, max_bytes, label)
+    finally:
+        os.close(fd)
+
+
+def _read_secure_at(
+    dir_fd: int,
+    name: str,
+    expected_uid: int,
+    mode: int,
+    label: str,
+    *,
+    max_bytes: int = 64 * 1024,
+) -> str:
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    try:
+        _validate_file_info(os.fstat(fd), expected_uid, mode, label)
+        return _read_fd_text(fd, max_bytes, label)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def claim_request(state_root: Path, request_id: str, chat_id: str, *, expected_uid: int = 0) -> dict[str, Any]:
+    if not REQUEST_ID_RE.fullmatch(request_id):
+        raise ValueError("invalid reset request ID")
+    if not re.fullmatch(r"\d+", chat_id):
+        raise ValueError("invalid chat ID")
+    state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root_info = state_root.lstat()
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError("reset request state must be a real directory")
+    if stat.S_IMODE(root_info.st_mode) != 0o700 or root_info.st_uid != expected_uid:
+        raise ValueError("reset request state must be private and correctly owned")
+
+    receipt_path = state_root / f"{request_id}.json"
+    payload = {
+        "request_id": request_id,
+        "chat_id": chat_id,
+        "status": "in_progress",
+        "updated_at": int(time.time()),
+    }
+    try:
+        fd = os.open(
+            receipt_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+    except FileExistsError:
+        receipt = json.loads(_read_secure_regular(receipt_path, expected_uid, 0o600, "reset request receipt"))
+        if not isinstance(receipt, dict) or receipt.get("request_id") != request_id or receipt.get("chat_id") != chat_id:
+            raise ValueError("reset request receipt does not match request")
+        return {"claimed": False, "receipt": receipt}
+
+    try:
+        data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _fsync_dir(state_root)
+    return {"claimed": True, "receipt": payload}
+
+
+def finish_request(
+    state_root: Path,
+    request_id: str,
+    status_value: str,
+    details: dict[str, Any],
+    *,
+    expected_uid: int = 0,
+) -> dict[str, Any]:
+    if status_value not in {"complete", "failed"}:
+        raise ValueError("invalid reset request status")
+    receipt_path = state_root / f"{request_id}.json"
+    existing = json.loads(_read_secure_regular(receipt_path, expected_uid, 0o600, "reset request receipt"))
+    if not isinstance(existing, dict) or existing.get("request_id") != request_id:
+        raise ValueError("invalid reset request receipt")
+    payload = {
+        **existing,
+        **details,
+        "status": status_value,
+        "updated_at": int(time.time()),
+    }
+    temp = state_root / f".{request_id}.tmp.{uuid.uuid4().hex}"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(fd, (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp, receipt_path)
+    _fsync_dir(state_root)
+    return payload
 
 
 def _absolute_path(value: object, field: str) -> Path:
@@ -98,8 +238,7 @@ def load_config(
     expected_uid: int = 0,
     user_lookup: Callable[[str], int] | None = None,
 ) -> ResetConfig:
-    _secure_regular_file(path, expected_uid, 0o644, "reset config")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(_read_secure_regular(path, expected_uid, 0o644, "reset config"))
     if not isinstance(raw, dict):
         raise ValueError("reset config must be a JSON object")
     unknown = set(raw) - _ALLOWED_CONFIG_FIELDS
@@ -135,9 +274,9 @@ def load_config(
     ):
         raise ValueError("required_process_markers must be a non-empty string list")
 
-    seed = raw.get("fresh_seed", DEFAULT_FRESH_SEED)
-    if not isinstance(seed, str) or not seed.strip() or len(seed) > 500:
-        raise ValueError("fresh_seed must be a non-empty string up to 500 characters")
+    allow_multiple_chats = raw.get("allow_multiple_chats", False)
+    if not isinstance(allow_multiple_chats, bool):
+        raise ValueError("allow_multiple_chats must be boolean")
 
     return ResetConfig(
         service_name=service_name,
@@ -149,7 +288,7 @@ def load_config(
         lock_path=lock_path,
         poller_process_marker=poller_marker,
         required_process_markers=tuple(required_markers),
-        fresh_seed=seed,
+        allow_multiple_chats=allow_multiple_chats,
     )
 
 
@@ -165,9 +304,9 @@ def _transform_continue_unit(unit: str, replacement: str, *, seed: str | None) -
     return transformed
 
 
-def fresh_unit_from_continue(unit: str, session_id: str, seed: str = DEFAULT_FRESH_SEED) -> str:
+def fresh_unit_from_continue(unit: str, session_id: str) -> str:
     _validate_uuid(session_id)
-    return _transform_continue_unit(unit, f"--session-id {session_id}", seed=seed)
+    return _transform_continue_unit(unit, f"--session-id {session_id}", seed=DEFAULT_FRESH_SEED)
 
 
 def resume_unit_from_continue(unit: str, session_id: str) -> str:
@@ -175,34 +314,51 @@ def resume_unit_from_continue(unit: str, session_id: str) -> str:
     return _transform_continue_unit(unit, f"--resume {session_id}", seed=None)
 
 
-def validate_notification_target(state_dir: Path, chat_id: str, *, expected_uid: int) -> str:
+def validate_notification_target(
+    state_dir: Path,
+    chat_id: str,
+    *,
+    expected_uid: int,
+    allow_multiple_chats: bool = False,
+) -> str:
     if not re.fullmatch(r"\d+", chat_id):
         raise ValueError("invalid chat ID")
-    root = state_dir.lstat()
-    if stat.S_ISLNK(root.st_mode) or not stat.S_ISDIR(root.st_mode):
+    before = state_dir.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
         raise ValueError("channel state root must be a real directory")
-    if stat.S_IMODE(root.st_mode) != 0o700 or root.st_uid != expected_uid:
-        raise ValueError("channel state root must be owned by the service user with mode 0700")
-
-    env_path = state_dir / ".env"
-    access_path = state_dir / "access.json"
-    _secure_regular_file(env_path, expected_uid, 0o600, "channel state")
-    _secure_regular_file(access_path, expected_uid, 0o600, "channel state")
+    dir_fd = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(dir_fd)
+        if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+            raise ValueError("channel state root changed during validation")
+        if stat.S_IMODE(opened.st_mode) != 0o700 or opened.st_uid != expected_uid:
+            raise ValueError("channel state root must be owned by the service user with mode 0700")
+        env_text = _read_secure_at(dir_fd, ".env", expected_uid, 0o600, "channel state")
+        access_text = _read_secure_at(dir_fd, "access.json", expected_uid, 0o600, "channel state")
+    finally:
+        os.close(dir_fd)
 
     token_lines = [
         line.split("=", 1)[1].strip()
-        for line in env_path.read_text(encoding="utf-8").splitlines()
+        for line in env_text.splitlines()
         if line.startswith("TELEGRAM_BOT_TOKEN=")
     ]
     if len(token_lines) != 1 or not TOKEN_RE.fullmatch(token_lines[0]):
         raise ValueError("invalid Telegram bot token state")
 
-    access = json.loads(access_path.read_text(encoding="utf-8"))
+    access = json.loads(access_text)
     if access.get("dmPolicy") != "allowlist":
         raise ValueError("dmPolicy must be allowlist")
     allowed = access.get("allowFrom")
-    if not isinstance(allowed, list) or not all(isinstance(value, str) for value in allowed):
+    if not isinstance(allowed, list) or not all(
+        isinstance(value, str) and re.fullmatch(r"\d+", value)
+        for value in allowed
+    ):
         raise ValueError("invalid Telegram allowlist")
+    if len(set(allowed)) != len(allowed):
+        raise ValueError("Telegram allowlist must not contain duplicates")
+    if not allow_multiple_chats and len(allowed) != 1:
+        raise ValueError("exactly one allowlisted chat is required by default")
     if chat_id not in allowed:
         raise ValueError("chat is not authorized")
     return token_lines[0]
@@ -282,8 +438,7 @@ def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
 
 
 def _read_canonical_unit(config: ResetConfig) -> str:
-    _secure_regular_file(config.unit_path, 0, 0o644, "service unit")
-    unit = config.unit_path.read_text(encoding="utf-8")
+    unit = _read_secure_regular(config.unit_path, 0, 0o644, "service unit")
     if unit.count("--continue") != 1:
         raise RuntimeError("service unit is not in steady --continue state")
     return unit
@@ -400,12 +555,25 @@ def _recover_old(config: ResetConfig, original_unit: str, old_session: str) -> b
         return False
 
 
-def reset_session(config: ResetConfig, *, chat_id: str | None, timeout: float) -> dict[str, Any]:
+def reset_session(
+    config: ResetConfig,
+    *,
+    chat_id: str | None,
+    request_id: str | None,
+    timeout: float,
+) -> dict[str, Any]:
     if os.geteuid() != 0:
         raise PermissionError("session reset helper must run as root")
     token: str | None = None
+    if (request_id is None) != (chat_id is None):
+        raise ValueError("request_id and chat_id must be provided together")
     if chat_id is not None:
-        token = validate_notification_target(config.channel_state, chat_id, expected_uid=config.service_uid)
+        token = validate_notification_target(
+            config.channel_state,
+            chat_id,
+            expected_uid=config.service_uid,
+            allow_multiple_chats=config.allow_multiple_chats,
+        )
 
     config.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     lock_fd = os.open(config.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -415,13 +583,26 @@ def reset_session(config: ResetConfig, *, chat_id: str | None, timeout: float) -
         except BlockingIOError as exc:
             raise RuntimeError("another session reset is already running") from exc
 
+        if request_id is not None and chat_id is not None:
+            claimed = claim_request(REQUEST_STATE_ROOT, request_id, chat_id)
+            if not claimed["claimed"]:
+                receipt = claimed["receipt"]
+                return {
+                    "status": "duplicate_request",
+                    "request_id": request_id,
+                    "prior_status": receipt.get("status"),
+                    "old_session": receipt.get("old_session"),
+                    "new_session": receipt.get("new_session"),
+                    "completion_message_id": receipt.get("completion_message_id"),
+                }
+
         original_unit = _read_canonical_unit(config)
         old_session = _latest_session_id(config)
         new_session = str(uuid.uuid4())
         try:
             _atomic_write(
                 config.unit_path,
-                fresh_unit_from_continue(original_unit, new_session, config.fresh_seed),
+                fresh_unit_from_continue(original_unit, new_session),
             )
             _reload_and_restart(config)
             _wait_for_fresh_session(config, new_session, timeout)
@@ -437,21 +618,50 @@ def reset_session(config: ResetConfig, *, chat_id: str | None, timeout: float) -
                     _notify(token, chat_id, f"Session reset failed; {status}.")
                 except Exception:
                     pass
+            if request_id is not None:
+                try:
+                    finish_request(
+                        REQUEST_STATE_ROOT,
+                        request_id,
+                        "failed",
+                        {
+                            "old_session": old_session,
+                            "recovered": recovered,
+                        },
+                    )
+                except Exception:
+                    pass
             raise RuntimeError("session reset failed") from exc
 
         completion_id: int | None = None
         if token is not None and chat_id is not None:
-            completion_id = _notify(
-                token,
-                chat_id,
-                f"Session reset complete. New session: {new_session[:8]}…",
-            )
-        return {
+            try:
+                completion_id = _notify(
+                    token,
+                    chat_id,
+                    f"Session reset complete. New session: {new_session[:8]}…",
+                )
+            except Exception:
+                completion_id = None
+        result = {
             "status": "reset_complete",
             "old_session": old_session,
             "new_session": new_session,
             "completion_message_id": completion_id,
         }
+        if request_id is not None:
+            finish_request(
+                REQUEST_STATE_ROOT,
+                request_id,
+                "complete",
+                {
+                    "old_session": old_session,
+                    "new_session": new_session,
+                    "completion_message_id": completion_id,
+                },
+            )
+            result["request_id"] = request_id
+        return result
     finally:
         os.close(lock_fd)
 
@@ -463,11 +673,17 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CLAUDE_SESSION_RESET_CONFIG", str(DEFAULT_CONFIG_PATH)),
     )
     parser.add_argument("--chat-id")
+    parser.add_argument("--request-id")
     parser.add_argument("--timeout", type=float, default=90.0)
     args = parser.parse_args(argv)
     try:
         config = load_config(Path(args.config))
-        result = reset_session(config, chat_id=args.chat_id, timeout=args.timeout)
+        result = reset_session(
+            config,
+            chat_id=args.chat_id,
+            request_id=args.request_id,
+            timeout=args.timeout,
+        )
     except Exception as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, separators=(",", ":")), file=sys.stderr)
         return 1

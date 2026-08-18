@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -32,6 +34,8 @@ class ActivationTests(unittest.TestCase):
             second = releases / SHA_B
             first.mkdir(parents=True)
             second.mkdir()
+            (first / ".installed.json").write_text(json.dumps({"commit": SHA_A}) + "\n")
+            (second / ".installed.json").write_text(json.dumps({"commit": SHA_B}) + "\n")
 
             receipt1 = deploy.activate_release(prefix, first)
             self.assertEqual(receipt1["current"], SHA_A)
@@ -57,6 +61,45 @@ class ActivationTests(unittest.TestCase):
             target.mkdir()
             with self.assertRaisesRegex(ValueError, "inside the release directory"):
                 deploy.activate_release(prefix, target)
+
+    def test_rejects_release_with_mismatched_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            prefix = Path(td)
+            target = prefix / "releases" / SHA_A
+            target.mkdir(parents=True)
+            (target / ".installed.json").write_text(json.dumps({"commit": SHA_B}) + "\n")
+            with self.assertRaisesRegex(ValueError, "receipt commit"):
+                deploy.activate_release(prefix, target)
+
+
+class InstallIntegrationTests(unittest.TestCase):
+    def test_install_release_from_real_git_archive_on_python_311(self):
+        with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as prefix_dir:
+            repo = Path(repo_dir)
+            prefix = Path(prefix_dir)
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "ci@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "CI"], check=True)
+            (repo / "package.json").write_text('{"name":"fixture","private":true}\n')
+            (repo / "bun.lock").write_text("fixture-lock\n")
+            (repo / "payload.txt").write_text("archive payload\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "fixture"], check=True, capture_output=True)
+            sha = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            receipt = deploy.install_release(repo, sha, prefix, "/bin/true")
+
+            self.assertEqual(receipt["commit"], sha)
+            current = (prefix / "current").resolve(strict=True)
+            self.assertEqual(current.name, sha)
+            self.assertEqual((current / "payload.txt").read_text(), "archive payload\n")
+            installed = json.loads((current / ".installed.json").read_text())
+            self.assertEqual(installed["commit"], sha)
 
 
 if __name__ == "__main__":

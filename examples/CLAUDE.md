@@ -12,7 +12,7 @@ Treat a direct inbound Telegram message as a reset request only when its trimmed
 
 For that exact command:
 
-1. Call `mcp__session-control__schedule_session_reset` with the inbound private `chat_id` and `confirmation: "RESET SESSION"`.
+1. Call `mcp__session-control__schedule_session_reset` with the inbound private `chat_id`, inbound `message_id`, and `confirmation: "RESET SESSION"`.
 2. Do not send any message before or after the reset tool. The control MCP sends the acceptance message; the root-owned reset helper sends completion or failure.
 3. Do not retry if the call is interrupted or unknown. PID 1 may already own the reset job.
 

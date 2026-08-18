@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
@@ -69,14 +69,12 @@ function verifyRootOwnedFile(path: string, mode: number, label: string): void {
 
 export function createResetScheduler(options: {
   run?: CommandRunner;
-  requestId?: () => string;
   verifyHelper?: () => void;
   helperPath?: string;
   configPath?: string;
   unitPrefix?: string;
 } = {}) {
   const run = options.run ?? defaultRunner;
-  const requestId = options.requestId ?? (() => randomUUID().replaceAll("-", "").slice(0, 12));
   const helperPath = options.helperPath ?? process.env.CLAUDE_SESSION_RESET_HELPER ?? DEFAULT_HELPER;
   const configPath = options.configPath ?? process.env.CLAUDE_SESSION_RESET_CONFIG ?? DEFAULT_CONFIG;
   const unitPrefix = options.unitPrefix ?? process.env.CLAUDE_SESSION_RESET_UNIT_PREFIX ?? DEFAULT_UNIT_PREFIX;
@@ -89,11 +87,11 @@ export function createResetScheduler(options: {
     verifyRootOwnedFile(configPath, 0o644, "reset config");
   });
 
-  return async (chatId: string): Promise<string> => {
+  return async (chatId: string, messageId: string): Promise<string> => {
     if (!/^\d+$/.test(chatId)) throw new Error("invalid chat ID");
+    if (!/^\d+$/.test(messageId)) throw new Error("invalid message ID");
     verifyHelper();
-    const id = requestId();
-    if (!/^[a-f0-9]{12}$/.test(id)) throw new Error("invalid reset request ID");
+    const id = createHash("sha256").update(`${chatId}:${messageId}`).digest("hex").slice(0, 24);
     const unit = `${unitPrefix}-${id}`;
     const argv = [
       "/usr/bin/sudo",
@@ -106,7 +104,9 @@ export function createResetScheduler(options: {
       "--config",
       configPath,
       "--chat-id",
-      chatId
+      chatId,
+      "--request-id",
+      id
     ];
     const result = await run(argv);
     if (result.exitCode !== 0) throw new Error("systemd rejected the reset job");

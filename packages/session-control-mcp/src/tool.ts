@@ -24,13 +24,18 @@ export const RESET_TOOL = {
         pattern: "^\\d+$",
         description: "Authorized private Telegram chat ID from the inbound channel event."
       },
+      message_id: {
+        type: "string",
+        pattern: "^\\d+$",
+        description: "Inbound Telegram message ID used as the durable reset idempotency key."
+      },
       confirmation: {
         type: "string",
         const: "RESET SESSION",
         description: "Exact reset confirmation phrase."
       }
     },
-    required: ["chat_id", "confirmation"]
+    required: ["chat_id", "message_id", "confirmation"]
   }
 } as const;
 

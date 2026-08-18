@@ -9,5 +9,6 @@
   "required_process_markers": [
     "telegram-renderer-mcp/src/server.ts",
     "session-control-mcp/src/server.ts"
-  ]
+  ],
+  "allow_multiple_chats": false
 }

@@ -1,7 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "mcp__plugin_telegram_telegram__reply",
       "mcp__telegram-renderer__send_reply"
     ],
     "ask": [

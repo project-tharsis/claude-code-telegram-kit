@@ -28,6 +28,7 @@ describe("reset control plane", () => {
     });
     const request = ResetRequestSchema.parse({
       chat_id: "123456789",
+      message_id: "51",
       confirmation: CONFIRMATION
     });
 
@@ -53,7 +54,7 @@ describe("reset control plane", () => {
       }
     });
 
-    await expect(controller({ chat_id: "123456789", confirmation: CONFIRMATION })).rejects.toThrow(
+    await expect(controller({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION })).rejects.toThrow(
       "ACK delivery failed"
     );
     expect(scheduleCalls).toBe(0);
@@ -67,7 +68,7 @@ describe("reset control plane", () => {
       schedule: async () => "unexpected"
     });
 
-    await expect(controller({ chat_id: "999", confirmation: CONFIRMATION })).rejects.toThrow(
+    await expect(controller({ chat_id: "999", message_id: "51", confirmation: CONFIRMATION })).rejects.toThrow(
       "chat is not authorized"
     );
     expect(ackCalls).toBe(0);
@@ -84,7 +85,7 @@ describe("reset control plane", () => {
       schedule: async () => { throw new Error("systemd rejected"); }
     });
 
-    await expect(controller({ chat_id: "123456789", confirmation: CONFIRMATION })).rejects.toThrow(
+    await expect(controller({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION })).rejects.toThrow(
       "reset scheduler failed"
     );
     expect(messages).toHaveLength(2);

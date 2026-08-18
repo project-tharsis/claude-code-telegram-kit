@@ -12,7 +12,7 @@ send_reply(chat_id, content, reply_to?, disable_notification?)
 
 - GFM pipe tables, task lists, `<details>`, and block math use `sendRichMessage` when within the Rich Message limit.
 - Ordinary Markdown uses Telegram MarkdownV2.
-- Oversized legacy replies are split before sending.
+- Ordinary replies whose rendered MarkdownV2 exceeds 4,096 characters fail before any network call; the caller must shorten the answer.
 - CJK downgrade is a deployment policy; this package keeps CJK rich structures eligible by default.
 
 ## Failure semantics

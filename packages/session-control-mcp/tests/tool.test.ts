@@ -12,12 +12,13 @@ describe("control MCP tool", () => {
 
     const result = await handler("schedule_session_reset", {
       chat_id: "123456789",
+      message_id: "51",
       confirmation: CONFIRMATION
     });
 
     expect(RESET_TOOL.name).toBe("schedule_session_reset");
     expect(RESET_TOOL.annotations?.destructiveHint).toBe(true);
-    expect(request).toEqual({ chat_id: "123456789", confirmation: CONFIRMATION });
+    expect(request).toEqual({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION });
     expect(result.isError).toBeUndefined();
     const first = result.content[0]!;
     expect(first.type).toBe("text");
