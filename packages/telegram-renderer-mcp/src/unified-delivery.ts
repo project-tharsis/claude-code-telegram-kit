@@ -10,6 +10,14 @@ import {
 import type { UnifiedReplyInput } from "./unified-contract.js";
 
 export type UnifiedFetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type ClockLike = () => number;
+
+/**
+ * A 404 is the only Rich capability signal Telegram gives us, and it is not exclusive:
+ * a revoked token and a meddling intermediary produce the same status. So the latch
+ * expires instead of lasting the whole process lifetime.
+ */
+export const RICH_CAPABILITY_COOLDOWN_MS = 30 * 60 * 1_000;
 
 /** Thrown when Telegram's outcome is unknown. The 👀 acknowledgement must survive it. */
 export class TelegramUncertainOutcomeError extends Error {}
@@ -76,8 +84,11 @@ async function finalizeSuccessReaction(
   }
 }
 
-export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
-  let richDisabled = false;
+export function createUnifiedDeliverer(
+  fetchImpl: UnifiedFetchLike = fetch,
+  now: ClockLike = Date.now
+) {
+  let richDisabledUntil = 0;
 
   return async (input: UnifiedReplyInput, config: RuntimeConfig): Promise<UnifiedDeliveryReceipt> => {
     assertAuthorizedChat(config, input.chat_id);
@@ -85,7 +96,7 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
     if (input.reply_to !== undefined) common.reply_parameters = { message_id: Number(input.reply_to) };
     if (input.disable_notification) common.disable_notification = true;
 
-    if (!richDisabled && needsRichRendering(input.content)) {
+    if (now() >= richDisabledUntil && needsRichRendering(input.content)) {
       const richAttempt = await attemptTelegram(
         "sendRichMessage",
         {
@@ -102,7 +113,7 @@ export function createUnifiedDeliverer(fetchImpl: UnifiedFetchLike = fetch) {
       if (richAttempt.kind === "uncertain") {
         throw new TelegramUncertainOutcomeError("Telegram rich delivery outcome unknown; no fallback sent");
       }
-      if (richAttempt.disableCapability) richDisabled = true;
+      if (richAttempt.disableCapability) richDisabledUntil = now() + RICH_CAPABILITY_COOLDOWN_MS;
     }
 
     const rendered = toMarkdownV2(input.content);

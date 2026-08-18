@@ -13,7 +13,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 - Every Bot API request rejects redirects; JSON responses are capped at 64 KiB before parsing.
 - User-facing sends allow 10 s for Telegram tail latency; reactions abort at 3 s so UX never delays a reply.
 - Telegram message IDs converted to numbers must be positive safe integers.
-- A proven endpoint capability failure latches Rich off for the MCP process lifetime.
+- A proven endpoint capability failure holds Rich off for a bounded cooldown, then re-probes, because a 404 is also what a revoked token or an intermediary returns.
 - Single-chat allowlisting is the default; multi-chat routing requires an explicit opt-in.
 
 ## Processing reactions

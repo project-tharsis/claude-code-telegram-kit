@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { UnifiedReplyInputSchema } from "../src/unified-contract.js";
 import {
   createUnifiedDeliverer,
+  RICH_CAPABILITY_COOLDOWN_MS,
   TelegramUncertainOutcomeError,
   type UnifiedFetchLike
 } from "../src/unified-delivery.js";
@@ -109,7 +110,7 @@ describe("unified deterministic delivery", () => {
     expect(calls[1]!.body).toEqual({ chat_id: "123456789", text: "**Hello**." });
   });
 
-  test("latches Rich capability off after a permanent endpoint failure", async () => {
+  test("holds Rich off for the cooldown after a permanent endpoint failure", async () => {
     const methods: string[] = [];
     let messageId = 100;
     const fakeFetch: UnifiedFetchLike = async (input) => {
@@ -291,4 +292,37 @@ describe("unified deterministic delivery", () => {
       slow.stop(true);
     }
   }, 20_000);
+
+  test("re-probes Rich once the capability cooldown expires", async () => {
+    const methods: string[] = [];
+    let clock = 1_000;
+    let messageId = 200;
+    const fakeFetch: UnifiedFetchLike = async input => {
+      const method = String(input).split("/").pop()!;
+      methods.push(method);
+      if (method === "sendRichMessage" && methods.length === 1) {
+        return new Response(JSON.stringify({ ok: false, description: "Not Found" }), { status: 404 });
+      }
+      messageId += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), { status: 200 });
+    };
+    const deliver = createUnifiedDeliverer(withReactionSupport(fakeFetch), () => clock);
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      content: "| A | B |\n|---|---|\n| 1 | 2 |"
+    });
+
+    expect((await deliver(input, config)).mode).toBe("markdownv2");
+    clock += RICH_CAPABILITY_COOLDOWN_MS - 1;
+    expect((await deliver(input, config)).mode).toBe("markdownv2");
+    clock += 1;
+    expect((await deliver(input, config)).mode).toBe("rich");
+    expect(methods).toEqual([
+      "sendRichMessage",
+      "sendMessage",
+      "sendMessage",
+      "sendRichMessage"
+    ]);
+  });
 });
