@@ -640,7 +640,13 @@ def _process_rows() -> dict[int, tuple[int, str]]:
     return rows
 
 
-def _service_health(config: ResetConfig, expected_session_id: str, *, flag: str = "--session-id") -> bool:
+def _service_health(
+    config: ResetConfig,
+    expected_session_id: str,
+    *,
+    flag: str = "--session-id",
+    require_workers: bool = True,
+) -> bool:
     try:
         _run(["systemctl", "is-active", "--quiet", config.service_name], timeout=10)
         main = int(_run(
@@ -663,7 +669,7 @@ def _service_health(config: ResetConfig, expected_session_id: str, *, flag: str 
     claude_ok = any(f"{flag} {expected_session_id}" in command for command in descendants)
     poller_ok = any(config.poller_process_marker in command for command in descendants)
     required_ok = all(any(marker in command for command in descendants) for marker in config.required_process_markers)
-    return claude_ok and poller_ok and required_ok
+    return claude_ok and (not require_workers or (poller_ok and required_ok))
 
 
 def _wait_for_fresh_session(config: ResetConfig, session_id: str, timeout: float) -> None:
@@ -800,22 +806,34 @@ def reset_session(
         original_unit = _read_canonical_unit(config)
         old_session = _latest_session_id(config)
         new_session = str(uuid.uuid4())
+        phase = "prepare_receipt"
         try:
             # Drop any stale receipt for the exact new session before the restart that would
             # recreate it: readiness must come from this boot, never from a leftover.
             _remove_session_receipt(config, new_session)
+            phase = "write_fresh_unit"
             _atomic_write(
                 config.unit_path,
                 fresh_unit_from_continue(original_unit, new_session),
             )
+            phase = "restart_fresh_service"
             _reload_and_restart(config)
+            phase = "wait_fresh_readiness"
             _wait_for_fresh_session(config, new_session, timeout)
+            phase = "restore_canonical_unit"
             _atomic_write(config.unit_path, original_unit)
+            phase = "reload_canonical_unit"
             _reload_only()
-            if not _service_health(config, new_session):
+            phase = "post_restore_process_check"
+            # Full process/poller/worker readiness was already proven immediately above.
+            # Restoring the canonical unit is a file write plus daemon-reload only; it does
+            # not restart the running Claude process. Re-check only the exact pinned Claude
+            # argv here so transient sidecar churn cannot misclassify a successful reset.
+            if not _service_health(config, new_session, require_workers=False):
                 raise RuntimeError("post-restore health check failed")
             # The fresh session is proven and steady state is restored; the receipt has served
             # its purpose and must not linger as a stale artifact for a future boot.
+            phase = "cleanup_receipt"
             _remove_session_receipt(config, new_session)
         except Exception as exc:
             try:
@@ -838,11 +856,13 @@ def reset_session(
                         {
                             "old_session": old_session,
                             "recovered": recovered,
+                            "failure_phase": phase,
+                            "failure_type": type(exc).__name__,
                         },
                     )
                 except Exception:
                     pass
-            raise RuntimeError("session reset failed") from exc
+            raise RuntimeError(f"session reset failed at {phase}") from exc
 
         completion_id: int | None = None
         if token is not None and chat_id is not None:
