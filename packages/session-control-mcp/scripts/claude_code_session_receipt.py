@@ -15,22 +15,40 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
-from claude_code_session_reset import (
-    PROTOCOL_VERSION,
-    RECEIPT_VERSION,
-    UUID_RE,
-    _validate_absolute_no_traversal,
-    _validate_file_info,
-)
-
+PROTOCOL_VERSION = 3
+RECEIPT_VERSION = 1
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 MAX_STDIN_BYTES = 64 * 1024
 _ALLOWED_HOOK_FIELDS = {"hook_event_name", "source", "session_id", "cwd", "transcript_path"}
+
+
+def _validate_absolute_no_traversal(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be an absolute path")
+    if ".." in path.parts:
+        raise ValueError(f"{label} must not contain path traversal")
+    return value
+
+
+def _validate_file_info(info: os.stat_result, expected_uid: int, mode: int, label: str) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{label} must be a regular file")
+    if stat.S_IMODE(info.st_mode) != mode:
+        raise ValueError(f"{label} must have mode {mode:04o}")
+    if info.st_uid != expected_uid:
+        raise ValueError(f"{label} has the wrong owner")
+    if info.st_nlink != 1:
+        raise ValueError(f"{label} must have one hardlink")
 
 
 def _validate_input(payload: Any) -> dict[str, Any]:

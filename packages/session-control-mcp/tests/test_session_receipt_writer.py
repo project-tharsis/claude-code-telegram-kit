@@ -21,6 +21,12 @@ assert spec is not None and spec.loader is not None
 receipt = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = receipt
 spec.loader.exec_module(receipt)
+RESET_PATH = SCRIPTS_DIR / "claude_code_session_reset.py"
+reset_spec = importlib.util.spec_from_file_location("receipt_test_reset", RESET_PATH)
+assert reset_spec is not None and reset_spec.loader is not None
+reset = importlib.util.module_from_spec(reset_spec)
+sys.modules[reset_spec.name] = reset
+reset_spec.loader.exec_module(reset)
 
 NEW_SESSION = "11111111-1111-4111-8111-111111111111"
 OLD_SESSION = "22222222-2222-4222-8222-222222222222"
@@ -45,6 +51,10 @@ class SessionReceiptWriterTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.receipts = self.root / "receipts"
         self.receipts.mkdir(mode=0o700)
+
+    def test_protocol_and_receipt_schema_match_the_root_helper(self):
+        self.assertEqual(receipt.PROTOCOL_VERSION, reset.PROTOCOL_VERSION)
+        self.assertEqual(receipt.RECEIPT_VERSION, reset.RECEIPT_VERSION)
 
     def test_writes_a_0600_single_link_receipt_named_by_the_exact_uuid(self):
         path = receipt.write_session_receipt(self.receipts, _hook_input(), expected_uid=os.getuid())
