@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   editProgressBubble,
-  sendProgressBubble
+  sendProgressBubble,
+  sendTypingAction
 } from "../src/progress-transport.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
@@ -13,6 +14,36 @@ function reply(status: number, body: unknown): Response {
     headers: { "content-type": "application/json" }
   });
 }
+
+describe("typing heartbeat transport", () => {
+  test("sends one authorized typing action with redirects disabled", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const outcome = await sendTypingAction(config, "123", async (url, init) => {
+      calls.push({ url: String(url), init: init! });
+      return reply(200, { ok: true, result: true });
+    });
+    expect(outcome).toBe("sent");
+    expect(calls[0]!.url).toBe("https://api.telegram.org/bot1:tok/sendChatAction");
+    expect(calls[0]!.init.redirect).toBe("error");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ chat_id: "123", action: "typing" });
+  });
+
+  test("classifies throttle, permanent refusal, and transient failures", async () => {
+    expect(await sendTypingAction(config, "123", async () => reply(429, { ok: false }))).toBe("throttled");
+    expect(await sendTypingAction(config, "123", async () => reply(400, { ok: false }))).toBe("rejected");
+    expect(await sendTypingAction(config, "123", async () => reply(500, { ok: false }))).toBe("transient");
+    expect(await sendTypingAction(config, "123", async () => { throw new Error("network"); })).toBe("transient");
+  });
+
+  test("rejects unauthorized chats before network I/O", async () => {
+    let called = false;
+    await expect(sendTypingAction(config, "999", async () => {
+      called = true;
+      return reply(200, { ok: true, result: true });
+    })).rejects.toThrow("chat is not authorized");
+    expect(called).toBe(false);
+  });
+});
 
 describe("progress bubble send", () => {
   test("sends silently, quotes the inbound message, and rejects redirects", async () => {

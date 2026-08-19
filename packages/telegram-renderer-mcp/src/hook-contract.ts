@@ -7,9 +7,9 @@ export {
 
 /**
  * Hook payloads are built by Claude Code from `${...}` templates, so a missing field
- * arrives as an empty string rather than as an absent key. Every identifier below is
- * therefore non-empty, bounded, and character-restricted, and every schema is strict so
- * an unexpected field (notably `tool_input`) is a hard rejection rather than a passthrough.
+ * arrives as an empty string rather than as an absent key. Identifiers are non-empty,
+ * bounded, and character-restricted. Selected preview fields are bounded strings; the raw
+ * `tool_input` object and every tool output remain rejected by strict schemas.
  */
 
 const uuid = z.string().regex(
@@ -25,6 +25,11 @@ const prompt = z.string().max(1_000_000);
 const optionalIdentifier = z.union([z.literal(""), identifier])
   .optional()
   .transform(value => (value === undefined || value === "" ? undefined : value));
+
+function optionalText(maxLength: number) {
+  return z.string().max(maxLength).optional()
+    .transform(value => (value === undefined || value === "" ? undefined : value));
+}
 
 const turnKey = {
   session_id: uuid,
@@ -42,7 +47,20 @@ export const RecordToolInputSchema = z.object({
   tool_use_id: identifier,
   tool_name: toolName,
   agent_id: optionalIdentifier,
+  command: optionalText(32_768),
+  file_path: optionalText(4_096),
+  path: optionalText(4_096),
+  pattern: optionalText(8_192),
+  query: optionalText(8_192),
+  url: optionalText(8_192),
+  description: optionalText(2_048),
   hook_event_name: z.literal("PreToolUse")
+}).strict();
+
+export const RecordToolSuccessInputSchema = z.object({
+  ...turnKey,
+  tool_use_id: identifier,
+  hook_event_name: z.literal("PostToolUse")
 }).strict();
 
 export const RecordToolFailureInputSchema = z.object({
@@ -58,5 +76,6 @@ export const FinishTurnInputSchema = z.object({
 
 export type BindTurnInput = z.infer<typeof BindTurnInputSchema>;
 export type RecordToolInput = z.infer<typeof RecordToolInputSchema>;
+export type RecordToolSuccessInput = z.infer<typeof RecordToolSuccessInputSchema>;
 export type RecordToolFailureInput = z.infer<typeof RecordToolFailureInputSchema>;
 export type FinishTurnInput = z.infer<typeof FinishTurnInputSchema>;

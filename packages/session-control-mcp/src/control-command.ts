@@ -8,23 +8,24 @@ export const CONTROL_CHAT_ID_MAX_LENGTH = 128;
 const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CODE_PATTERN = new RegExp(`^[${CODE_ALPHABET}]{${CONFIRMATION_CODE_LENGTH}}$`);
 const BOT_SUFFIX_PATTERN = "(?:@[A-Za-z0-9_]{1,32})?";
-const COMMAND_PATTERN = new RegExp(`^/(sessions|reset|resume)${BOT_SUFFIX_PATTERN}$`);
+const COMMAND_PATTERN = new RegExp(`^/(sessions|usage|reset|resume)${BOT_SUFFIX_PATTERN}$`);
 const RESUME_PATTERN = new RegExp(`^/(resume)${BOT_SUFFIX_PATTERN} ([1-9]|10)$`);
 const CONFIRM_PATTERN = new RegExp(
   `^/(reset|resume)${BOT_SUFFIX_PATTERN} confirm ([${CODE_ALPHABET}]{${CONFIRMATION_CODE_LENGTH}})$`
 );
-const CONTROL_NAMESPACE_PATTERN = /^\/(sessions|reset|resume)/;
+const CONTROL_NAMESPACE_PATTERN = /^\/(sessions|usage|reset|resume)/;
 const SESSION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 type ControlAction = "reset" | "resume";
 
 export type ParsedControlCommand =
   | { kind: "sessions" }
+  | { kind: "usage" }
   | { kind: "reset" }
   | { kind: "resume"; index: number }
   | { kind: "reset-confirm"; code: string }
   | { kind: "resume-confirm"; code: string }
-  | { kind: "malformed"; namespace: ControlAction | "sessions" }
+  | { kind: "malformed"; namespace: ControlAction | "sessions" | "usage" }
   | { kind: "other" };
 
 function isBoundedString(value: unknown, maxLength: number): value is string {
@@ -38,7 +39,7 @@ export function parseControlCommand(input: string): ParsedControlCommand {
     const oversized = CONTROL_NAMESPACE_PATTERN.exec(input);
     return oversized === null
       ? { kind: "other" }
-      : { kind: "malformed", namespace: oversized[1] as ControlAction | "sessions" };
+      : { kind: "malformed", namespace: oversized[1] as ControlAction | "sessions" | "usage" };
   }
 
   const confirmation = CONFIRM_PATTERN.exec(input);
@@ -56,13 +57,14 @@ export function parseControlCommand(input: string): ParsedControlCommand {
   if (command) {
     switch (command[1]) {
       case "sessions": return { kind: "sessions" };
+      case "usage": return { kind: "usage" };
       case "reset": return { kind: "reset" };
       default: return { kind: "malformed", namespace: "resume" };
     }
   }
 
   if (CONTROL_NAMESPACE_PATTERN.test(input)) {
-    const namespace = CONTROL_NAMESPACE_PATTERN.exec(input)![1] as "sessions" | "reset" | "resume";
+    const namespace = CONTROL_NAMESPACE_PATTERN.exec(input)![1] as "sessions" | "usage" | "reset" | "resume";
     return { kind: "malformed", namespace };
   }
 

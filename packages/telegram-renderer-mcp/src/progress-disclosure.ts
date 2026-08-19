@@ -7,9 +7,10 @@ import {
   type BindTurnInput,
   type FinishTurnInput,
   type RecordToolFailureInput,
-  type RecordToolInput
+  type RecordToolInput,
+  type RecordToolSuccessInput
 } from "./hook-contract.js";
-import { safeStepLabel } from "./progress-labels.js";
+import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
 import { TurnProgress } from "./progress-state.js";
 import type {
   ProgressEditOutcome,
@@ -27,12 +28,14 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 /** Ephemeral state only. A long session must not accumulate turns without bound. */
 export const MAX_RETAINED_TURNS = 32;
 
-const CONTROL_COMMAND = /^(?:\/sessions(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/(?:reset|resume)(?:@[A-Za-z0-9_]{1,32})? confirm [23456789A-HJ-NP-Z]{6}|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
+const CONTROL_COMMAND = /^(?:\/(?:usage|sessions)(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/(?:reset|resume)(?:@[A-Za-z0-9_]{1,32})? confirm [23456789A-HJ-NP-Z]{6}|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
 
 export type CancelScheduled = () => void;
 
 export interface TurnDisclosureDeps {
   loadConfig: () => RuntimeConfig;
+  mode: ToolDisclosureMode;
+  startTyping: (chatId: string) => CancelScheduled;
   send: (
     config: RuntimeConfig,
     chatId: string,
@@ -63,6 +66,7 @@ interface Turn {
   replacementUsed: boolean;
   lastSentText: string | null;
   cancel: CancelScheduled | null;
+  cancelTyping: CancelScheduled | null;
   chain: Promise<void>;
 }
 
@@ -80,6 +84,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   function drop(turn: Turn): void {
     turn.cancel?.();
     turn.cancel = null;
+    turn.cancelTyping?.();
+    turn.cancelTyping = null;
     turn.state = "abandoned";
   }
 
@@ -184,6 +190,26 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     return turns.get(turnKey(sessionId, promptId));
   }
 
+  async function finalize(turn: Turn, outcome: "Stop" | "StopFailure"): Promise<void> {
+    turn.cancelTyping?.();
+    turn.cancelTyping = null;
+    turn.cancel?.();
+    turn.cancel = null;
+    turn.progress.close(outcome);
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        enqueue(turn),
+        new Promise<void>(resolve => {
+          timeout = setTimeout(resolve, FINAL_DRAIN_TIMEOUT_MS);
+          timeout.unref?.();
+        })
+      ]);
+    } finally {
+      if (timeout !== null) clearTimeout(timeout);
+    }
+  }
+
   return {
     get size(): number {
       return turns.size;
@@ -221,6 +247,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           replacementUsed: false,
           lastSentText: null,
           cancel: null,
+          cancelTyping: deps.startTyping(envelope.chatId),
           chain: Promise.resolve()
         });
         evict();
@@ -234,9 +261,19 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
-        const label = safeStepLabel(input.tool_name, input.agent_id);
-        if (label === null) return;
-        if (turn.progress.recordTool(input.tool_use_id, label)) touch(turn);
+        const display = buildProgressStep(input.tool_name, input, deps.mode, input.agent_id);
+        if (display === null) return;
+        if (turn.progress.recordTool(input.tool_use_id, display)) touch(turn);
+      } catch {
+        // Never surface a disclosure failure to the agent.
+      }
+    },
+
+    recordSuccess(input: RecordToolSuccessInput): void {
+      try {
+        const turn = lookup(input.session_id, input.prompt_id);
+        if (turn === undefined) return;
+        if (turn.progress.recordSuccess(input.tool_use_id)) touch(turn);
       } catch {
         // Never surface a disclosure failure to the agent.
       }
@@ -256,19 +293,19 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
-        turn.cancel?.();
-        turn.cancel = null;
-        turn.progress.close(input.hook_event_name);
-        await Promise.race([
-          enqueue(turn),
-          new Promise<void>(resolve => {
-            const timer = setTimeout(resolve, FINAL_DRAIN_TIMEOUT_MS);
-            timer.unref?.();
-          })
-        ]);
+        await finalize(turn, input.hook_event_name);
       } catch {
         // Never surface a disclosure failure to the agent.
       }
+    },
+
+    async finalizeChat(chatId: string): Promise<void> {
+      const pending: Promise<void>[] = [];
+      for (const turn of turns.values()) {
+        if (turn.chatId !== chatId) continue;
+        pending.push(finalize(turn, "Stop"));
+      }
+      await Promise.allSettled(pending);
     }
   };
 }

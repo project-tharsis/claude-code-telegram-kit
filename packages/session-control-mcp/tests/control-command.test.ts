@@ -13,6 +13,8 @@ describe("exact control command parser", () => {
   test("parses the exact non-confirmation commands and bot suffixes", () => {
     expect(parseControlCommand("/sessions")).toEqual({ kind: "sessions" });
     expect(parseControlCommand("/sessions@my_bot")).toEqual({ kind: "sessions" });
+    expect(parseControlCommand("/usage")).toEqual({ kind: "usage" });
+    expect(parseControlCommand("/usage@my_bot")).toEqual({ kind: "usage" });
     expect(parseControlCommand("/reset@my_bot")).toEqual({ kind: "reset" });
     expect(parseControlCommand("/resume 1")).toEqual({ kind: "resume", index: 1 });
     expect(parseControlCommand("/resume@my_bot 10")).toEqual({ kind: "resume", index: 10 });
@@ -33,6 +35,7 @@ describe("exact control command parser", () => {
     for (const input of [
       "/sessions now",
       "/sessionsx",
+      "/usage now",
       "/reset extra",
       "/resume",
       "/resume 0",

@@ -25,6 +25,7 @@ class GuardTests(unittest.TestCase):
     def test_blocks_exact_and_malformed_control_namespaces(self):
         for body in (
             "/sessions",
+            "/usage",
             "/reset",
             "/reset extra",
             "/resume 1",

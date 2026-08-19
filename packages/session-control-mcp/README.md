@@ -8,13 +8,13 @@ An MCP front end for resetting, listing, and resuming sessions for one Telegram-
 dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmit")
 ```
 
-`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/sessions`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
+`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/sessions`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
 
 An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
 
 Legacy public reset/list/resume tools remain exposed only as fail-closed compatibility surfaces and should all be listed under `permissions.deny`. Exact control commands never rely on model tool selection.
 
-`/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
+`/usage` reads a private service-user-owned cache written from Claude's documented `statusLine.rate_limits`; it starts no extra Claude process and calls neither the LLM nor the OAuth usage endpoint. `/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
 
 ## Control-plane order
 
@@ -54,13 +54,18 @@ The versioned user-level deploy script intentionally does **not** install privil
 git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_reset.py > /tmp/claude-code-session-reset
 git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_receipt.py > /tmp/claude-session-start-receipt
 git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_control_guard.py > /tmp/claude-control-command-guard
+git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_usage_snapshot.py > /tmp/claude-usage-snapshot
 sha256sum /tmp/claude-code-session-reset
 sha256sum /tmp/claude-session-start-receipt /tmp/claude-control-command-guard
+sha256sum /tmp/claude-usage-snapshot
 sudo install -o root -g root -m 0755 /tmp/claude-code-session-reset /usr/local/sbin/claude-code-session-reset
 sudo install -o root -g root -m 0755 /tmp/claude-session-start-receipt /usr/local/sbin/claude-session-start-receipt
 sudo install -o root -g root -m 0755 /tmp/claude-control-command-guard /usr/local/sbin/claude-control-command-guard
+sudo install -o root -g root -m 0755 /tmp/claude-usage-snapshot /usr/local/sbin/claude-usage-snapshot
 sudo sha256sum /usr/local/sbin/claude-code-session-reset
 sudo sha256sum /usr/local/sbin/claude-session-start-receipt /usr/local/sbin/claude-control-command-guard
+sudo sha256sum /usr/local/sbin/claude-usage-snapshot
+sudo install -d -o USER -g USER -m 0700 /home/USER/.local/state/claude-code-telegram-kit
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 

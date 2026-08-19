@@ -5,7 +5,10 @@
       "args": [
         "run",
         "/home/USER/.local/share/claude-code-telegram-kit/current/packages/telegram-renderer-mcp/src/server.ts"
-      ]
+      ],
+      "env": {
+        "TELEGRAM_TOOL_DISCLOSURE_MODE": "verbose"
+      }
     },
     "session-control": {
       "command": "/home/USER/.bun/bin/bun",

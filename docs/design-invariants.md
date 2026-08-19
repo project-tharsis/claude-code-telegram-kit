@@ -30,7 +30,10 @@ The README lists the five invariants that define the project's blast radius. Thi
 ## Tool disclosure
 
 - Claude Code hooks, not the model, emit disclosure events.
-- Disclosure accepts turn IDs, tool IDs, tool names, and optional agent IDs only. It never accepts raw tool input or output.
+- Disclosure accepts turn/tool/agent IDs plus an explicit allowlist of bounded preview strings (`command`, `file_path`, `path`, `pattern`, `query`, `url`, `description`). It never accepts the raw `tool_input` object or any tool output.
+- `verbose` may expose ordinary VM commands, paths, queries, and URLs by user choice. Credential-shaped values are always replaced with fixed redaction markers before Telegram delivery.
+- PostToolUse and PostToolUseFailure mark each tool ID as running, completed, or failed; one turn still owns one bounded bubble.
+- The official Channel owns the initial typing action. The renderer owns sustained two-second refresh and cancels before final delivery, turn closure, supersession, rejection, or a ten-minute dead-man cutoff.
 - A direct Telegram envelope and live allowlist bind the turn. Missing or malformed binding suppresses disclosure.
 - Presentation is fail-open for the agent: hook, send, edit, throttle, and restart failures never block tool execution or the final reply.
 - One turn owns at most one replacement progress bubble; unknown sends are never retried and 429 ends disclosure for that turn.
@@ -40,6 +43,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 - Exact session-control commands are parsed and handled by a UserPromptSubmit hook before the LLM; ordinary messages alone reach the model.
 - A side-effect-free command hook blocks control namespaces even if the MCP dispatcher is unavailable. Every session-control MCP tool is denied to the model; permissions are the provenance boundary for the mutating dispatcher.
 - A numbered list is an atomic, private, ten-minute snapshot. Later session activity never repoints a visible index.
+- `/usage` is read-only and formats a private service-user-owned snapshot of Claude's documented `statusLine.rate_limits`. It starts no extra Claude process, performs no model/API call, and accepts only bounded 5-hour/7-day windows.
 - The model supplies neither control commands nor their arguments. It never receives a confirmation code, index, session UUID, transcript path, helper path, service, unit, or command.
 - Reset and resume require an action-bound, latest-per-chat, single-use 60-second confirmation challenge before any mutation.
 - Resume stays within one root-configured workspace, revalidates at both privilege levels, and rolls back the previous session on failed health checks.

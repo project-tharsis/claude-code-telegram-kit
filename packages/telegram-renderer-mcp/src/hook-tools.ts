@@ -4,14 +4,16 @@ import {
   FinishTurnInputSchema,
   RecordToolFailureInputSchema,
   RecordToolInputSchema,
+  RecordToolSuccessInputSchema,
   type BindTurnInput,
   type FinishTurnInput,
   type RecordToolFailureInput,
-  type RecordToolInput
+  type RecordToolInput,
+  type RecordToolSuccessInput
 } from "./hook-contract.js";
 
 /**
- * These four tools exist for Claude Code `mcp_tool` hooks, not for the model. They are named
+ * These five tools exist for Claude Code `mcp_tool` hooks, not for the model. They are named
  * and described so a reader can tell them apart from the public `send_reply` tool at a glance,
  * and the example settings deny model access to all of them. Denying access is a UX guarantee,
  * not a security boundary: every handler below independently rejects a payload whose
@@ -56,7 +58,7 @@ export const BIND_TURN_TOOL = {
 export const RECORD_TOOL_TOOL = {
   name: "record_tool",
   description:
-    `${INTERNAL_PREFIX} Wired to PreToolUse. Records that a tool started, by tool_use_id and tool_name only. Tool input is never accepted or exposed.`,
+    `${INTERNAL_PREFIX} Wired to PreToolUse. Records that a tool started plus selected bounded preview fields. The raw tool_input object and tool output are never accepted.`,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   inputSchema: {
     type: "object",
@@ -71,7 +73,31 @@ export const RECORD_TOOL_TOOL = {
         pattern: "^(?:|[A-Za-z0-9_.:-]{1,128})$",
         description: "Present when the tool ran inside a subagent; collapses to one delegating step."
       },
+      command: { type: "string", maxLength: 32768 },
+      file_path: { type: "string", maxLength: 4096 },
+      path: { type: "string", maxLength: 4096 },
+      pattern: { type: "string", maxLength: 8192 },
+      query: { type: "string", maxLength: 8192 },
+      url: { type: "string", maxLength: 8192 },
+      description: { type: "string", maxLength: 2048 },
       hook_event_name: { type: "string", const: "PreToolUse" }
+    }
+  }
+} as const;
+
+export const RECORD_TOOL_SUCCESS_TOOL = {
+  name: "record_tool_success",
+  description:
+    `${INTERNAL_PREFIX} Wired to PostToolUse. Marks an already-recorded tool_use_id as completed. Tool output is never accepted.`,
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id", "prompt_id", "tool_use_id", "hook_event_name"],
+    properties: {
+      ...turnKeyProperties,
+      tool_use_id: { type: "string", pattern: IDENTIFIER_PATTERN },
+      hook_event_name: { type: "string", const: "PostToolUse" }
     }
   }
 } as const;
@@ -112,6 +138,7 @@ export const FINISH_TURN_TOOL = {
 export const INTERNAL_HOOK_TOOLS = [
   BIND_TURN_TOOL,
   RECORD_TOOL_TOOL,
+  RECORD_TOOL_SUCCESS_TOOL,
   RECORD_TOOL_FAILURE_TOOL,
   FINISH_TURN_TOOL
 ] as const;
@@ -122,6 +149,7 @@ export interface HookDisclosure {
   /** Binds the submitted prompt as a disclosure turn, or ignores it silently. */
   bindTurn: (input: BindTurnInput) => void;
   recordTool: (input: RecordToolInput) => void;
+  recordSuccess: (input: RecordToolSuccessInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
   finishTurn: (input: FinishTurnInput) => Promise<void>;
 }
@@ -143,6 +171,9 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
           break;
         case RECORD_TOOL_TOOL.name:
           disclosure.recordTool(RecordToolInputSchema.parse(arguments_));
+          break;
+        case RECORD_TOOL_SUCCESS_TOOL.name:
+          disclosure.recordSuccess(RecordToolSuccessInputSchema.parse(arguments_));
           break;
         case RECORD_TOOL_FAILURE_TOOL.name:
           disclosure.recordFailure(RecordToolFailureInputSchema.parse(arguments_));

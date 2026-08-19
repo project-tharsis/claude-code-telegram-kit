@@ -9,13 +9,15 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.
-- Control slash commands (`/sessions`, `/resume N`, `/reset`) no longer create tool-progress bubbles, which resume/reset could never close before restarting Claude.
+- Control slash commands (`/usage`, `/sessions`, `/resume N`, `/reset`) no longer create tool-progress bubbles, which resume/reset could never close before restarting Claude.
 - Root reset configuration may use either secure root-owned mode `0600` or `0644`; the unprivileged scheduler and privileged helper now enforce the same exact mode set.
 - The unprivileged SessionStart receipt writer no longer reads root-owned `reset.json`; its fixed user-owned receipt directory is passed by the supported command-hook configuration and independently revalidated by the root helper, so private `0600` root config works end to end.
 
 ### Added
 
-- Hook-driven Telegram tool disclosure: Claude Code `mcp_tool` hooks bind each direct inbound turn and maintain one silent, bounded, edit-in-place progress bubble without exposing raw tool arguments or output.
+- Hermes-style Telegram execution UX: configurable `safe`/`all`/`verbose` disclosure with bounded command/path/query previews, hard credential redaction, running/completed/failed tool state, and one silent edit-in-place bubble. Tool output never enters disclosure.
+- Sustained Telegram typing heartbeat: two-second refresh, bounded requests, throttle cooldown, dead-man cutoff, and deterministic cancellation before final delivery or turn closure.
+- Deterministic `/usage`: Claude's documented `statusLine.rate_limits` is atomically cached as a private service-user snapshot and returned pre-LLM; no extra Claude process, OAuth poll, model turn, or session history is created.
 - Deterministic pre-LLM Telegram control routing: `/sessions` lists up to ten recent sessions directly, while `/reset` and `/resume N` use action-bound, session-bound, single-use 60-second confirmation challenges. The MCP dispatcher blocks handled commands before the model, a side-effect-free command hook keeps control namespaces blocked during MCP outages, destructive controls are private-chat only, and all session-control tools are denied to model use.
 - Session Control Protocol v3 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact current/target session binding, durable action-bound receipts, exact worker health checks, and rollback.
 - Deterministic seedless session reset: a fresh `--session-id` start injects no prompt, a `SessionStart` command hook publishes a secure receipt under the service user, and the root helper accepts only the exact receipt plus process/poller/worker health as readiness. No LLM response and no transcript content prove readiness, and the first real Telegram message is the first user turn, so Claude's native `ai-title` is no longer anchored to a synthetic handshake.
