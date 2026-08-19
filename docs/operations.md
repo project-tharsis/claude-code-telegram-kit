@@ -66,7 +66,7 @@ sudo install -o root -g root -m 0755 /tmp/claude-control-command-guard /usr/loca
 sudo sha256sum /usr/local/sbin/claude-control-command-guard
 ```
 
-Wire the receipt writer as the `SessionStart` `startup` command hook. Wire the control guard in parallel with the `UserPromptSubmit` MCP dispatcher: the guard has no side effects and ensures control namespaces never reach the LLM even when MCP is unavailable. Set `session_start_receipt_dir` in root-owned `reset.json` (mode `0600` or `0644`) to a service-user-owned `0700` directory. The writer runs as the service user, rejects spoofed or malformed input, and publishes a `0600` single-link receipt named by the exact session UUID.
+Wire the receipt writer as the `SessionStart` `startup` command hook with `--directory` pointing to the same service-user-owned `0700` path configured as `session_start_receipt_dir` in root-owned `reset.json`. The writer deliberately does not read the root config, so that config may remain private mode `0600` (or `0644`). Wire the control guard in parallel with the `UserPromptSubmit` MCP dispatcher: the guard has no side effects and ensures control namespaces never reach the LLM even when MCP is unavailable. The writer rejects spoofed or malformed input and publishes a `0600` single-link receipt named by the exact session UUID; the root helper independently revalidates the directory and receipt.
 
 ## Restart and verify
 

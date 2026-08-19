@@ -11,6 +11,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.
 - Control slash commands (`/sessions`, `/resume N`, `/reset`) no longer create tool-progress bubbles, which resume/reset could never close before restarting Claude.
 - Root reset configuration may use either secure root-owned mode `0600` or `0644`; the unprivileged scheduler and privileged helper now enforce the same exact mode set.
+- The unprivileged SessionStart receipt writer no longer reads root-owned `reset.json`; its fixed user-owned receipt directory is passed by the supported command-hook configuration and independently revalidated by the root helper, so private `0600` root config works end to end.
 
 ### Added
 
