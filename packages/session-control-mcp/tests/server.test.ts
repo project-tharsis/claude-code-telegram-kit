@@ -10,7 +10,7 @@ afterEach(async () => {
 });
 
 describe("control stdio MCP server", () => {
-  test("handshakes and exposes the reset, listing, resume, and binder tools", async () => {
+  test("handshakes and exposes the deterministic router plus legacy fail-closed tools", async () => {
     const transport = new StdioClientTransport({
       command: execPath,
       args: ["run", resolve(import.meta.dir, "../src/server.ts")]
@@ -22,12 +22,15 @@ describe("control stdio MCP server", () => {
     const result = await client.listTools();
 
     expect(result.tools.map(tool => tool.name)).toEqual([
+      "dispatch_command",
       "schedule_session_reset",
       "list_sessions",
       "resume_session",
       "bind_command"
     ]);
-    expect(result.tools[0]!.inputSchema.properties).toHaveProperty("confirmation");
+    const router = result.tools[0]!;
+    expect(router.description).toContain("before the LLM");
+    expect(result.tools[1]!.inputSchema.properties).toHaveProperty("confirmation");
 
     const resume = result.tools.find(tool => tool.name === "resume_session")!;
     expect(Object.keys(resume.inputSchema.properties!).sort()).toEqual(["chat_id", "index"]);

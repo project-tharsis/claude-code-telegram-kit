@@ -7,6 +7,12 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCapabilityStore } from "./command-capability.js";
+import { createConfirmationChallengeStore } from "./control-command.js";
+import { createControlCommandDispatcher } from "./command-dispatch.js";
+import {
+  CONTROL_COMMAND_TOOL,
+  createControlRouterToolHandler
+} from "./control-router-tool.js";
 import { createResetController } from "./control.js";
 import {
   createSessionScheduler,
@@ -55,6 +61,7 @@ try {
 
 const scheduler = createSessionScheduler();
 const capabilities = createCapabilityStore({ loadConfig });
+const challenges = createConfirmationChallengeStore();
 
 const controller = createResetController({
   loadConfig,
@@ -95,15 +102,28 @@ const handleSessionsTool = createSessionsToolHandler({
   controller: sessionsController,
   capabilities
 });
+const dispatchControlCommand = createControlCommandDispatcher({
+  loadConfig,
+  challenges,
+  sendMessage: (config, chatId, text, replyTo) =>
+    sendTelegramMessage(config, chatId, text, fetch, replyTo),
+  react: finalizeTelegramReaction,
+  listSessionsTrusted: request => sessionsController.listSessionsTrusted(request),
+  resumeSessionTrusted: request => sessionsController.resumeSessionTrusted(request),
+  resetSession: request => controller(request)
+});
+const handleControlRouterTool = createControlRouterToolHandler(dispatchControlCommand);
 
 const server = new Server(
   { name: "session-control", version: "0.2.0" },
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [RESET_TOOL, ...SESSIONS_TOOLS]
+  tools: [CONTROL_COMMAND_TOOL, RESET_TOOL, ...SESSIONS_TOOLS]
 }));
 server.setRequestHandler(CallToolRequestSchema, async request => {
+  const routerResult = await handleControlRouterTool(request.params.name, request.params.arguments);
+  if (routerResult !== null) return routerResult;
   const sessionsResult = await handleSessionsTool(request.params.name, request.params.arguments);
   if (sessionsResult !== null) return sessionsResult;
   return handleTool(request.params.name, request.params.arguments);

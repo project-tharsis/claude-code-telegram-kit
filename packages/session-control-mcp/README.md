@@ -2,26 +2,28 @@
 
 An MCP front end for resetting, listing, and resuming sessions for one Telegram-connected Claude Code workspace.
 
-## Tool
+## Hook tool
 
 ```text
-schedule_session_reset(chat_id, message_id, confirmation="RESET SESSION")
-list_sessions(chat_id)
-resume_session(chat_id, index)
+dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmit")
 ```
 
-Reset and resume are destructive and should be listed under Claude Code `permissions.ask`; listing is explicitly allowed. An internal `bind_command` hook tool creates a short-lived current-turn capability only for exact `/sessions` and `/resume N` messages.
+`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/sessions`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
 
-`/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. The model never receives or supplies a session UUID, transcript path, unit, service, helper path, or command. `/resume N` revalidates the selected transcript in both the unprivileged MCP and root helper before any restart.
+An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
+
+Legacy public reset/list/resume tools remain exposed only as fail-closed compatibility surfaces and should all be listed under `permissions.deny`. Exact control commands never rely on model tool selection.
+
+`/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
 
 ## Control-plane order
 
-1. Validate official Channel state and allowlist.
-2. Send a Telegram acceptance message quoting the triggering `/reset` and require a message receipt.
-3. Best-effort replace the triggering message's `👀` with `👍`; reaction failure never blocks reset.
-4. Submit a fixed, no-shell `systemd-run --no-block` command.
-5. Let the root-owned reset helper create and verify the fresh session.
-6. Send completion or failure independently from the helper.
+1. The official Channel remains the only Telegram poller and invokes the UserPromptSubmit dispatcher hook.
+2. Validate the exact direct envelope, live allowlist, and control-command grammar.
+3. `/reset` or `/resume N` sends a quoted 60-second confirmation challenge and performs no mutation.
+4. The exact action-bound confirmation consumes the challenge once; replay, wrong action, wrong code, and expiry fail closed.
+5. Send a quoted acceptance message, then submit a fixed, no-shell `systemd-run --no-block` command.
+6. Let the root-owned helper verify the exact runtime and send completion or failure independently.
 
 The MCP does not accept command, path, unit, service, or helper arguments from the model.
 
@@ -50,9 +52,15 @@ The versioned user-level deploy script intentionally does **not** install privil
 
 ```bash
 git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_reset.py > /tmp/claude-code-session-reset
+git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_receipt.py > /tmp/claude-session-start-receipt
+git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_control_guard.py > /tmp/claude-control-command-guard
 sha256sum /tmp/claude-code-session-reset
+sha256sum /tmp/claude-session-start-receipt /tmp/claude-control-command-guard
 sudo install -o root -g root -m 0755 /tmp/claude-code-session-reset /usr/local/sbin/claude-code-session-reset
+sudo install -o root -g root -m 0755 /tmp/claude-session-start-receipt /usr/local/sbin/claude-session-start-receipt
+sudo install -o root -g root -m 0755 /tmp/claude-control-command-guard /usr/local/sbin/claude-control-command-guard
 sudo sha256sum /usr/local/sbin/claude-code-session-reset
+sudo sha256sum /usr/local/sbin/claude-session-start-receipt /usr/local/sbin/claude-control-command-guard
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 

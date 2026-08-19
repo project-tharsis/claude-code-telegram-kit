@@ -93,18 +93,30 @@ def _validate_uuid(value: str) -> None:
         raise ValueError("invalid session UUID")
 
 
-def _validate_file_info(info: os.stat_result, expected_uid: int, mode: int, label: str) -> None:
+def _validate_file_info(
+    info: os.stat_result,
+    expected_uid: int,
+    mode: int | tuple[int, ...],
+    label: str,
+) -> None:
     if not stat.S_ISREG(info.st_mode):
         raise ValueError(f"{label} must be a regular file")
-    if stat.S_IMODE(info.st_mode) != mode:
-        raise ValueError(f"{label} must have mode {mode:04o}")
+    modes = mode if isinstance(mode, tuple) else (mode,)
+    if stat.S_IMODE(info.st_mode) not in modes:
+        expected = " or ".join(f"{value:04o}" for value in modes)
+        raise ValueError(f"{label} must have mode {expected}")
     if info.st_uid != expected_uid:
         raise ValueError(f"{label} has the wrong owner")
     if info.st_nlink != 1:
         raise ValueError(f"{label} must have one hardlink")
 
 
-def _secure_regular_file(path: Path, expected_uid: int, mode: int, label: str) -> os.stat_result:
+def _secure_regular_file(
+    path: Path,
+    expected_uid: int,
+    mode: int | tuple[int, ...],
+    label: str,
+) -> os.stat_result:
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode):
         raise ValueError(f"{label} must be a regular non-symlink file")
@@ -129,7 +141,7 @@ def _read_fd_text(fd: int, max_bytes: int, label: str) -> str:
 def _read_secure_regular(
     path: Path,
     expected_uid: int,
-    mode: int,
+    mode: int | tuple[int, ...],
     label: str,
     *,
     max_bytes: int = 256 * 1024,
@@ -283,7 +295,7 @@ def load_config(
     expected_uid: int = 0,
     user_lookup: Callable[[str], int] | None = None,
 ) -> ResetConfig:
-    raw = json.loads(_read_secure_regular(path, expected_uid, 0o644, "reset config"))
+    raw = json.loads(_read_secure_regular(path, expected_uid, (0o600, 0o644), "reset config"))
     if not isinstance(raw, dict):
         raise ValueError("reset config must be a JSON object")
     unknown = set(raw) - _ALLOWED_CONFIG_FIELDS

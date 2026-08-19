@@ -66,6 +66,15 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.session_start_receipt_dir, Path("/srv/claude-state/receipts"))
             self.assertEqual(config.required_process_markers, tuple(data["required_process_markers"]))
 
+            os.chmod(path, 0o600)
+            self.assertEqual(
+                reset.load_config(path, expected_uid=os.getuid(), user_lookup=lambda _name: os.getuid()).service_name,
+                "my-claude.service",
+            )
+            os.chmod(path, 0o640)
+            with self.assertRaisesRegex(ValueError, "0600 or 0644"):
+                reset.load_config(path, expected_uid=os.getuid(), user_lookup=lambda _name: os.getuid())
+
     def test_rejects_unknown_config_fields(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "reset.json"
