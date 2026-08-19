@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/sbin/claude-session-start-receipt",
+            "command": "/usr/local/sbin/claude-session-start-receipt --directory /home/USER/.local/state/claude-code-telegram-kit/session-start",
             "timeout": 10
           }
         ]

@@ -22,8 +22,6 @@ receipt = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = receipt
 spec.loader.exec_module(receipt)
 
-real_load_config = receipt.load_config
-
 NEW_SESSION = "11111111-1111-4111-8111-111111111111"
 OLD_SESSION = "22222222-2222-4222-8222-222222222222"
 
@@ -38,20 +36,6 @@ def _hook_input(session_id=NEW_SESSION, **overrides):
     }
     payload.update(overrides)
     return payload
-
-
-def _config_data(root: Path) -> dict:
-    return {
-        "service_name": "claude-telegram.service",
-        "service_user": "tester",
-        "workspace": str(root / "workspace"),
-        "project_sessions": str(root / "sessions"),
-        "session_start_receipt_dir": str(root / "receipts"),
-        "channel_state": str(root / "state"),
-        "lock_path": "/run/lock/claude-telegram-reset.lock",
-        "poller_process_marker": "bun server.ts",
-        "required_process_markers": ["renderer", "control"],
-    }
 
 
 class SessionReceiptWriterTests(unittest.TestCase):
@@ -170,35 +154,21 @@ class SessionReceiptWriterTests(unittest.TestCase):
         self.assertTrue(path.exists())
 
     def test_main_reads_bounded_stdin_and_prints_written_receipt(self):
-        cfg_path = self.root / "reset.json"
-        cfg_path.write_text(json.dumps(_config_data(self.root)))
-        os.chmod(cfg_path, 0o644)
         data = json.dumps(_hook_input()).encode()
         fake_sys = SimpleNamespace(stdin=SimpleNamespace(buffer=io.BytesIO(data)), stderr=io.StringIO())
         with mock.patch.object(receipt, "sys", fake_sys), \
-                mock.patch.object(
-                    receipt,
-                    "load_config",
-                    side_effect=lambda path: real_load_config(path, expected_uid=os.getuid(), user_lookup=lambda n: os.getuid()),
-                ), \
                 redirect_stdout(io.StringIO()) as out:
-            code = receipt.main(["--config", str(cfg_path)])
+            code = receipt.main(["--directory", str(self.receipts)])
         self.assertEqual(code, 0)
         result = json.loads(out.getvalue())
         self.assertEqual(result["status"], "written")
         self.assertTrue(Path(result["receipt"]).exists())
 
     def test_main_rejects_oversized_stdin(self):
-        cfg_path = self.root / "reset.json"
-        cfg_path.write_text(json.dumps(_config_data(self.root)))
-        os.chmod(cfg_path, 0o644)
         data = json.dumps(_hook_input(cwd="/" + ("x" * (receipt.MAX_STDIN_BYTES + 1)))).encode()
         fake_sys = SimpleNamespace(stdin=SimpleNamespace(buffer=io.BytesIO(data)), stderr=io.StringIO())
-        with mock.patch.object(receipt, "sys", fake_sys), \
-                mock.patch.object(receipt, "load_config", side_effect=lambda path: real_load_config(
-                    path, expected_uid=os.getuid(), user_lookup=lambda n: os.getuid(),
-                )):
-            code = receipt.main(["--config", str(cfg_path)])
+        with mock.patch.object(receipt, "sys", fake_sys):
+            code = receipt.main(["--directory", str(self.receipts)])
         self.assertEqual(code, 1)
         self.assertIn("too large", fake_sys.stderr.getvalue())
         self.assertEqual(list(self.receipts.iterdir()), [])
@@ -206,7 +176,7 @@ class SessionReceiptWriterTests(unittest.TestCase):
     def test_main_refuses_to_run_as_root(self):
         fake_sys = SimpleNamespace(stdin=SimpleNamespace(buffer=io.BytesIO(b"{}")), stderr=io.StringIO())
         with mock.patch.object(receipt.os, "geteuid", return_value=0), mock.patch.object(receipt, "sys", fake_sys):
-            code = receipt.main(["--config", "/nonexistent/reset.json"])
+            code = receipt.main(["--directory", str(self.receipts)])
         self.assertEqual(code, 1)
         self.assertIn("must not run as root", fake_sys.stderr.getvalue())
         self.assertEqual(list(self.receipts.iterdir()), [])

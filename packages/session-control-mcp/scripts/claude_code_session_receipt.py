@@ -22,13 +22,11 @@ from pathlib import Path
 from typing import Any
 
 from claude_code_session_reset import (
-    DEFAULT_CONFIG_PATH,
     PROTOCOL_VERSION,
     RECEIPT_VERSION,
     UUID_RE,
     _validate_absolute_no_traversal,
     _validate_file_info,
-    load_config,
 )
 
 MAX_STDIN_BYTES = 64 * 1024
@@ -131,8 +129,9 @@ def write_session_receipt(dir_path: Path, payload: dict[str, Any], *, expected_u
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write a secure Claude Code SessionStart receipt")
     parser.add_argument(
-        "--config",
-        default=os.environ.get("CLAUDE_SESSION_RESET_CONFIG", str(DEFAULT_CONFIG_PATH)),
+        "--directory",
+        required=True,
+        help="Absolute service-user-owned 0700 receipt directory",
     )
     args = parser.parse_args(argv)
     try:
@@ -142,8 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         if len(raw) > MAX_STDIN_BYTES:
             raise ValueError("hook input is too large")
         payload = json.loads(raw.decode("utf-8"))
-        config = load_config(Path(args.config))
-        path = write_session_receipt(config.session_start_receipt_dir, payload, expected_uid=os.geteuid())
+        directory = Path(_validate_absolute_no_traversal(args.directory, "receipt directory"))
+        path = write_session_receipt(directory, payload, expected_uid=os.geteuid())
         print(json.dumps({"status": "written", "receipt": str(path)}, separators=(",", ":")))
         return 0
     except Exception as exc:
