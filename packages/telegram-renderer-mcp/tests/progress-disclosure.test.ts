@@ -120,6 +120,25 @@ describe("turn disclosure lifecycle", () => {
     expect(h.sends).toEqual([]);
   });
 
+  test("control slash commands never create tool-progress bubbles", async () => {
+    for (const body of ["/sessions", "/resume 1", "/resume@ExampleAssistant 10", "/reset", "/reset@ExampleAssistant"]) {
+      const h = harness();
+      bind(h, `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${body}`);
+      tool(h, "t1", "ToolSearch");
+      await h.tick();
+      await finish(h);
+      expect(h.sends).toEqual([]);
+    }
+  });
+
+  test("conversational session requests still disclose real tool work", async () => {
+    const h = harness();
+    bind(h, '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">please list sessions');
+    tool(h, "t1", "Bash");
+    await h.tick();
+    expect(h.sends.length).toBe(1);
+  });
+
   test("an unauthorized chat binds nothing", async () => {
     const h = harness({ config: { token: "1:tok", allowedChatIds: new Set(["777"]) } });
     bind(h);
