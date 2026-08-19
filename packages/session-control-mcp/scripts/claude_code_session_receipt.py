@@ -26,7 +26,9 @@ PROTOCOL_VERSION = 3
 RECEIPT_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 MAX_STDIN_BYTES = 64 * 1024
-_ALLOWED_HOOK_FIELDS = {"hook_event_name", "source", "session_id", "cwd", "transcript_path"}
+_REQUIRED_HOOK_FIELDS = {"hook_event_name", "source", "session_id", "cwd", "transcript_path"}
+_OPTIONAL_HOOK_FIELDS = {"model", "agent_type", "session_title"}
+_ALLOWED_HOOK_FIELDS = _REQUIRED_HOOK_FIELDS | _OPTIONAL_HOOK_FIELDS
 
 
 def _validate_absolute_no_traversal(value: object, label: str) -> str:
@@ -58,6 +60,13 @@ def _validate_input(payload: Any) -> dict[str, Any]:
     unknown = set(payload) - _ALLOWED_HOOK_FIELDS
     if unknown:
         raise ValueError("hook input has unknown fields: " + ", ".join(sorted(unknown)))
+    missing = _REQUIRED_HOOK_FIELDS - set(payload)
+    if missing:
+        raise ValueError("hook input is missing fields: " + ", ".join(sorted(missing)))
+    for field in _OPTIONAL_HOOK_FIELDS:
+        value = payload.get(field)
+        if value is not None and (not isinstance(value, str) or len(value) > 512):
+            raise ValueError(f"hook input field {field} must be a bounded string")
     if payload.get("hook_event_name") != "SessionStart":
         raise ValueError("hook event must be SessionStart")
     if payload.get("source") != "startup":
