@@ -64,9 +64,15 @@ git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_con
 sha256sum /tmp/claude-control-command-guard
 sudo install -o root -g root -m 0755 /tmp/claude-control-command-guard /usr/local/sbin/claude-control-command-guard
 sudo sha256sum /usr/local/sbin/claude-control-command-guard
+
+git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_usage_snapshot.py > /tmp/claude-usage-snapshot
+sha256sum /tmp/claude-usage-snapshot
+sudo install -o root -g root -m 0755 /tmp/claude-usage-snapshot /usr/local/sbin/claude-usage-snapshot
+sudo sha256sum /usr/local/sbin/claude-usage-snapshot
+sudo install -d -o USER -g USER -m 0700 /home/USER/.local/state/claude-code-telegram-kit
 ```
 
-Wire the receipt writer as the `SessionStart` `startup` command hook with `--directory` pointing to the same service-user-owned `0700` path configured as `session_start_receipt_dir` in root-owned `reset.json`. The writer deliberately does not read the root config, so that config may remain private mode `0600` (or `0644`). Wire the control guard in parallel with the `UserPromptSubmit` MCP dispatcher: the guard has no side effects and ensures control namespaces never reach the LLM even when MCP is unavailable. The writer rejects spoofed or malformed input and publishes a `0600` single-link receipt named by the exact session UUID; the root helper independently revalidates the directory and receipt.
+Replace `USER` in the directory command and `statusLine` path with the service account. Wire the receipt writer as the `SessionStart` `startup` command hook with `--directory` pointing to the same service-user-owned `0700` path configured as `session_start_receipt_dir` in root-owned `reset.json`. The writer deliberately does not read the root config, so that config may remain private mode `0600` (or `0644`). Wire the control guard in parallel with the `UserPromptSubmit` MCP dispatcher: the guard has no side effects and ensures control namespaces never reach the LLM even when MCP is unavailable. The writer rejects spoofed or malformed input and publishes a `0600` single-link receipt named by the exact session UUID; the root helper independently revalidates the directory and receipt.
 
 ## Restart and verify
 
@@ -82,12 +88,13 @@ Verify from the real destination:
 2. a GFM table returns `mode: rich`;
 3. a direct message receives `👀`, then a confirmed reply replaces it with `👍`;
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
-5. a multi-tool turn creates one silent progress bubble and never exposes raw arguments;
-6. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
-7. `/resume N` requires approval, reaches the selected session, restores the unit to `--continue`, and retains rollback;
-8. `/reset` requires approval and sends accepted and completion messages;
-9. the reset session transcript contains exact `READY`;
-10. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
+5. a multi-tool turn creates one silent verbose progress bubble with redacted credentials and success/failure state;
+6. typing remains visible across a long turn and stops before the final reply;
+7. `/usage` returns the latest private statusLine `rate_limits` snapshot without an extra Claude process or model turn;
+8. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
+9. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
+10. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
+11. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
 
 ## Rollback
 

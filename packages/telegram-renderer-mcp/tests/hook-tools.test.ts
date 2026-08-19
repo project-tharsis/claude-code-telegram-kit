@@ -17,6 +17,9 @@ function recorder() {
     recordTool: (input: unknown) => {
       calls.push({ kind: "tool", input });
     },
+    recordSuccess: (input: unknown) => {
+      calls.push({ kind: "success", input });
+    },
     recordFailure: (input: unknown) => {
       calls.push({ kind: "failure", input });
     },
@@ -29,7 +32,9 @@ function recorder() {
 
 describe("internal hook tool declarations", () => {
   test("are distinguishable from the public reply tool", () => {
-    expect(HOOK_TOOL_NAMES).toEqual(["bind_turn", "record_tool", "record_tool_failure", "finish_turn"]);
+    expect(HOOK_TOOL_NAMES).toEqual([
+      "bind_turn", "record_tool", "record_tool_success", "record_tool_failure", "finish_turn"
+    ]);
     expect(HOOK_TOOL_NAMES).not.toContain(SEND_REPLY_TOOL.name);
     for (const tool of INTERNAL_HOOK_TOOLS) {
       expect(tool.description).toContain("Internal Claude Code hook tool");
@@ -79,6 +84,12 @@ describe("internal hook tool handler", () => {
       tool_name: "Read",
       hook_event_name: "PreToolUse"
     });
+    await handle("record_tool_success", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      tool_use_id: "t1",
+      hook_event_name: "PostToolUse"
+    });
     await handle("record_tool_failure", {
       session_id: SESSION,
       prompt_id: "p1",
@@ -90,7 +101,7 @@ describe("internal hook tool handler", () => {
       prompt_id: "p1",
       hook_event_name: "Stop"
     });
-    expect(calls.map(call => call.kind)).toEqual(["bind", "tool", "failure", "finish"]);
+    expect(calls.map(call => call.kind)).toEqual(["bind", "tool", "success", "failure", "finish"]);
   });
 
   test("returns a non-blocking empty receipt so no hook output enters the transcript", async () => {
@@ -108,6 +119,8 @@ describe("internal hook tool handler", () => {
     const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
     const realDisclosure = createTurnDisclosure({
       loadConfig: () => config,
+      mode: "safe",
+      startTyping: () => () => undefined,
       send: async () => ({ kind: "sent", messageId: 1 }),
       edit: async () => ({ kind: "edited" }),
       schedule: () => () => undefined
@@ -129,6 +142,8 @@ describe("internal hook tool handler", () => {
     const scheduled: { run: (() => Promise<void>) | null } = { run: null };
     const realDisclosure = createTurnDisclosure({
       loadConfig: () => config,
+      mode: "safe",
+      startTyping: () => () => undefined,
       send: async () => {
         sends.push("sent");
         return { kind: "sent", messageId: 1 };
@@ -219,6 +234,9 @@ describe("internal hook tool handler", () => {
         throw new Error("boom");
       },
       recordTool: () => {
+        throw new Error("boom");
+      },
+      recordSuccess: () => {
         throw new Error("boom");
       },
       recordFailure: () => {

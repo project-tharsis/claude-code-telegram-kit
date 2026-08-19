@@ -58,7 +58,9 @@ async function call(
   method: string,
   body: Record<string, unknown>,
   config: RuntimeConfig,
-  fetchImpl: ProgressFetchLike
+  fetchImpl: ProgressFetchLike,
+  timeoutMs: number = TELEGRAM_SEND_TIMEOUT_MS,
+  externalSignal?: AbortSignal
 ): Promise<{ status: number; envelope: TelegramEnvelope } | null> {
   let response: Response;
   try {
@@ -67,7 +69,9 @@ async function call(
       redirect: "error",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
+      signal: externalSignal === undefined
+        ? AbortSignal.timeout(timeoutMs)
+        : AbortSignal.any([externalSignal, AbortSignal.timeout(timeoutMs)])
     });
   } catch {
     return null;
@@ -77,6 +81,27 @@ async function call(
   } catch {
     return null;
   }
+}
+
+export type TypingOutcome = "sent" | "throttled" | "transient" | "rejected";
+
+/** One bounded Telegram typing heartbeat tick. The lifecycle manager owns retries/cooldown. */
+export async function sendTypingAction(
+  config: RuntimeConfig,
+  chatId: string,
+  fetchImpl: ProgressFetchLike = fetch,
+  signal?: AbortSignal
+): Promise<TypingOutcome> {
+  assertAuthorizedChat(config, chatId);
+  const attempt = await call("sendChatAction", {
+    chat_id: chatId,
+    action: "typing"
+  }, config, fetchImpl, 1_500, signal);
+  if (attempt === null) return "transient";
+  if (attempt.envelope.ok === true && attempt.envelope.result === true) return "sent";
+  if (attempt.status === 429) return "throttled";
+  if (attempt.status >= 400 && attempt.status < 500) return "rejected";
+  return "transient";
 }
 
 export async function sendProgressBubble(

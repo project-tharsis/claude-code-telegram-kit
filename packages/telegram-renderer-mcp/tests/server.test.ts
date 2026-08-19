@@ -25,6 +25,7 @@ describe("stdio MCP server", () => {
       "send_reply",
       "bind_turn",
       "record_tool",
+      "record_tool_success",
       "record_tool_failure",
       "finish_turn"
     ]);

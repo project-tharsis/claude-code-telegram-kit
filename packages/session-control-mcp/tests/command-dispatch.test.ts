@@ -22,10 +22,11 @@ function input(body: string, messageId = "9", sessionId = SESSION) {
   };
 }
 
-function harness(options: { now?: () => number; sendFails?: boolean; config?: RuntimeConfig } = {}) {
+function harness(options: { now?: () => number; sendFails?: boolean; usageFails?: boolean; config?: RuntimeConfig } = {}) {
   const sent: Array<{ chatId: string; text: string; replyTo?: string }> = [];
   const reactions: Array<[string, string, string]> = [];
   const lists: unknown[] = [];
+  const usageCalls: string[] = [];
   const resumes: unknown[] = [];
   const resets: unknown[] = [];
   const challenges = createConfirmationChallengeStore({
@@ -48,6 +49,11 @@ function harness(options: { now?: () => number; sendFails?: boolean; config?: Ru
       lists.push(request);
       return { status: "listed", count: 1, ackMessageId: 101 };
     },
+    getUsage: async () => {
+      usageCalls.push("usage");
+      if (options.usageFails) throw new Error("usage unavailable");
+      return "Current session: 1% used\nCurrent week (all models): 11% used";
+    },
     resumeSessionTrusted: async request => {
       resumes.push(request);
       return { status: "scheduled", ackMessageId: 102, unit: "resume-unit" };
@@ -57,7 +63,7 @@ function harness(options: { now?: () => number; sendFails?: boolean; config?: Ru
       return { status: "scheduled", ackMessageId: 103, unit: "reset-unit" };
     }
   });
-  return { dispatch, sent, reactions, lists, resumes, resets };
+  return { dispatch, sent, reactions, lists, usageCalls, resumes, resets };
 }
 
 describe("deterministic UserPromptSubmit control dispatcher", () => {
@@ -72,6 +78,18 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     const h = harness();
     expect(await h.dispatch(input("/sessions"))).toEqual({ handled: true });
     expect(h.lists).toEqual([{ chatId: "123", messageId: "9", currentSessionId: SESSION }]);
+  });
+
+  test("handles read-only /usage directly without a confirmation or LLM", async () => {
+    const h = harness();
+    expect(await h.dispatch(input("/usage"))).toEqual({ handled: true });
+    expect(h.usageCalls).toEqual(["usage"]);
+    expect(h.sent).toEqual([{
+      chatId: "123",
+      replyTo: "9",
+      text: "Current session: 1% used\nCurrent week (all models): 11% used"
+    }]);
+    expect(h.reactions).toEqual([["123", "9", "success"]]);
   });
 
   test("issues and consumes a single-use reset challenge before scheduling", async () => {

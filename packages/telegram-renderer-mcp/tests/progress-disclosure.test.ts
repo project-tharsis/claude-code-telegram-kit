@@ -19,6 +19,8 @@ interface Harness {
   disclosure: ReturnType<typeof createTurnDisclosure>;
   sends: Array<{ chatId: string; replyTo: string; text: string }>;
   edits: Array<{ messageId: number; text: string }>;
+  typingStarts: string[];
+  typingStops: { count: number };
   delays: number[];
   tick: () => Promise<void>;
   pending: () => boolean;
@@ -31,11 +33,18 @@ function harness(options: {
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
+  const typingStarts: string[] = [];
+  const typingStops = { count: 0 };
   const delays: number[] = [];
   let queued: (() => Promise<void>) | null = null;
 
   const disclosure = createTurnDisclosure({
     loadConfig: () => options.config ?? config,
+    mode: "safe",
+    startTyping: chatId => {
+      typingStarts.push(chatId);
+      return () => { typingStops.count += 1; };
+    },
     send: async (_config, chatId, replyTo, text) => {
       sends.push({ chatId, replyTo, text });
       return options.send?.(text, sends.length - 1) ?? { kind: "sent", messageId: 100 + sends.length };
@@ -57,6 +66,8 @@ function harness(options: {
     disclosure,
     sends,
     edits,
+    typingStarts,
+    typingStops,
     delays,
     pending: () => queued !== null,
     tick: async () => {
@@ -96,6 +107,16 @@ async function finish(h: Harness, event: "Stop" | "StopFailure" = "Stop"): Promi
 }
 
 describe("turn disclosure lifecycle", () => {
+  test("starts sustained typing on bind and stops it on final/send cleanup", async () => {
+    const h = harness();
+    bind(h);
+    expect(h.typingStarts).toEqual(["123"]);
+    await h.disclosure.finalizeChat("123");
+    expect(h.typingStops.count).toBe(1);
+    await finish(h);
+    expect(h.typingStops.count).toBe(1);
+  });
+
   test("a no-tool turn never creates a bubble", async () => {
     const h = harness();
     bind(h);
@@ -123,6 +144,7 @@ describe("turn disclosure lifecycle", () => {
   test("control slash commands never create tool-progress bubbles", async () => {
     for (const body of [
       "/sessions",
+      "/usage",
       "/resume 1",
       "/resume@ExampleAssistant 10",
       "/resume confirm ABC234",
@@ -164,7 +186,7 @@ describe("turn disclosure lifecycle", () => {
     expect(h.sends).toEqual([]);
     expect(h.delays).toEqual([PROGRESS_DEBOUNCE_MS]);
     await h.tick();
-    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• Reading files" }]);
+    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• … Read file" }]);
   });
 
   test("coalesces a burst into one debounced flush and one bubble", async () => {
@@ -176,7 +198,7 @@ describe("turn disclosure lifecycle", () => {
     expect(h.delays).toEqual([PROGRESS_DEBOUNCE_MS]);
     await h.tick();
     expect(h.sends.length).toBe(1);
-    expect(h.sends[0]!.text).toBe("Working…\n• Reading files ×2\n• Running commands");
+    expect(h.sends[0]!.text).toBe("Working…\n• … Read file\n• … Search code\n• … Run command");
   });
 
   test("serializes Stop behind an in-flight debounced send without a duplicate bubble", async () => {
@@ -200,7 +222,7 @@ describe("turn disclosure lifecycle", () => {
     await Promise.all([firstFlush, finalFlush]);
 
     expect(h.sends.length).toBe(1);
-    expect(h.edits).toEqual([{ messageId: 101, text: "Done\n• Reading files" }]);
+    expect(h.edits).toEqual([{ messageId: 101, text: "Done\n• ✓ Read file" }]);
   });
 
   test("later steps edit the same bubble instead of sending another", async () => {
@@ -211,7 +233,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t2", "Bash");
     await h.tick();
     expect(h.sends.length).toBe(1);
-    expect(h.edits).toEqual([{ messageId: 101, text: "Working…\n• Reading files\n• Running commands" }]);
+    expect(h.edits).toEqual([{ messageId: 101, text: "Working…\n• … Read file\n• … Run command" }]);
   });
 
   test("filters internal sidecar tools and collapses subagent internals", async () => {
@@ -223,7 +245,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t3", "Bash", "agent-1");
     tool(h, "t4", "mcp__session-control__list_sessions", "agent-1");
     await h.tick();
-    expect(h.sends[0]!.text).toBe("Working…\n• Delegating work ×3");
+    expect(h.sends[0]!.text).toBe("Working…\n• … Delegate work ×3");
   });
 
   test("dedupes a repeated tool_use_id across flushes", async () => {
@@ -249,7 +271,7 @@ describe("turn disclosure lifecycle", () => {
       hook_event_name: "PostToolUseFailure"
     });
     await finish(h);
-    expect(h.edits.at(-1)!.text).toBe("Done\n• Running commands (failed)");
+    expect(h.edits.at(-1)!.text).toBe("Done\n• ✕ Run command");
   });
 
   test("finish drains without waiting for the debounce timer", async () => {
@@ -258,7 +280,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t1", "Read");
     await finish(h);
     expect(h.sends.length).toBe(1);
-    expect(h.sends[0]!.text).toBe("Done\n• Reading files");
+    expect(h.sends[0]!.text).toBe("Done\n• ✓ Read file");
     expect(h.pending()).toBe(false);
   });
 
@@ -267,7 +289,7 @@ describe("turn disclosure lifecycle", () => {
     bind(h);
     tool(h, "t1", "Read");
     await finish(h, "StopFailure");
-    expect(h.sends[0]!.text).toBe("Failed\n• Reading files");
+    expect(h.sends[0]!.text).toBe("Failed\n• ✕ Read file");
   });
 
   test("late events after close change nothing", async () => {
@@ -300,7 +322,7 @@ describe("turn disclosure lifecycle", () => {
     await h.tick();
     expect(h.edits).toEqual([]);
     expect(h.sends.length).toBe(2);
-    expect(h.sends[1]!.text).toBe("Working…\n• Running commands");
+    expect(h.sends[1]!.text).toBe("Working…\n• … Run command");
   });
 
   test("a second message in the same session still binds progress", async () => {
@@ -315,7 +337,7 @@ describe("turn disclosure lifecycle", () => {
       hook_event_name: "PreToolUse"
     });
     await h.tick();
-    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• Reading files" }]);
+    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• … Read file" }]);
   });
 });
 
@@ -363,7 +385,7 @@ describe("turn disclosure failure handling", () => {
     expect(h.sends.length).toBe(1);
     expect(h.edits.length).toBe(2);
     expect(h.edits[1]!.messageId).toBe(101);
-    expect(h.edits[1]!.text).toBe("Done\n• Reading files\n• Running commands");
+    expect(h.edits[1]!.text).toBe("Done\n• ✓ Read file\n• ✓ Run command");
   });
 
   test("a flood-controlled edit abandons disclosure for the rest of the turn", async () => {
@@ -421,6 +443,8 @@ describe("turn disclosure failure handling", () => {
     const h = harness();
     const throwing = createTurnDisclosure({
       loadConfig: () => config,
+      mode: "safe",
+      startTyping: () => () => undefined,
       send: async () => {
         throw new Error("boom");
       },
@@ -470,15 +494,17 @@ describe("turn disclosure failure handling", () => {
   });
 
   test("a config that cannot be loaded degrades to silence", async () => {
-    const broken = createTurnDisclosure({
+    const disclosure = createTurnDisclosure({
       loadConfig: () => {
-        throw new Error("no channel state");
+        throw new Error("bad state");
       },
+      mode: "safe",
+      startTyping: () => () => undefined,
       send: async () => ({ kind: "sent", messageId: 1 }),
       edit: async () => ({ kind: "edited" }),
       schedule: () => () => undefined
     });
-    expect(() => broken.bindTurn({
+    expect(() => disclosure.bindTurn({
       session_id: SESSION,
       prompt_id: PROMPT,
       prompt: ENVELOPE,

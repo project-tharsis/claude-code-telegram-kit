@@ -21,8 +21,9 @@ export const RESUME_CHALLENGE_PREFIX = "Resume session {index} requested. Confir
 export const CONTROL_CONFIRMATION_INVALID_TEXT =
   "Confirmation is invalid or expired. Send the original command again.";
 export const CONTROL_COMMAND_USAGE_TEXT =
-  "Use /sessions, /reset, /resume N, /reset confirm CODE, or /resume confirm CODE.";
+  "Use /usage, /sessions, /reset, /resume N, /reset confirm CODE, or /resume confirm CODE.";
 export const PRIVATE_CONTROL_ONLY_TEXT = "Reset and resume are available only in a private Telegram chat.";
+export const SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT = "Claude subscription usage is temporarily unavailable.";
 export const CONTROL_OPERATION_FAILED_TEXT =
   "Session control could not complete that command. Try again.";
 
@@ -42,6 +43,7 @@ export interface ControlCommandDispatcherDeps {
     state: "success" | "failure"
   ) => Promise<boolean>;
   listSessionsTrusted: (request: TrustedListSessionsRequest) => Promise<ListSessionsReceipt>;
+  getUsage: () => Promise<string>;
   resumeSessionTrusted: (request: TrustedResumeSessionRequest) => Promise<ResumeSessionReceipt>;
   resetSession: (request: ResetRequest) => Promise<ResetReceipt>;
 }
@@ -112,8 +114,10 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
       return { handled: true };
     }
 
-    const destructiveNamespace = command.kind !== "sessions"
-      && !(command.kind === "malformed" && command.namespace === "sessions");
+    const readOnlyNamespace = command.kind === "sessions"
+      || command.kind === "usage"
+      || (command.kind === "malformed" && (command.namespace === "sessions" || command.namespace === "usage"));
+    const destructiveNamespace = !readOnlyNamespace;
     if (destructiveNamespace && envelope.chatId.startsWith("-")) {
       await bestEffortFailure(
         deps,
@@ -139,6 +143,23 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
         });
       } catch {
         await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+      return { handled: true };
+    }
+
+    if (command.kind === "usage") {
+      try {
+        const text = await deps.getUsage();
+        await deps.sendMessage(config, envelope.chatId, text, envelope.messageId);
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      } catch {
+        await bestEffortFailure(
+          deps,
+          config,
+          envelope.chatId,
+          envelope.messageId,
+          SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT
+        );
       }
       return { handled: true };
     }

@@ -16,6 +16,7 @@ interface HookEntry {
 }
 
 interface Settings {
+  statusLine?: { type: string; command: string };
   permissions: { allow: string[]; ask: string[]; deny: string[] };
   hooks: Record<string, HookEntry[]>;
 }
@@ -36,6 +37,11 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
+  test("wires a private statusLine rate-limit snapshot writer", () => {
+    expect(settings.statusLine?.type).toBe("command");
+    expect(settings.statusLine?.command).toMatch(/^\/usr\/local\/sbin\/claude-usage-snapshot --output \/home\/USER\//);
+  });
+
   test("denies every session-control tool to the model while allowing only reply delivery", () => {
     for (const tool of HOOK_TOOL_NAMES) {
       expect(settings.permissions.deny).toContain(`mcp__telegram-renderer__${tool}`);
@@ -60,6 +66,7 @@ describe("supported Claude Code hook configuration", () => {
       "session-control:dispatch_command"
     ]);
     expect(toolsFor("PreToolUse").map(hook => hook.tool)).toEqual(["record_tool"]);
+    expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual(["record_tool_success"]);
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("Stop").map(hook => hook.tool)).toEqual(["finish_turn"]);
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
@@ -86,11 +93,12 @@ describe("supported Claude Code hook configuration", () => {
   test("excludes internal sidecar tools from tool-event matchers", () => {
     const internal = "^(?!mcp__telegram-renderer__|mcp__session-control__).*";
     expect(settings.hooks.PreToolUse![0]!.matcher).toBe(internal);
+    expect(settings.hooks.PostToolUse![0]!.matcher).toBe(internal);
     expect(settings.hooks.PostToolUseFailure![0]!.matcher).toBe(internal);
     expect(settings.hooks.Stop![0]!.matcher).toBeUndefined();
   });
 
-  test("passes only bounded identifiers to tool disclosure and preserves optional subagent identity", () => {
+  test("passes only selected bounded preview fields, never raw tool_input or output", () => {
     const input = toolsFor("PreToolUse")[0]!.input;
     expect(input).toEqual({
       session_id: "${session_id}",
@@ -98,6 +106,13 @@ describe("supported Claude Code hook configuration", () => {
       tool_use_id: "${tool_use_id}",
       tool_name: "${tool_name}",
       agent_id: "${agent_id}",
+      command: "${tool_input.command}",
+      file_path: "${tool_input.file_path}",
+      path: "${tool_input.path}",
+      pattern: "${tool_input.pattern}",
+      query: "${tool_input.query}",
+      url: "${tool_input.url}",
+      description: "${tool_input.description}",
       hook_event_name: "PreToolUse"
     });
     expect(input).not.toHaveProperty("tool_input");

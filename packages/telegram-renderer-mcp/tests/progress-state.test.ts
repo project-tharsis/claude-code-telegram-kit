@@ -16,7 +16,7 @@ describe("turn progress state", () => {
     const turn = newTurn();
     expect(turn.recordTool("t1", "Reading files")).toBe(true);
     expect(turn.hasSteps).toBe(true);
-    expect(turn.render()).toBe("Working…\n• Reading files");
+    expect(turn.render()).toBe("Working…\n• … Reading files");
   });
 
   test("dedupes a repeated tool_use_id", () => {
@@ -24,7 +24,7 @@ describe("turn progress state", () => {
     expect(turn.recordTool("t1", "Reading files")).toBe(true);
     expect(turn.recordTool("t1", "Reading files")).toBe(false);
     expect(turn.recordTool("t1", "Running commands")).toBe(false);
-    expect(turn.render()).toBe("Working…\n• Reading files");
+    expect(turn.render()).toBe("Working…\n• … Reading files");
   });
 
   test("merges consecutive identical labels with a count and preserves arrival order", () => {
@@ -34,7 +34,7 @@ describe("turn progress state", () => {
     turn.recordTool("c", "Running commands");
     turn.recordTool("d", "Reading files");
     expect(turn.render()).toBe(
-      "Working…\n• Reading files ×2\n• Running commands\n• Reading files"
+      "Working…\n• … Reading files ×2\n• … Running commands\n• … Reading files"
     );
   });
 
@@ -62,6 +62,14 @@ describe("turn progress state", () => {
     expect(after).toEqual(before);
   });
 
+  test("marks a completed step by tool_use_id", () => {
+    const turn = newTurn();
+    turn.recordTool("a", "Read file");
+    expect(turn.recordSuccess("a")).toBe(true);
+    expect(turn.recordSuccess("a")).toBe(false);
+    expect(turn.render()).toBe("Working…\n• ✓ Read file");
+  });
+
   test("marks a failed step by tool_use_id only", () => {
     const turn = newTurn();
     turn.recordTool("a", "Reading files");
@@ -69,7 +77,7 @@ describe("turn progress state", () => {
     expect(turn.recordFailure("b")).toBe(true);
     expect(turn.recordFailure("b")).toBe(false);
     expect(turn.recordFailure("unknown")).toBe(false);
-    expect(turn.render()).toBe("Working…\n• Reading files\n• Running commands (failed)");
+    expect(turn.render()).toBe("Working…\n• … Reading files\n• ✕ Running commands");
   });
 
   test("closing switches the header and blocks further steps", () => {
@@ -77,17 +85,17 @@ describe("turn progress state", () => {
     turn.recordTool("a", "Reading files");
     turn.close("Stop");
     expect(turn.closed).toBe(true);
-    expect(turn.render()).toBe("Done\n• Reading files");
+    expect(turn.render()).toBe("Done\n• ✓ Reading files");
     expect(turn.recordTool("b", "Running commands")).toBe(false);
     expect(turn.recordFailure("a")).toBe(false);
-    expect(turn.render()).toBe("Done\n• Reading files");
+    expect(turn.render()).toBe("Done\n• ✓ Reading files");
   });
 
   test("a failed stop uses its own fixed header", () => {
     const turn = newTurn();
     turn.recordTool("a", "Reading files");
     turn.close("StopFailure");
-    expect(turn.render()).toBe("Failed\n• Reading files");
+    expect(turn.render()).toBe("Failed\n• ✕ Reading files");
   });
 
   test("closing twice keeps the first outcome", () => {
@@ -95,7 +103,7 @@ describe("turn progress state", () => {
     turn.recordTool("a", "Reading files");
     turn.close("Stop");
     turn.close("StopFailure");
-    expect(turn.render()).toBe("Done\n• Reading files");
+    expect(turn.render()).toBe("Done\n• ✓ Reading files");
   });
 
   test("the generation advances on every accepted change and only then", () => {

@@ -28,6 +28,7 @@ import {
 import { createSessionsController } from "./sessions-control.js";
 import { createSessionsToolHandler, SESSIONS_TOOLS } from "./sessions-tool.js";
 import { createToolHandler, RESET_TOOL } from "./tool.js";
+import { readSubscriptionUsage } from "./subscription-usage.js";
 import {
   finalizeTelegramReaction,
   loadRuntimeConfig
@@ -109,6 +110,7 @@ const dispatchControlCommand = createControlCommandDispatcher({
     sendTelegramMessage(config, chatId, text, fetch, replyTo),
   react: finalizeTelegramReaction,
   listSessionsTrusted: request => sessionsController.listSessionsTrusted(request),
+  getUsage: () => readSubscriptionUsage(),
   resumeSessionTrusted: request => sessionsController.resumeSessionTrusted(request),
   resetSession: request => controller(request)
 });

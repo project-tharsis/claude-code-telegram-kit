@@ -12,9 +12,11 @@ The renderer quotes `message_id` by default. Set `reply_to` only to intentionall
 
 ## Hook-driven tool disclosure
 
-`examples/telegram-settings.json` wires `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `Stop`, and `StopFailure` to four internal MCP tools. The internal tools are denied to the model but remain callable by Claude Code's supported `mcp_tool` hook handler.
+`examples/telegram-settings.json` wires `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, and `StopFailure` to five internal MCP tools. The internal tools are denied to the model but remain callable by Claude Code's supported `mcp_tool` hook handler.
 
-One direct Telegram turn owns at most one silent progress bubble. Tool names map to a fixed safe label set; raw tool input, output, commands, paths, URLs, and provider errors are never accepted by the disclosure tools. Updates debounce, deduplicate by `tool_use_id`, stop after a Telegram flood response, and never block the agent or final reply.
+One direct Telegram turn owns at most one silent progress bubble. `TELEGRAM_TOOL_DISCLOSURE_MODE` selects `safe`, `all`, or `verbose`; verbose shows bounded commands, paths, queries, URLs, integration names, and delegation descriptions while hard-redacting credential values. Tool outputs never enter disclosure. PostToolUse events render running (`…`), completed (`✓`), and failed (`✕`) state. Updates debounce, deduplicate by `tool_use_id`, stop after a Telegram flood response, and never block the agent or final reply.
+
+The renderer also owns sustained Telegram typing after the official Channel's initial one-shot action: refresh every two seconds, 1.5-second request timeout, 10-second 429 cooldown, 10-minute dead-man cutoff, and cancellation before final delivery, Stop/StopFailure, or a superseding turn.
 
 ## Routing
 

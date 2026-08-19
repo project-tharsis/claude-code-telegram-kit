@@ -9,8 +9,8 @@
   "scripts": {
     "test": "bun test packages",
     "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/telegram-renderer-mcp/tsconfig.json --noEmit && tsc -p packages/session-control-mcp/tsconfig.json --noEmit",
-    "python:test": "python3 -m unittest packages/session-control-mcp/tests/test_reset_helper.py packages/session-control-mcp/tests/test_session_receipt_writer.py packages/session-control-mcp/tests/test_control_guard.py scripts/tests/test_deploy_local.py",
-    "python:compile": "python3 -m py_compile packages/session-control-mcp/scripts/claude_code_session_reset.py packages/session-control-mcp/scripts/claude_code_session_receipt.py packages/session-control-mcp/scripts/claude_code_control_guard.py scripts/deploy_local.py scripts/check_public_tree.py scripts/check_versions.py",
+    "python:test": "python3 -m unittest packages/session-control-mcp/tests/test_reset_helper.py packages/session-control-mcp/tests/test_session_receipt_writer.py packages/session-control-mcp/tests/test_control_guard.py packages/session-control-mcp/tests/test_usage_snapshot.py scripts/tests/test_deploy_local.py",
+    "python:compile": "python3 -m py_compile packages/session-control-mcp/scripts/claude_code_session_reset.py packages/session-control-mcp/scripts/claude_code_session_receipt.py packages/session-control-mcp/scripts/claude_code_control_guard.py packages/session-control-mcp/scripts/claude_code_usage_snapshot.py scripts/deploy_local.py scripts/check_public_tree.py scripts/check_versions.py",
     "privacy:scan": "python3 scripts/check_public_tree.py",
     "version:check": "python3 scripts/check_versions.py",
     "check": "bun run test && bun run typecheck && bun run python:test && bun run python:compile && bun run privacy:scan && bun run version:check"

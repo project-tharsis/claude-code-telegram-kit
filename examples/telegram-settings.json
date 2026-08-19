@@ -1,4 +1,8 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "/usr/local/sbin/claude-usage-snapshot --output /home/USER/.local/state/claude-code-telegram-kit/subscription-usage.json"
+  },
   "permissions": {
     "allow": [
       "mcp__telegram-renderer__send_reply"
@@ -7,6 +11,7 @@
     "deny": [
       "mcp__telegram-renderer__bind_turn",
       "mcp__telegram-renderer__record_tool",
+      "mcp__telegram-renderer__record_tool_success",
       "mcp__telegram-renderer__record_tool_failure",
       "mcp__telegram-renderer__finish_turn",
       "mcp__session-control__dispatch_command",
@@ -77,7 +82,32 @@
               "tool_use_id": "${tool_use_id}",
               "tool_name": "${tool_name}",
               "agent_id": "${agent_id}",
+              "command": "${tool_input.command}",
+              "file_path": "${tool_input.file_path}",
+              "path": "${tool_input.path}",
+              "pattern": "${tool_input.pattern}",
+              "query": "${tool_input.query}",
+              "url": "${tool_input.url}",
+              "description": "${tool_input.description}",
               "hook_event_name": "PreToolUse"
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(?!mcp__telegram-renderer__|mcp__session-control__).*",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_tool_success",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "tool_use_id": "${tool_use_id}",
+              "hook_event_name": "PostToolUse"
             }
           }
         ]
