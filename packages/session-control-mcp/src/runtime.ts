@@ -94,10 +94,31 @@ function assertAbsolutePath(value: string, label: string): void {
   if (!value.startsWith("/") || value.includes("\0")) throw new Error(`${label} must be an absolute path`);
 }
 
-function verifyRootOwnedFile(path: string, mode: number, label: string): void {
+interface RootOwnedFileMetadata {
+  isFile: () => boolean;
+  isSymbolicLink: () => boolean;
+  uid: number;
+  mode: number;
+  nlink: number;
+}
+
+export function isSecureRootOwnedFileMetadata(
+  info: RootOwnedFileMetadata,
+  allowedModes: readonly number[]
+): boolean {
+  return (
+    info.isFile()
+    && !info.isSymbolicLink()
+    && info.uid === 0
+    && info.nlink === 1
+    && allowedModes.includes(info.mode & 0o777)
+  );
+}
+
+function verifyRootOwnedFile(path: string, modes: readonly number[], label: string): void {
   const info = lstatSync(path);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${label} is not a regular file`);
-  if (info.uid !== 0 || (info.mode & 0o777) !== mode || info.nlink !== 1) {
+  if (!isSecureRootOwnedFileMetadata(info, modes)) {
     throw new Error(`${label} ownership or mode is invalid`);
   }
 }
@@ -128,8 +149,8 @@ function resolveScheduler(options: SchedulerOptions): ResolvedScheduler {
   if (!/^[A-Za-z0-9_.@-]+$/.test(unitPrefix)) throw new Error("invalid reset unit prefix");
 
   const verifyHelper = options.verifyHelper ?? (() => {
-    verifyRootOwnedFile(helperPath, 0o755, "reset helper");
-    verifyRootOwnedFile(configPath, 0o644, "reset config");
+    verifyRootOwnedFile(helperPath, [0o755], "reset helper");
+    verifyRootOwnedFile(configPath, [0o600, 0o644], "reset config");
   });
 
   return { run, helperPath, configPath, unitPrefix, verifyHelper };
