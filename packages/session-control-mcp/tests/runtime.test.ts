@@ -4,11 +4,38 @@ import {
   createResetScheduler,
   createSessionScheduler,
   HELPER_PROTOCOL_VERSION,
+  isSecureRootOwnedFileMetadata,
   probeHelperCapabilities,
   sendTelegramMessage,
   type CommandRunner,
   type FetchLike
 } from "../src/runtime.js";
+
+describe("root-owned scheduler file metadata", () => {
+  const info = (overrides: Record<string, unknown> = {}) => ({
+    isFile: () => true,
+    isSymbolicLink: () => false,
+    uid: 0,
+    mode: 0o100600,
+    nlink: 1,
+    ...overrides
+  });
+
+  test("accepts only the explicitly allowed private or public-read modes", () => {
+    expect(isSecureRootOwnedFileMetadata(info(), [0o600, 0o644])).toBe(true);
+    expect(isSecureRootOwnedFileMetadata(info({ mode: 0o100644 }), [0o600, 0o644])).toBe(true);
+    for (const mode of [0o100640, 0o100666, 0o100755]) {
+      expect(isSecureRootOwnedFileMetadata(info({ mode }), [0o600, 0o644])).toBe(false);
+    }
+  });
+
+  test("rejects foreign ownership, links, symlinks, and non-files", () => {
+    expect(isSecureRootOwnedFileMetadata(info({ uid: 1000 }), [0o600])).toBe(false);
+    expect(isSecureRootOwnedFileMetadata(info({ nlink: 2 }), [0o600])).toBe(false);
+    expect(isSecureRootOwnedFileMetadata(info({ isSymbolicLink: () => true }), [0o600])).toBe(false);
+    expect(isSecureRootOwnedFileMetadata(info({ isFile: () => false }), [0o600])).toBe(false);
+  });
+});
 import {
   MAX_TELEGRAM_RESPONSE_BYTES,
   type RuntimeConfig
