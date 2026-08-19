@@ -6,6 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Hook-driven Telegram tool disclosure: Claude Code `mcp_tool` hooks bind each direct inbound turn and maintain one silent, bounded, edit-in-place progress bubble without exposing raw tool arguments or output.
+- Text-only session continuity commands: `/sessions` lists up to ten recent sessions from one configured workspace, and approval-gated `/resume N` resolves the selected UUID from a private ten-minute snapshot.
+- Session Control Protocol v1 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact resume health checks, durable receipts, and rollback.
+
 ### Fixed
 
 - User-facing Telegram sends wait 10 s instead of 3 s, so ordinary tail latency no longer reports a delivered reply as an unknown outcome. Reactions keep the 3 s bound.

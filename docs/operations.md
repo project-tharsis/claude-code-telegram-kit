@@ -40,9 +40,17 @@ Copy and adapt:
 
 Keep `examples/reset.json` root-owned when installed under `/etc/claude-code-telegram-kit/reset.json`.
 
+Set `CLAUDE_PROJECT_SESSIONS_DIR` in the `session-control` MCP environment to the one exact Claude project directory. Do not derive it from a model argument or inbound message.
+
 ## Install the root helper
 
-Follow the exact-commit/digest procedure in `packages/session-control-mcp/README.md`. Do not install it from a mutable `current` symlink.
+Follow the exact-commit/digest procedure in `packages/session-control-mcp/README.md`. Do not install it from a mutable `current` symlink. When the helper changes, install it from the same merged SHA before restarting the service, then require:
+
+```bash
+/usr/local/sbin/claude-code-session-reset --capabilities
+```
+
+The receipt must report protocol `1` with `reset` and `resume`.
 
 ## Restart and verify
 
@@ -58,10 +66,12 @@ Verify from the real destination:
 2. a GFM table returns `mode: rich`;
 3. a direct message receives `👀`, then a confirmed reply replaces it with `👍`;
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
-5. `/reset` requires approval;
-6. reset sends accepted and completion messages;
-7. the new session transcript contains exact `READY`;
-8. Claude, the official Telegram poller, renderer MCP, and control MCP are alive.
+5. a multi-tool turn creates one silent progress bubble and never exposes raw arguments;
+6. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
+7. `/resume N` requires approval, reaches the selected session, restores the unit to `--continue`, and retains rollback;
+8. `/reset` requires approval and sends accepted and completion messages;
+9. the reset session transcript contains exact `READY`;
+10. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
 
 ## Rollback
 

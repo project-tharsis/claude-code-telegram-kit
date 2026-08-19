@@ -15,10 +15,10 @@ The same Markdown document, both paths. The official `reply` tool defaults to `f
 
 ## Why this exists
 
-Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control capabilities beside it, without a second `getUpdates` consumer:
+Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control sidecars beside it, without a second `getUpdates` consumer:
 
-- **Telegram Renderer MCP** — one canonical `send_reply(raw Markdown)` tool with deterministic Rich Message vs MarkdownV2 routing, permanent-only fallback, and `👀 → 👍/👎` processing reactions.
-- **Session Control MCP** — an approval-gated `/reset` path that finalizes the confirmed acceptance reaction, then hands execution to a root-owned, fail-closed local reset helper that PID 1 executes.
+- **Telegram Renderer MCP** — canonical Markdown delivery plus hook-driven, silent, edit-in-place tool disclosure. Rendering, quote targets, fallback, reactions, and disclosure redaction are deterministic.
+- **Session Control MCP** — `/reset`, bounded `/sessions`, and approval-gated `/resume N`; privileged execution goes through a versioned, root-owned, fail-closed helper that PID 1 executes.
 
 Both gaps are open upstream. This kit is the interim answer:
 
@@ -39,9 +39,9 @@ sha=$(git rev-parse HEAD)
 python3 scripts/deploy_local.py install --repo . --ref "$sha" --bun "$(command -v bun)"
 ```
 
-Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` with your own paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message with a GFM table; the renderer should report `mode: rich` and replace `👀` with `👍`.
+Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and `PROJECT` with your own fixed paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the renderer should report `mode: rich`, and the inbound reaction should become `👍`.
 
-The renderer works on its own. `/reset` additionally needs the root helper, installed separately by the exact-commit procedure in the [session-control README](packages/session-control-mcp/README.md).
+The renderer works on its own. `/reset` and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
 
 For production deployment, rollback, and verification, follow the [operations runbook](docs/operations.md) rather than this section.
 
@@ -52,7 +52,8 @@ Telegram
   -> telegram@claude-plugins-official     # sole inbound poller
   -> Claude Code
      -> telegram-renderer MCP              # bounded outbound rendering
-     -> session-control MCP                # bounded reset scheduling
+        + Claude Code hooks                # silent tool disclosure
+     -> session-control MCP                # reset + list/resume control
         -> systemd transient unit
         -> root-owned session reset helper
 ```
@@ -85,7 +86,7 @@ scripts/                   Versioned local install and rollback
 ## Requirements
 
 - Linux with systemd and procfs mounted at `/proc`
-- Claude Code 2.1.234 or newer
+- Claude Code 2.1.235 or newer
 - Bun 1.3.14 or newer
 - Python 3.11 or newer
 - Anthropic's official `telegram@claude-plugins-official` plugin
