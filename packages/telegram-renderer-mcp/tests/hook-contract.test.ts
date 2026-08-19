@@ -18,6 +18,13 @@ describe("direct Telegram envelope parsing", () => {
     expect(parsed).toEqual({ chatId: "123456", messageId: "42", body: "hello" });
   });
 
+  test("accepts the official plugin-scoped Telegram source emitted by Claude Code", () => {
+    const parsed = parseDirectTelegramEnvelope(
+      '<channel source="plugin:telegram:telegram" chat_id="123456" message_id="42">/sessions</channel>'
+    );
+    expect(parsed).toEqual({ chatId: "123456", messageId: "42", body: "/sessions" });
+  });
+
   test("accepts a negative group chat_id and leading whitespace", () => {
     const parsed = parseDirectTelegramEnvelope(
       '\n  <channel source="telegram" chat_id="-100123" message_id="7">  /sessions  '
@@ -41,6 +48,9 @@ describe("direct Telegram envelope parsing", () => {
   test("rejects a non-telegram source", () => {
     expect(parseDirectTelegramEnvelope(
       '<channel source="slack" chat_id="1" message_id="2">hi'
+    )).toBeNull();
+    expect(parseDirectTelegramEnvelope(
+      '<channel source="plugin:telegram:telegram-evil" chat_id="1" message_id="2">hi'
     )).toBeNull();
   });
 
