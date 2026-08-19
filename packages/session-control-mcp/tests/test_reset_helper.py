@@ -430,6 +430,9 @@ class TargetHealthTests(unittest.TestCase):
                     }):
                 run.return_value = subprocess.CompletedProcess([], 0, stdout="10\n", stderr="")
                 self.assertFalse(reset._service_health(config, OLD_SESSION, flag="--resume"))
+                self.assertTrue(
+                    reset._service_health(config, OLD_SESSION, flag="--resume", require_workers=False)
+                )
 
 
 class SessionStartReceiptTests(unittest.TestCase):
