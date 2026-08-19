@@ -75,6 +75,17 @@ class SessionReceiptWriterTests(unittest.TestCase):
         self.assertEqual(payload["cwd"], "/srv/claude-bot")
         self.assertEqual(payload["transcript_path"], f"/home/USER/.claude/projects/srv-claude-bot/{NEW_SESSION}.jsonl")
 
+    def test_accepts_documented_optional_session_start_fields_without_persisting_them(self):
+        path = receipt.write_session_receipt(
+            self.receipts,
+            _hook_input(model="claude-opus-5", agent_type="", session_title="Existing"),
+            expected_uid=os.getuid(),
+        )
+        payload = json.loads(path.read_text())
+        self.assertNotIn("model", payload)
+        self.assertNotIn("agent_type", payload)
+        self.assertNotIn("session_title", payload)
+
     def test_rejects_non_object_or_malformed_hook_input(self):
         with self.assertRaisesRegex(ValueError, "JSON object"):
             receipt.write_session_receipt(self.receipts, ["not", "an", "object"], expected_uid=os.getuid())
