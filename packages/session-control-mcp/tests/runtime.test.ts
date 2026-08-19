@@ -259,6 +259,10 @@ describe("session action scheduling", () => {
 });
 
 describe("root helper capability preflight", () => {
+  test("requires Session Control Protocol v3", () => {
+    expect(HELPER_PROTOCOL_VERSION).toBe(3);
+  });
+
   test("accepts a matching protocol and action set", async () => {
     const argvSeen: string[][] = [];
     const capabilities = await probeHelperCapabilities({
@@ -266,21 +270,21 @@ describe("root helper capability preflight", () => {
         argvSeen.push(argv);
         return {
           exitCode: 0,
-          stdout: JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
+          stdout: JSON.stringify({ protocol: 3, actions: ["reset", "resume"] }),
           stderr: ""
         };
       },
       verifyHelper: () => undefined
     });
 
-    expect(capabilities).toEqual({ protocol: 2, actions: ["reset", "resume"] });
+    expect(capabilities).toEqual({ protocol: 3, actions: ["reset", "resume"] });
     expect(argvSeen).toEqual([["/usr/local/sbin/claude-code-session-reset", "--capabilities"]]);
   });
 
   test("fails closed on a protocol mismatch, a missing action, or unusable output", async () => {
     for (const output of [
-      JSON.stringify({ protocol: 3, actions: ["reset", "resume"] }),
-      JSON.stringify({ protocol: 1, actions: ["reset"] }),
+      JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
+      JSON.stringify({ protocol: 3, actions: ["reset"] }),
       JSON.stringify({ protocol: 1 }),
       JSON.stringify({ actions: ["reset", "resume"] }),
       "not json",

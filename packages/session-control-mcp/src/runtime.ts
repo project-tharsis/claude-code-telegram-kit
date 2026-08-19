@@ -14,7 +14,7 @@ const DEFAULT_HELPER = "/usr/local/sbin/claude-code-session-reset";
 const DEFAULT_CONFIG = "/etc/claude-code-telegram-kit/reset.json";
 const DEFAULT_UNIT_PREFIX = "claude-session-reset";
 /** Wire protocol between this MCP and the root helper. Both sides must agree exactly. */
-export const HELPER_PROTOCOL_VERSION = 2;
+export const HELPER_PROTOCOL_VERSION = 3;
 export const REQUIRED_HELPER_ACTIONS = ["reset", "resume"] as const;
 const MAX_CAPABILITIES_BYTES = 64 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

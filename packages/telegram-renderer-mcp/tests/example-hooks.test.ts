@@ -7,8 +7,10 @@ interface HookEntry {
   matcher?: string;
   hooks: Array<{
     type: string;
-    server: string;
-    tool: string;
+    server?: string;
+    tool?: string;
+    command?: string;
+    timeout?: number;
     input: Record<string, string>;
   }>;
 }
@@ -24,7 +26,13 @@ const settings = JSON.parse(readFileSync(
 )) as Settings;
 
 function toolsFor(event: string): Array<{ server: string; tool: string; input: Record<string, string> }> {
-  return (settings.hooks[event] ?? []).flatMap(entry => entry.hooks);
+  return (settings.hooks[event] ?? []).flatMap(entry =>
+    entry.hooks
+      .filter((hook): hook is { type: string; server: string; tool: string; input: Record<string, string> } =>
+        hook.type === "mcp_tool" && typeof hook.server === "string" && typeof hook.tool === "string"
+      )
+      .map(hook => ({ server: hook.server, tool: hook.tool, input: hook.input }))
+  );
 }
 
 describe("supported Claude Code hook configuration", () => {
@@ -48,6 +56,16 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("Stop").map(hook => hook.tool)).toEqual(["finish_turn"]);
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
+  });
+
+  test("wires a deterministic SessionStart receipt hook for fresh resets", () => {
+    const starts = settings.hooks.SessionStart ?? [];
+    const startup = starts.find(entry => entry.matcher === "startup");
+    expect(startup).toBeDefined();
+    const hook = startup!.hooks[0]!;
+    expect(hook.type).toBe("command");
+    expect(hook.command).toMatch(/^\/usr\/local\/sbin\/claude-session-start-receipt\b/);
+    expect(hook.timeout ?? 10).toBeLessThanOrEqual(10);
   });
 
   test("excludes internal sidecar tools from tool-event matchers", () => {

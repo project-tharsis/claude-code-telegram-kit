@@ -14,7 +14,6 @@ import json
 import os
 import pwd
 import re
-import shlex
 import stat
 import subprocess
 import sys
@@ -28,18 +27,17 @@ from typing import Any, Callable
 DEFAULT_CONFIG_PATH = Path("/etc/claude-code-telegram-kit/reset.json")
 # Wire protocol between the unprivileged control MCP and this root helper. The MCP refuses to
 # schedule anything until --capabilities reports exactly this protocol and these actions.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 SUPPORTED_ACTIONS = ("reset", "resume")
-DEFAULT_FRESH_SEED = (
-    "Initialize a fresh Claude Code channel session. "
-    "Do not call tools or send messages. Reply only READY."
-)
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{24}$")
 REQUEST_STATE_ROOT = Path("/var/lib/claude-code-telegram-kit/reset-requests")
 MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
+# Receipt schema written by the SessionStart command-hook writer and read back by this helper.
+RECEIPT_VERSION = 1
+MAX_RECEIPT_BYTES = 64 * 1024
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -52,6 +50,7 @@ _ALLOWED_CONFIG_FIELDS = {
     "service_user",
     "workspace",
     "project_sessions",
+    "session_start_receipt_dir",
     "channel_state",
     "lock_path",
     "poller_process_marker",
@@ -68,6 +67,7 @@ class ResetConfig:
     service_uid: int
     workspace: Path
     project_sessions: Path
+    session_start_receipt_dir: Path
     channel_state: Path
     lock_path: Path
     poller_process_marker: str
@@ -329,6 +329,7 @@ def load_config(
         service_uid=service_uid,
         workspace=_absolute_path(raw["workspace"], "workspace"),
         project_sessions=_absolute_path(raw["project_sessions"], "project_sessions"),
+        session_start_receipt_dir=_absolute_path(raw["session_start_receipt_dir"], "session_start_receipt_dir"),
         channel_state=_absolute_path(raw["channel_state"], "channel_state"),
         lock_path=lock_path,
         poller_process_marker=poller_marker,
@@ -337,26 +338,22 @@ def load_config(
     )
 
 
-def _transform_continue_unit(unit: str, replacement: str, *, seed: str | None) -> str:
+def _transform_continue_unit(unit: str, replacement: str) -> str:
     if unit.count("--continue") != 1:
         raise ValueError("unit must contain exactly one --continue")
-    transformed = unit.replace("--continue", replacement, 1)
-    if seed is not None:
-        marker = '" /dev/null'
-        if transformed.count(marker) != 1:
-            raise ValueError("unit must contain exactly one script output marker")
-        transformed = transformed.replace(marker, f" {shlex.quote(seed)}\" /dev/null", 1)
-    return transformed
+    return unit.replace("--continue", replacement, 1)
 
 
 def fresh_unit_from_continue(unit: str, session_id: str) -> str:
     _validate_uuid(session_id)
-    return _transform_continue_unit(unit, f"--session-id {session_id}", seed=DEFAULT_FRESH_SEED)
+    # The fresh unit pins the exact new session and injects no prompt or seed text: the
+    # SessionStart command hook reports readiness through a receipt instead.
+    return _transform_continue_unit(unit, f"--session-id {session_id}")
 
 
 def resume_unit_from_continue(unit: str, session_id: str) -> str:
     _validate_uuid(session_id)
-    return _transform_continue_unit(unit, f"--resume {session_id}", seed=None)
+    return _transform_continue_unit(unit, f"--resume {session_id}")
 
 
 def validate_notification_target(
@@ -447,40 +444,122 @@ def validate_selected_session(config: ResetConfig, session_id: str) -> Path:
     return path
 
 
-def _assistant_text(message: dict[str, Any]) -> list[str]:
-    content = message.get("content")
-    if isinstance(content, str):
-        return [content]
-    if not isinstance(content, list):
-        return []
-    return [
-        item["text"]
-        for item in content
-        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
-    ]
+def _validate_absolute_no_traversal(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be an absolute path")
+    if ".." in path.parts:
+        raise ValueError(f"{label} must not contain path traversal")
+    return value
 
 
-def transcript_has_ready(path: Path, session_id: str) -> bool:
-    if not path.is_file():
-        return False
+def _validate_receipt_payload(payload: Any, session_id: str) -> None:
+    """A receipt only counts when every field matches the exact expected boot."""
+    if not isinstance(payload, dict):
+        raise ValueError("session start receipt must be a JSON object")
+    expected_fields = {"protocol", "version", "event", "source", "session_id", "cwd", "transcript_path"}
+    if set(payload) != expected_fields:
+        raise ValueError("session start receipt has unexpected fields")
+    if isinstance(payload.get("protocol"), bool) or payload.get("protocol") != PROTOCOL_VERSION:
+        raise ValueError("session start receipt has the wrong protocol")
+    if isinstance(payload.get("version"), bool) or payload.get("version") != RECEIPT_VERSION:
+        raise ValueError("session start receipt has the wrong version")
+    if payload.get("event") != "SessionStart":
+        raise ValueError("session start receipt is not a SessionStart event")
+    if payload.get("source") != "startup":
+        raise ValueError("session start receipt is not from startup")
+    if payload.get("session_id") != session_id:
+        raise ValueError("session start receipt is for a different session")
+    _validate_absolute_no_traversal(payload.get("cwd"), "receipt cwd")
+    transcript_path = _validate_absolute_no_traversal(payload.get("transcript_path"), "receipt transcript_path")
+    if Path(transcript_path).name != f"{session_id}.jsonl":
+        raise ValueError("receipt transcript_path does not match the session")
+
+
+def _open_receipt_dir(config: ResetConfig) -> tuple[int, os.stat_result]:
+    """Open the configured receipt directory with the owner/mode pinned at every step."""
+    path = config.session_start_receipt_dir
     try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                record_session = record.get("sessionId") or record.get("session_id")
-                if record_session != session_id:
-                    continue
-                message = record.get("message")
-                if not isinstance(message, dict) or message.get("role") != "assistant":
-                    continue
-                if any(text.strip() == "READY" for text in _assistant_text(message)):
-                    return True
-    except OSError:
-        return False
-    return False
+        before = path.lstat()
+    except OSError as exc:
+        raise ValueError("session start receipt directory is unreadable") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise ValueError("session start receipt directory must be a real directory")
+    if before.st_uid != config.service_uid or stat.S_IMODE(before.st_mode) != 0o700:
+        raise ValueError("session start receipt directory must be owned by the service user with mode 0700")
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+    except Exception:
+        os.close(fd)
+        raise
+    if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+        os.close(fd)
+        raise ValueError("session start receipt directory changed during validation")
+    if opened.st_uid != config.service_uid or stat.S_IMODE(opened.st_mode) != 0o700:
+        os.close(fd)
+        raise ValueError("session start receipt directory must be owned by the service user with mode 0700")
+    return fd, opened
+
+
+def _read_session_receipt(config: ResetConfig, session_id: str) -> dict[str, Any] | None:
+    """Read and fully validate the receipt for one exact session, or None while it is absent."""
+    _validate_uuid(session_id)
+    dir_fd, _ = _open_receipt_dir(config)
+    try:
+        name = f"{session_id}.json"
+        try:
+            before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError("session start receipt must not be a symlink")
+        _validate_file_info(before, config.service_uid, 0o600, "session start receipt")
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        try:
+            opened = os.fstat(fd)
+            _validate_file_info(opened, config.service_uid, 0o600, "session start receipt")
+            if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+                raise ValueError("session start receipt changed during validation")
+            text = _read_fd_text(fd, MAX_RECEIPT_BYTES, "session start receipt")
+        finally:
+            os.close(fd)
+        payload = json.loads(text)
+        _validate_receipt_payload(payload, session_id)
+        return payload
+    finally:
+        os.close(dir_fd)
+
+
+def _remove_session_receipt(config: ResetConfig, session_id: str) -> None:
+    """Securely remove only the exact expected receipt; anything else is preserved or refused."""
+    _validate_uuid(session_id)
+    dir_fd, _ = _open_receipt_dir(config)
+    try:
+        name = f"{session_id}.json"
+        try:
+            before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError("session start receipt must not be a symlink")
+        _validate_file_info(before, config.service_uid, 0o600, "session start receipt")
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        try:
+            opened = os.fstat(fd)
+            _validate_file_info(opened, config.service_uid, 0o600, "session start receipt")
+            if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+                raise ValueError("session start receipt changed during validation")
+            payload = json.loads(_read_fd_text(fd, MAX_RECEIPT_BYTES, "session start receipt"))
+        finally:
+            os.close(fd)
+        _validate_receipt_payload(payload, session_id)
+        os.unlink(name, dir_fd=dir_fd)
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _run(argv: list[str], *, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
@@ -576,10 +655,12 @@ def _service_health(config: ResetConfig, expected_session_id: str, *, flag: str 
 
 
 def _wait_for_fresh_session(config: ResetConfig, session_id: str, timeout: float) -> None:
-    transcript = config.project_sessions / f"{session_id}.jsonl"
+    """A fresh session injects no prompt, so readiness is a secure SessionStart receipt
+    plus the exact process, the official poller, and every required worker. No transcript
+    content is ever read and no LLM is involved."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if transcript_has_ready(transcript, session_id) and _service_health(config, session_id):
+        if _read_session_receipt(config, session_id) is not None and _service_health(config, session_id):
             return
         time.sleep(1)
     raise TimeoutError("fresh Claude Code session did not become ready")
@@ -708,6 +789,9 @@ def reset_session(
         old_session = _latest_session_id(config)
         new_session = str(uuid.uuid4())
         try:
+            # Drop any stale receipt for the exact new session before the restart that would
+            # recreate it: readiness must come from this boot, never from a leftover.
+            _remove_session_receipt(config, new_session)
             _atomic_write(
                 config.unit_path,
                 fresh_unit_from_continue(original_unit, new_session),
@@ -718,7 +802,14 @@ def reset_session(
             _reload_only()
             if not _service_health(config, new_session):
                 raise RuntimeError("post-restore health check failed")
+            # The fresh session is proven and steady state is restored; the receipt has served
+            # its purpose and must not linger as a stale artifact for a future boot.
+            _remove_session_receipt(config, new_session)
         except Exception as exc:
+            try:
+                _remove_session_receipt(config, new_session)
+            except Exception:
+                pass
             recovered = _recover_old(config, original_unit, old_session)
             if token is not None and chat_id is not None:
                 status = "previous session restored" if recovered else "manual recovery required"

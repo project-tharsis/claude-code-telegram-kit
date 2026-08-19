@@ -50,7 +50,18 @@ Follow the exact-commit/digest procedure in `packages/session-control-mcp/README
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 
-The receipt must report protocol `1` with `reset` and `resume`.
+The receipt must report protocol `3` with `reset` and `resume`.
+
+A fresh reset also requires the SessionStart receipt writer, installed from the same merged SHA:
+
+```bash
+git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_receipt.py > /tmp/claude-session-start-receipt
+sha256sum /tmp/claude-session-start-receipt
+sudo install -o root -g root -m 0755 /tmp/claude-session-start-receipt /usr/local/sbin/claude-session-start-receipt
+sudo sha256sum /usr/local/sbin/claude-session-start-receipt
+```
+
+Wire it in `telegram-channel-settings.json` as the `SessionStart` `startup` command hook, and set `session_start_receipt_dir` in the root `reset.json` to a service-user-owned `0700` directory. The writer runs as the service user, rejects spoofed or malformed input, and publishes a `0600` single-link receipt named by the exact session UUID.
 
 ## Restart and verify
 

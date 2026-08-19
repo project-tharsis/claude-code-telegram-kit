@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -23,17 +24,17 @@ BASE_UNIT = """[Service]\nWorkingDirectory=/srv/claude-bot\nExecStart=/usr/bin/s
 
 
 class UnitContractTests(unittest.TestCase):
-    def test_fresh_unit_replaces_continue_and_adds_exact_seed(self):
+    def test_fresh_unit_replaces_continue_with_exact_session_id_and_no_prompt(self):
         unit = reset.fresh_unit_from_continue(BASE_UNIT, NEW_SESSION)
-        self.assertIn(f"--session-id {NEW_SESSION}", unit)
+        # The fresh unit must pin the exact session with no injected prompt or seed text.
+        self.assertEqual(unit, BASE_UNIT.replace("--continue", f"--session-id {NEW_SESSION}"))
         self.assertNotIn("--continue", unit)
-        self.assertIn(reset.DEFAULT_FRESH_SEED, unit)
+        self.assertNotIn("READY", unit)
 
-    def test_resume_unit_targets_exact_old_session_without_seed(self):
+    def test_resume_unit_targets_exact_old_session_without_prompt(self):
         unit = reset.resume_unit_from_continue(BASE_UNIT, OLD_SESSION)
-        self.assertIn(f"--resume {OLD_SESSION}", unit)
+        self.assertEqual(unit, BASE_UNIT.replace("--continue", f"--resume {OLD_SESSION}"))
         self.assertNotIn("--continue", unit)
-        self.assertNotIn(reset.DEFAULT_FRESH_SEED, unit)
 
     def test_rejects_noncanonical_unit(self):
         with self.assertRaisesRegex(ValueError, "exactly one --continue"):
@@ -50,6 +51,7 @@ class ConfigTests(unittest.TestCase):
                 "service_user": "tester",
                 "workspace": "/srv/claude-bot",
                 "project_sessions": "/srv/claude-state/sessions",
+                "session_start_receipt_dir": "/srv/claude-state/receipts",
                 "channel_state": "/srv/claude-state/telegram",
                 "lock_path": "/run/lock/my-claude-reset.lock",
                 "poller_process_marker": "bun server.ts",
@@ -61,6 +63,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.service_name, "my-claude.service")
             self.assertEqual(config.workspace, Path("/srv/claude-bot"))
             self.assertEqual(config.unit_path, Path("/etc/systemd/system/my-claude.service"))
+            self.assertEqual(config.session_start_receipt_dir, Path("/srv/claude-state/receipts"))
             self.assertEqual(config.required_process_markers, tuple(data["required_process_markers"]))
 
     def test_rejects_unknown_config_fields(self):
@@ -69,6 +72,43 @@ class ConfigTests(unittest.TestCase):
             path.write_text(json.dumps({"unknown": True}))
             os.chmod(path, 0o644)
             with self.assertRaisesRegex(ValueError, "unknown config fields"):
+                reset.load_config(path, expected_uid=os.getuid(), user_lookup=lambda _name: os.getuid())
+
+    def test_requires_the_session_start_receipt_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "reset.json"
+            data = {
+                "service_name": "my-claude.service",
+                "service_user": "tester",
+                "workspace": "/srv/claude-bot",
+                "project_sessions": "/srv/claude-state/sessions",
+                "channel_state": "/srv/claude-state/telegram",
+                "lock_path": "/run/lock/my-claude-reset.lock",
+                "poller_process_marker": "bun server.ts",
+                "required_process_markers": ["renderer", "control"],
+            }
+            path.write_text(json.dumps(data))
+            os.chmod(path, 0o644)
+            with self.assertRaisesRegex(ValueError, "missing config fields"):
+                reset.load_config(path, expected_uid=os.getuid(), user_lookup=lambda _name: os.getuid())
+
+    def test_rejects_a_relative_session_start_receipt_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "reset.json"
+            data = {
+                "service_name": "my-claude.service",
+                "service_user": "tester",
+                "workspace": "/srv/claude-bot",
+                "project_sessions": "/srv/claude-state/sessions",
+                "session_start_receipt_dir": "relative/receipts",
+                "channel_state": "/srv/claude-state/telegram",
+                "lock_path": "/run/lock/my-claude-reset.lock",
+                "poller_process_marker": "bun server.ts",
+                "required_process_markers": ["renderer", "control"],
+            }
+            path.write_text(json.dumps(data))
+            os.chmod(path, 0o644)
+            with self.assertRaisesRegex(ValueError, "must be absolute"):
                 reset.load_config(path, expected_uid=os.getuid(), user_lookup=lambda _name: os.getuid())
 
 
@@ -92,16 +132,6 @@ class AuthorityTests(unittest.TestCase):
             os.chmod(state / ".env", 0o644)
             with self.assertRaisesRegex(ValueError, "mode 0600"):
                 reset.validate_notification_target(state, TEST_CHAT_ID, expected_uid=os.getuid())
-
-    def test_ready_requires_exact_new_session_assistant_receipt(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "session.jsonl"
-            path.write_text(json.dumps({"sessionId": "x", "message": {"role": "assistant", "content": [{"type": "text", "text": "READY"}]}}) + "\n")
-            self.assertTrue(reset.transcript_has_ready(path, "x"))
-            self.assertFalse(reset.transcript_has_ready(path, "other"))
-            path.write_text(json.dumps({"sessionId": "x", "message": {"role": "assistant", "content": "not ready"}}) + "\n")
-            self.assertFalse(reset.transcript_has_ready(path, "x"))
-
 
 class NotificationTransportTests(unittest.TestCase):
     class FakeResponse:
@@ -199,6 +229,7 @@ def _make_config(root: Path, **overrides):
         service_uid=os.getuid(),
         workspace=root / "workspace",
         project_sessions=root / "sessions",
+        session_start_receipt_dir=root / "receipts",
         channel_state=root / "state",
         lock_path=root / "lock",
         poller_process_marker="bun server.ts",
@@ -217,11 +248,34 @@ def _write_transcript(directory: Path, session_id: str) -> Path:
     return path
 
 
+def _receipt_payload(session_id: str, overrides=None):
+    payload = {
+        "protocol": reset.PROTOCOL_VERSION,
+        "version": reset.RECEIPT_VERSION,
+        "event": "SessionStart",
+        "source": "startup",
+        "session_id": session_id,
+        "cwd": "/srv/claude-bot",
+        "transcript_path": f"/home/USER/.claude/projects/srv-claude-bot/{session_id}.jsonl",
+    }
+    if overrides:
+        payload.update(overrides)
+    return payload
+
+
+def _write_receipt(directory: Path, session_id: str, overrides=None) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.json"
+    path.write_text(json.dumps(_receipt_payload(session_id, overrides), sort_keys=True) + "\n")
+    os.chmod(path, 0o600)
+    return path
+
+
 class ProtocolTests(unittest.TestCase):
-    def test_capabilities_declare_protocol_two_and_both_actions(self):
+    def test_capabilities_declare_protocol_three_and_both_actions(self):
         capabilities = reset.capabilities()
         self.assertEqual(capabilities["protocol"], reset.PROTOCOL_VERSION)
-        self.assertEqual(reset.PROTOCOL_VERSION, 2)
+        self.assertEqual(reset.PROTOCOL_VERSION, 3)
         self.assertEqual(sorted(capabilities["actions"]), ["reset", "resume"])
 
     def test_capabilities_flag_prints_json_and_exits_zero_without_config(self):
@@ -233,7 +287,7 @@ class ProtocolTests(unittest.TestCase):
             code = reset.main(["--capabilities"])
         self.assertEqual(code, 0)
         payload = json.loads(buffer.getvalue())
-        self.assertEqual(payload["protocol"], 2)
+        self.assertEqual(payload["protocol"], 3)
         self.assertIn("resume", payload["actions"])
 
     def test_capabilities_never_mutates_state(self):
@@ -251,7 +305,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_rejects_an_unknown_protocol_before_doing_anything(self):
         with mock.patch.object(reset, "load_config") as load:
-            self.assertEqual(reset.main(["--protocol", "3", "--action", "reset"]), 1)
+            self.assertEqual(reset.main(["--protocol", "4", "--action", "reset"]), 1)
         load.assert_not_called()
 
     def test_rejects_a_session_id_on_reset_and_requires_one_on_resume(self):
@@ -369,6 +423,175 @@ class TargetHealthTests(unittest.TestCase):
                 self.assertFalse(reset._service_health(config, OLD_SESSION, flag="--resume"))
 
 
+class SessionStartReceiptTests(unittest.TestCase):
+    def _config_with_receipt_dir(self, td: str, **overrides):
+        config = _make_config(Path(td), **overrides)
+        config.session_start_receipt_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return config
+
+    def test_read_accepts_a_secure_matching_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            _write_receipt(config.session_start_receipt_dir, NEW_SESSION)
+            payload = reset._read_session_receipt(config, NEW_SESSION)
+            self.assertEqual(payload["session_id"], NEW_SESSION)
+            self.assertEqual(payload["event"], "SessionStart")
+            self.assertEqual(payload["source"], "startup")
+            self.assertEqual(payload["protocol"], reset.PROTOCOL_VERSION)
+            self.assertEqual(payload["cwd"], "/srv/claude-bot")
+            self.assertEqual(payload["transcript_path"], f"/home/USER/.claude/projects/srv-claude-bot/{NEW_SESSION}.jsonl")
+
+    def test_read_returns_none_when_no_receipt_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            self.assertIsNone(reset._read_session_receipt(config, NEW_SESSION))
+
+    def test_read_rejects_a_missing_or_symlinked_receipt_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = _make_config(root)
+            with self.assertRaisesRegex(ValueError, "unreadable"):
+                reset._read_session_receipt(config, NEW_SESSION)
+
+            real = root / "real"
+            real.mkdir()
+            os.symlink(real, root / "receipts")
+            symlinked = _make_config(root, session_start_receipt_dir=root / "receipts")
+            with self.assertRaisesRegex(ValueError, "real directory"):
+                reset._read_session_receipt(symlinked, NEW_SESSION)
+
+    def test_read_rejects_a_loose_or_foreign_receipt_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            loose = root / "loose"
+            loose.mkdir(mode=0o755)
+            foreign = root / "foreign"
+            foreign.mkdir(mode=0o700)
+            with self.assertRaisesRegex(ValueError, "0700"):
+                reset._read_session_receipt(_make_config(root, session_start_receipt_dir=loose), NEW_SESSION)
+            with self.assertRaisesRegex(ValueError, "service user"):
+                reset._read_session_receipt(
+                    _make_config(root, session_start_receipt_dir=foreign, service_uid=os.getuid() + 4242),
+                    NEW_SESSION,
+                )
+
+    def test_read_rejects_a_symlinked_receipt_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            real = _write_receipt(config.session_start_receipt_dir, NEW_SESSION)
+            real.unlink()
+            os.symlink(real, config.session_start_receipt_dir / f"{NEW_SESSION}.json")
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                reset._read_session_receipt(config, NEW_SESSION)
+
+    def test_read_rejects_wrong_mode_owner_or_extra_hardlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            receipt = _write_receipt(config.session_start_receipt_dir, NEW_SESSION)
+            os.chmod(receipt, 0o644)
+            with self.assertRaisesRegex(ValueError, "0600"):
+                reset._read_session_receipt(config, NEW_SESSION)
+
+            os.chmod(receipt, 0o600)
+            os.link(receipt, config.session_start_receipt_dir / "shadow.json")
+            with self.assertRaisesRegex(ValueError, "one hardlink"):
+                reset._read_session_receipt(config, NEW_SESSION)
+
+    def test_read_rejects_wrong_protocol_event_source_or_session(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            cases = [
+                ({"protocol": 2}, "wrong protocol"),
+                ({"protocol": True}, "wrong protocol"),
+                ({"version": 2}, "wrong version"),
+                ({"event": "SessionEnd"}, "not a SessionStart"),
+                ({"source": "resume"}, "not from startup"),
+                ({"session_id": OLD_SESSION}, "different session"),
+                ({"cwd": "/etc/../passwd"}, "traversal"),
+                ({"cwd": "relative/path"}, "absolute"),
+                ({"transcript_path": f"/tmp/{OLD_SESSION}.jsonl"}, "does not match"),
+                ({"transcript_path": "/etc/../passwd"}, "traversal"),
+                ({"extra": 1}, "unexpected fields"),
+            ]
+            for overrides, pattern in cases:
+                with self.subTest(overrides=overrides):
+                    _write_receipt(config.session_start_receipt_dir, NEW_SESSION, overrides=overrides)
+                    with self.assertRaisesRegex(ValueError, pattern):
+                        reset._read_session_receipt(config, NEW_SESSION)
+
+    def test_read_rejects_an_oversized_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            _write_receipt(
+                config.session_start_receipt_dir,
+                NEW_SESSION,
+                overrides={"cwd": "/" + ("x" * (reset.MAX_RECEIPT_BYTES + 1))},
+            )
+            with self.assertRaisesRegex(ValueError, "too large"):
+                reset._read_session_receipt(config, NEW_SESSION)
+
+    def test_remove_only_removes_the_expected_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            expected = _write_receipt(config.session_start_receipt_dir, NEW_SESSION)
+            other = _write_receipt(config.session_start_receipt_dir, OLD_SESSION)
+            stray = config.session_start_receipt_dir / "keep.txt"
+            stray.write_text("unrelated\n")
+
+            reset._remove_session_receipt(config, NEW_SESSION)
+
+            self.assertFalse(expected.exists())
+            self.assertTrue(other.exists())
+            self.assertTrue(stray.exists())
+
+    def test_remove_ignores_a_missing_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            stray = config.session_start_receipt_dir / "keep.txt"
+            stray.write_text("unrelated\n")
+            reset._remove_session_receipt(config, NEW_SESSION)
+            self.assertTrue(stray.exists())
+
+    def test_remove_refuses_a_mismatched_receipt_and_preserves_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            spoofed = _write_receipt(
+                config.session_start_receipt_dir,
+                NEW_SESSION,
+                overrides={"session_id": OLD_SESSION},
+            )
+            with self.assertRaisesRegex(ValueError, "different session"):
+                reset._remove_session_receipt(config, NEW_SESSION)
+            self.assertTrue(spoofed.exists())
+
+    def test_wait_for_fresh_session_requires_both_receipt_and_health(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = self._config_with_receipt_dir(td)
+            receipt = _receipt_payload(NEW_SESSION)
+            with mock.patch.object(reset, "_read_session_receipt", return_value=None), \
+                    mock.patch.object(reset, "_service_health", return_value=True), \
+                    mock.patch.object(reset, "time") as clock:
+                clock.monotonic.side_effect = [0, 0, 100, 0]
+                clock.sleep.return_value = None
+                with self.assertRaises(TimeoutError):
+                    reset._wait_for_fresh_session(config, NEW_SESSION, timeout=1)
+
+            with mock.patch.object(reset, "_read_session_receipt", return_value=receipt), \
+                    mock.patch.object(reset, "_service_health", return_value=False), \
+                    mock.patch.object(reset, "time") as clock:
+                clock.monotonic.side_effect = [0, 0, 100, 0]
+                clock.sleep.return_value = None
+                with self.assertRaises(TimeoutError):
+                    reset._wait_for_fresh_session(config, NEW_SESSION, timeout=1)
+
+            with mock.patch.object(reset, "_read_session_receipt", return_value=receipt), \
+                    mock.patch.object(reset, "_service_health", return_value=True), \
+                    mock.patch.object(reset, "time") as clock:
+                clock.monotonic.side_effect = [0, 0]
+                clock.sleep.return_value = None
+                reset._wait_for_fresh_session(config, NEW_SESSION, timeout=1)
+
+
 class ResumeOrchestrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -409,7 +632,6 @@ class ResumeOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["new_session"], OLD_SESSION)
         self.assertEqual(len(self.writes), 2)
         self.assertIn(f"--resume {OLD_SESSION}", self.writes[0])
-        self.assertNotIn(reset.DEFAULT_FRESH_SEED, self.writes[0])
         self.assertEqual(self.writes[1], BASE_UNIT)
         notify.assert_not_called()
         self.assertEqual(reset._reload_and_restart.call_count, 1)
@@ -609,6 +831,7 @@ class ResetOrchestrationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.state_root = root / "requests"
         self.config = _make_config(root, lock_path=root / "locks" / "reset.lock")
+        self.config.session_start_receipt_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         _write_transcript(self.config.project_sessions, OLD_SESSION)
         self.writes = []
 
@@ -661,6 +884,38 @@ class ResetOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["old_session"], OLD_SESSION)
         self.assertEqual(self.writes[-1], BASE_UNIT)
         self.assertEqual(notify.call_count, 2)
+
+    def test_reset_removes_stale_receipt_before_restart_and_cleans_after_success(self):
+        with mock.patch.object(reset.uuid, "uuid4", return_value=uuid.UUID(NEW_SESSION)):
+            _write_receipt(self.config.session_start_receipt_dir, NEW_SESSION)
+            events = []
+            real_remove = reset._remove_session_receipt
+
+            def recording_remove(config, session_id):
+                events.append("remove")
+                return real_remove(config, session_id)
+
+            with mock.patch.object(reset, "_remove_session_receipt", side_effect=recording_remove), \
+                    mock.patch.object(reset, "_reload_and_restart", side_effect=lambda _config: events.append("restart")):
+                result = reset.reset_session(self.config, chat_id=None, request_id=None, timeout=1)
+
+        self.assertEqual(result["status"], "reset_complete")
+        self.assertEqual(events, ["remove", "restart", "remove"])
+        self.assertFalse((self.config.session_start_receipt_dir / f"{NEW_SESSION}.json").exists())
+
+    def test_reset_failure_cleans_the_expected_receipt_and_rolls_back(self):
+        with mock.patch.object(reset.uuid, "uuid4", return_value=uuid.UUID(NEW_SESSION)), \
+                mock.patch.object(reset, "_wait_for_fresh_session", side_effect=TimeoutError("not ready")), \
+                mock.patch.object(reset, "_recover_old", return_value=True) as recover:
+            _write_receipt(self.config.session_start_receipt_dir, NEW_SESSION)
+            with self.assertRaises(RuntimeError):
+                reset.reset_session(self.config, chat_id=None, request_id=None, timeout=1)
+
+        self.assertFalse((self.config.session_start_receipt_dir / f"{NEW_SESSION}.json").exists())
+        recover.assert_called_once()
+        self.assertEqual(recover.call_args.args[0], self.config)
+        self.assertEqual(recover.call_args.args[2], OLD_SESSION)
+
 
 if __name__ == "__main__":
     unittest.main()
