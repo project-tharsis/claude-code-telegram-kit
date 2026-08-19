@@ -6,6 +6,8 @@ import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared
 import { SEND_REPLY_TOOL } from "../src/unified-tool.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
+/** Dedicated session for title tests so module-level titledSessions never collides across files. */
+const TITLE_SESSION = "4fcbaf06-4378-4339-b026-8c2e026a65e7";
 
 function recorder() {
   const calls: Array<{ kind: string; input: unknown }> = [];
@@ -114,7 +116,7 @@ describe("internal hook tool handler", () => {
     });
     const handle = createHookToolHandler(realDisclosure);
     const first = await handle("bind_turn", {
-      session_id: SESSION,
+      session_id: TITLE_SESSION,
       prompt_id: "p1",
       prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">git bisect is stuck</channel>',
       hook_event_name: "UserPromptSubmit"
@@ -130,7 +132,7 @@ describe("internal hook tool handler", () => {
     }]);
 
     const second = await handle("bind_turn", {
-      session_id: SESSION,
+      session_id: TITLE_SESSION,
       prompt_id: "p2",
       prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="10">still stuck</channel>',
       hook_event_name: "UserPromptSubmit"
@@ -142,7 +144,7 @@ describe("internal hook tool handler", () => {
     const { handle } = recorder();
     for (const body of ["/sessions", "/resume 1", "/reset", ""]) {
       const result = await handle("bind_turn", {
-        session_id: SESSION,
+        session_id: TITLE_SESSION,
         prompt_id: "p9",
         prompt: `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${body}</channel>`,
         hook_event_name: "UserPromptSubmit"
