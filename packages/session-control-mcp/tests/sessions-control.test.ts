@@ -40,7 +40,7 @@ interface HarnessOptions {
 function harness(options: HarnessOptions = {}) {
   const takes: Array<[string, string, number | undefined]> = [];
   const sent: Array<{ text: string; replyTo?: string }> = [];
-  const scheduled: Array<[string, string, string]> = [];
+  const scheduled: Array<[string, string, string, string]> = [];
   const written: unknown[] = [];
   const verified: string[] = [];
   const reactions: Array<[string, string, string]> = [];
@@ -72,8 +72,8 @@ function harness(options: HarnessOptions = {}) {
       reactions.push([chatId, messageId, state]);
       return options.react ? options.react() : true;
     },
-    scheduleResume: async (chatId, messageId, sessionId) => {
-      scheduled.push([chatId, messageId, sessionId]);
+    scheduleResume: async (chatId, messageId, currentSessionId, sessionId) => {
+      scheduled.push([chatId, messageId, currentSessionId, sessionId]);
       return options.schedule ? options.schedule() : "claude-session-reset-resume-abc";
     },
     helperReady: () => options.helperReady ?? true,
@@ -204,7 +204,7 @@ describe("/resume N", () => {
     expect(h.takes).toEqual([["123", "resume", 2]]);
     expect(h.verified).toEqual([uuid(2)]);
     expect(h.sent).toEqual([{ text: "Resuming session 2. Switching now…", replyTo: "51" }]);
-    expect(h.scheduled).toEqual([["123", "51", uuid(2)]]);
+    expect(h.scheduled).toEqual([["123", "51", CURRENT, uuid(2)]]);
     expect(h.reactions).toEqual([["123", "51", "success"]]);
     expect(receipt).toEqual({
       status: "scheduled",

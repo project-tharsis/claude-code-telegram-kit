@@ -28,7 +28,7 @@ from typing import Any, Callable
 DEFAULT_CONFIG_PATH = Path("/etc/claude-code-telegram-kit/reset.json")
 # Wire protocol between the unprivileged control MCP and this root helper. The MCP refuses to
 # schedule anything until --capabilities reports exactly this protocol and these actions.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 SUPPORTED_ACTIONS = ("reset", "resume")
 DEFAULT_FRESH_SEED = (
     "Initialize a fresh Claude Code channel session. "
@@ -171,7 +171,23 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def claim_request(state_root: Path, request_id: str, chat_id: str, *, expected_uid: int = 0) -> dict[str, Any]:
+def claim_request(
+    state_root: Path,
+    request_id: str,
+    chat_id: str,
+    *,
+    action: str = "reset",
+    target_session: str | None = None,
+    expected_uid: int = 0,
+) -> dict[str, Any]:
+    if action not in SUPPORTED_ACTIONS:
+        raise ValueError("invalid reset action")
+    if action == "resume":
+        if not isinstance(target_session, str):
+            raise ValueError("resume claim requires a target session")
+        _validate_uuid(target_session)
+    elif target_session is not None:
+        raise ValueError("reset claim must not carry a target session")
     if not REQUEST_ID_RE.fullmatch(request_id):
         raise ValueError("invalid reset request ID")
     if not re.fullmatch(r"\d+", chat_id):
@@ -187,6 +203,8 @@ def claim_request(state_root: Path, request_id: str, chat_id: str, *, expected_u
     payload = {
         "request_id": request_id,
         "chat_id": chat_id,
+        "action": action,
+        "target_session": target_session,
         "status": "in_progress",
         "updated_at": int(time.time()),
     }
@@ -198,7 +216,13 @@ def claim_request(state_root: Path, request_id: str, chat_id: str, *, expected_u
         )
     except FileExistsError:
         receipt = json.loads(_read_secure_regular(receipt_path, expected_uid, 0o600, "reset request receipt"))
-        if not isinstance(receipt, dict) or receipt.get("request_id") != request_id or receipt.get("chat_id") != chat_id:
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("request_id") != request_id
+            or receipt.get("chat_id") != chat_id
+            or receipt.get("action") != action
+            or receipt.get("target_session") != target_session
+        ):
             raise ValueError("reset request receipt does not match request")
         return {"claimed": False, "receipt": receipt}
 
@@ -662,7 +686,13 @@ def reset_session(
             raise RuntimeError("another session reset is already running") from exc
 
         if request_id is not None and chat_id is not None:
-            claimed = claim_request(REQUEST_STATE_ROOT, request_id, chat_id)
+            claimed = claim_request(
+                REQUEST_STATE_ROOT,
+                request_id,
+                chat_id,
+                action="reset",
+                target_session=None,
+            )
             if not claimed["claimed"]:
                 receipt = claimed["receipt"]
                 return {
@@ -728,16 +758,32 @@ def reset_session(
             "completion_message_id": completion_id,
         }
         if request_id is not None:
-            finish_request(
-                REQUEST_STATE_ROOT,
-                request_id,
-                "complete",
-                {
-                    "old_session": old_session,
-                    "new_session": new_session,
-                    "completion_message_id": completion_id,
-                },
-            )
+            try:
+                finish_request(
+                    REQUEST_STATE_ROOT,
+                    request_id,
+                    "complete",
+                    {
+                        "old_session": old_session,
+                        "new_session": new_session,
+                        "completion_message_id": completion_id,
+                    },
+                )
+                result["receipt_persisted"] = True
+            except Exception as exc:
+                # The service switch already succeeded. A receipt that cannot be persisted must not
+                # reclassify the action as failed; the in_progress claim still blocks duplicates.
+                result["receipt_persisted"] = False
+                result["receipt_error"] = str(exc)
+                if token is not None and chat_id is not None:
+                    try:
+                        _notify(
+                            token,
+                            chat_id,
+                            "Session reset complete, but the request receipt could not be persisted.",
+                        )
+                    except Exception:
+                        pass
             result["request_id"] = request_id
         return result
     finally:
@@ -748,6 +794,7 @@ def resume_session(
     config: ResetConfig,
     *,
     session_id: str,
+    current_session_id: str,
     chat_id: str | None,
     request_id: str | None,
     timeout: float,
@@ -758,10 +805,15 @@ def resume_session(
     restart, verifies the target process plus the official poller, renderer, and control workers,
     and then rewrites the unit back to `--continue` with a daemon-reload only, so the next ordinary
     restart continues the session the user just resumed instead of re-pinning it.
+
+    `current_session_id` is the session the service is believed to be on right now; it is validated
+    as an exact UUID with a real transcript and becomes the old_session/rollback authority, so
+    recovery never guesses from mtimes.
     """
     if os.geteuid() != 0:
         raise PermissionError("session resume helper must run as root")
     _validate_uuid(session_id)
+    _validate_uuid(current_session_id)
     if (request_id is None) != (chat_id is None):
         raise ValueError("request_id and chat_id must be provided together")
 
@@ -774,6 +826,7 @@ def resume_session(
             allow_multiple_chats=config.allow_multiple_chats,
         )
     validate_selected_session(config, session_id)
+    validate_selected_session(config, current_session_id)
 
     config.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     lock_fd = os.open(config.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -784,7 +837,13 @@ def resume_session(
             raise RuntimeError("another session reset is already running") from exc
 
         if request_id is not None and chat_id is not None:
-            claimed = claim_request(REQUEST_STATE_ROOT, request_id, chat_id)
+            claimed = claim_request(
+                REQUEST_STATE_ROOT,
+                request_id,
+                chat_id,
+                action="resume",
+                target_session=session_id,
+            )
             if not claimed["claimed"]:
                 receipt = claimed["receipt"]
                 return {
@@ -801,7 +860,7 @@ def resume_session(
         mutation_started = False
         try:
             original_unit = _read_canonical_unit(config)
-            old_session = _latest_session_id(config)
+            old_session = current_session_id
             if session_id == old_session:
                 raise ValueError("selected session is already the active session")
 
@@ -866,16 +925,32 @@ def resume_session(
             "completion_message_id": completion_id,
         }
         if request_id is not None:
-            finish_request(
-                REQUEST_STATE_ROOT,
-                request_id,
-                "complete",
-                {
-                    "old_session": old_session,
-                    "new_session": session_id,
-                    "completion_message_id": completion_id,
-                },
-            )
+            try:
+                finish_request(
+                    REQUEST_STATE_ROOT,
+                    request_id,
+                    "complete",
+                    {
+                        "old_session": old_session,
+                        "new_session": session_id,
+                        "completion_message_id": completion_id,
+                    },
+                )
+                result["receipt_persisted"] = True
+            except Exception as exc:
+                # The session switch already succeeded. A receipt that cannot be persisted must not
+                # reclassify the action as failed; the in_progress claim still blocks duplicates.
+                result["receipt_persisted"] = False
+                result["receipt_error"] = str(exc)
+                if token is not None and chat_id is not None:
+                    try:
+                        _notify(
+                            token,
+                            chat_id,
+                            "Session resume complete, but the request receipt could not be persisted.",
+                        )
+                    except Exception:
+                        pass
             result["request_id"] = request_id
         return result
     finally:
@@ -898,6 +973,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--protocol", type=int, default=PROTOCOL_VERSION)
     parser.add_argument("--action", choices=SUPPORTED_ACTIONS, default="reset")
     parser.add_argument("--session-id", help="exact resume target; only valid with --action resume")
+    parser.add_argument(
+        "--current-session-id",
+        help="exact currently active session; only valid with --action resume",
+    )
     parser.add_argument("--chat-id")
     parser.add_argument("--request-id")
     parser.add_argument("--timeout", type=float, default=90.0)
@@ -910,18 +989,25 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.protocol != PROTOCOL_VERSION:
             raise ValueError("unsupported helper protocol version")
-        if args.action == "reset" and args.session_id is not None:
-            raise ValueError("--session-id is only valid with --action resume")
+        if args.action == "reset":
+            if args.session_id is not None:
+                raise ValueError("--session-id is only valid with --action resume")
+            if args.current_session_id is not None:
+                raise ValueError("--current-session-id is only valid with --action resume")
         if args.action == "resume":
             if args.session_id is None:
                 raise ValueError("--action resume requires --session-id")
             _validate_uuid(args.session_id)
+            if args.current_session_id is None:
+                raise ValueError("--action resume requires --current-session-id")
+            _validate_uuid(args.current_session_id)
 
         config = load_config(Path(args.config))
         if args.action == "resume":
             result = resume_session(
                 config,
                 session_id=args.session_id,
+                current_session_id=args.current_session_id,
                 chat_id=args.chat_id,
                 request_id=args.request_id,
                 timeout=args.timeout,

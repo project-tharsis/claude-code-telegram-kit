@@ -14,7 +14,7 @@ const DEFAULT_HELPER = "/usr/local/sbin/claude-code-session-reset";
 const DEFAULT_CONFIG = "/etc/claude-code-telegram-kit/reset.json";
 const DEFAULT_UNIT_PREFIX = "claude-session-reset";
 /** Wire protocol between this MCP and the root helper. Both sides must agree exactly. */
-export const HELPER_PROTOCOL_VERSION = 1;
+export const HELPER_PROTOCOL_VERSION = 2;
 export const REQUIRED_HELPER_ACTIONS = ["reset", "resume"] as const;
 const MAX_CAPABILITIES_BYTES = 64 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -147,6 +147,7 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
     action: "reset" | "resume",
     chatId: string,
     messageId: string,
+    currentSessionId?: string,
     sessionId?: string
   ): Promise<string> {
     if (!/^\d+$/.test(chatId)) throw new Error("invalid chat ID");
@@ -154,10 +155,15 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
     if (action === "resume" && (sessionId === undefined || !SESSION_UUID.test(sessionId))) {
       throw new Error("invalid session UUID");
     }
+    if (action === "resume" && (currentSessionId === undefined || !SESSION_UUID.test(currentSessionId))) {
+      throw new Error("invalid current session UUID");
+    }
     resolved.verifyHelper();
 
     // Reset and resume for the same inbound message stay separately idempotent at the root.
-    const seed = action === "reset" ? `${chatId}:${messageId}` : `${action}:${chatId}:${messageId}`;
+    const seed = action === "reset"
+      ? `${chatId}:${messageId}`
+      : `${action}:${chatId}:${messageId}:${currentSessionId!}`;
     const id = createHash("sha256").update(seed).digest("hex").slice(0, 24);
     const unit = action === "reset"
       ? `${resolved.unitPrefix}-${id}`
@@ -176,6 +182,7 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
       String(HELPER_PROTOCOL_VERSION),
       "--action",
       action,
+      ...(action === "resume" ? ["--current-session-id", currentSessionId!] : []),
       ...(action === "resume" ? ["--session-id", sessionId!] : []),
       "--chat-id",
       chatId,
@@ -189,8 +196,8 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
 
   return {
     scheduleReset: (chatId: string, messageId: string) => submit("reset", chatId, messageId),
-    scheduleResume: (chatId: string, messageId: string, sessionId: string) =>
-      submit("resume", chatId, messageId, sessionId)
+    scheduleResume: (chatId: string, messageId: string, currentSessionId: string, sessionId: string) =>
+      submit("resume", chatId, messageId, currentSessionId, sessionId)
   };
 }
 

@@ -86,8 +86,8 @@ const sessionsController = createSessionsController({
   sendMessage: (config, chatId, text, replyTo) =>
     sendTelegramMessage(config, chatId, text, fetch, replyTo),
   react: finalizeTelegramReaction,
-  scheduleResume: (chatId, messageId, sessionId) =>
-    scheduler.scheduleResume(chatId, messageId, sessionId),
+  scheduleResume: (chatId, messageId, currentSessionId, sessionId) =>
+    scheduler.scheduleResume(chatId, messageId, currentSessionId, sessionId),
   helperReady: () => helperReady,
   now: Date.now
 });
