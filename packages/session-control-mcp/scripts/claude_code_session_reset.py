@@ -26,6 +26,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 DEFAULT_CONFIG_PATH = Path("/etc/claude-code-telegram-kit/reset.json")
+# Wire protocol between the unprivileged control MCP and this root helper. The MCP refuses to
+# schedule anything until --capabilities reports exactly this protocol and these actions.
+PROTOCOL_VERSION = 1
+SUPPORTED_ACTIONS = ("reset", "resume")
 DEFAULT_FRESH_SEED = (
     "Initialize a fresh Claude Code channel session. "
     "Do not call tools or send messages. Reply only READY."
@@ -73,6 +77,15 @@ class ResetConfig:
     @property
     def unit_path(self) -> Path:
         return Path("/etc/systemd/system") / self.service_name
+
+
+def capabilities() -> dict[str, Any]:
+    """Read-only capability report. Mutates nothing and needs neither root nor a config."""
+    return {
+        "protocol": PROTOCOL_VERSION,
+        "actions": list(SUPPORTED_ACTIONS),
+        "helper": "claude-code-session-reset",
+    }
 
 
 def _validate_uuid(value: str) -> None:
@@ -372,6 +385,44 @@ def validate_notification_target(
     return token_lines[0]
 
 
+def validate_selected_session(config: ResetConfig, session_id: str) -> Path:
+    """Independently revalidate a resume target inside the root-configured sessions directory.
+
+    The control MCP already resolved the UUID from a user-private snapshot, but root repeats the
+    whole check: the path is composed here from the root configuration, never received, and the
+    file must still be a plain, non-symlinked, service-owned, non-world-writable transcript.
+    """
+    if not isinstance(session_id, str) or not UUID_RE.fullmatch(session_id):
+        raise ValueError("invalid session UUID")
+
+    directory = config.project_sessions
+    try:
+        directory_info = directory.lstat()
+    except OSError as exc:
+        raise ValueError("configured project sessions directory is unreadable") from exc
+    if stat.S_ISLNK(directory_info.st_mode) or not stat.S_ISDIR(directory_info.st_mode):
+        raise ValueError("configured project sessions path must be a real directory")
+
+    path = directory / f"{session_id}.jsonl"
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ValueError("selected session transcript does not exist") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError("selected session transcript must not be a symlink")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("selected session transcript must be a regular file")
+    if info.st_uid != config.service_uid:
+        raise ValueError("selected session transcript has the wrong owner")
+    if info.st_nlink != 1:
+        raise ValueError("selected session transcript must have one hardlink")
+    if info.st_size == 0:
+        raise ValueError("selected session transcript is empty")
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise ValueError("selected session transcript must not be group or world writable")
+    return path
+
+
 def _assistant_text(message: dict[str, Any]) -> list[str]:
     content = message.get("content")
     if isinstance(content, str):
@@ -474,7 +525,7 @@ def _process_rows() -> dict[int, tuple[int, str]]:
     return rows
 
 
-def _service_health(config: ResetConfig, expected_session_id: str) -> bool:
+def _service_health(config: ResetConfig, expected_session_id: str, *, flag: str = "--session-id") -> bool:
     try:
         _run(["systemctl", "is-active", "--quiet", config.service_name], timeout=10)
         main = int(_run(
@@ -494,7 +545,7 @@ def _service_health(config: ResetConfig, expected_session_id: str) -> bool:
                 seen.add(pid)
                 frontier.append(pid)
                 descendants.append(command)
-    claude_ok = any(f"--session-id {expected_session_id}" in command for command in descendants)
+    claude_ok = any(f"{flag} {expected_session_id}" in command for command in descendants)
     poller_ok = any(config.poller_process_marker in command for command in descendants)
     required_ok = all(any(marker in command for command in descendants) for marker in config.required_process_markers)
     return claude_ok and poller_ok and required_ok
@@ -508,6 +559,16 @@ def _wait_for_fresh_session(config: ResetConfig, session_id: str, timeout: float
             return
         time.sleep(1)
     raise TimeoutError("fresh Claude Code session did not become ready")
+
+
+def _wait_for_resumed_session(config: ResetConfig, session_id: str, timeout: float) -> None:
+    """A resume injects no prompt, so readiness is the exact target plus every required worker."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _service_health(config, session_id, flag="--resume"):
+            return
+        time.sleep(1)
+    raise TimeoutError("resumed Claude Code session did not become ready")
 
 
 def _wait_active(config: ResetConfig, timeout: float = 45.0) -> None:
@@ -545,7 +606,12 @@ def _notify(token: str, chat_id: str, text: str) -> int:
         raise RuntimeError("Telegram response too large")
     result = json.loads(raw.decode("utf-8"))
     message_id = result.get("result", {}).get("message_id")
-    if result.get("ok") is not True or not isinstance(message_id, int):
+    if (
+        result.get("ok") is not True
+        or not isinstance(message_id, int)
+        or isinstance(message_id, bool)
+        or message_id < 1
+    ):
         raise RuntimeError("Telegram notification failed")
     return message_id
 
@@ -678,24 +744,195 @@ def reset_session(
         os.close(lock_fd)
 
 
+def resume_session(
+    config: ResetConfig,
+    *,
+    session_id: str,
+    chat_id: str | None,
+    request_id: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    """Switch the service to an exact previously recorded session, then restore steady state.
+
+    The canonical unit stays `--continue`. This transforms it to `--resume <uuid>` for exactly one
+    restart, verifies the target process plus the official poller, renderer, and control workers,
+    and then rewrites the unit back to `--continue` with a daemon-reload only, so the next ordinary
+    restart continues the session the user just resumed instead of re-pinning it.
+    """
+    if os.geteuid() != 0:
+        raise PermissionError("session resume helper must run as root")
+    _validate_uuid(session_id)
+    if (request_id is None) != (chat_id is None):
+        raise ValueError("request_id and chat_id must be provided together")
+
+    token: str | None = None
+    if chat_id is not None:
+        token = validate_notification_target(
+            config.channel_state,
+            chat_id,
+            expected_uid=config.service_uid,
+            allow_multiple_chats=config.allow_multiple_chats,
+        )
+    validate_selected_session(config, session_id)
+
+    config.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    lock_fd = os.open(config.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another session reset is already running") from exc
+
+        if request_id is not None and chat_id is not None:
+            claimed = claim_request(REQUEST_STATE_ROOT, request_id, chat_id)
+            if not claimed["claimed"]:
+                receipt = claimed["receipt"]
+                return {
+                    "status": "duplicate_request",
+                    "request_id": request_id,
+                    "prior_status": receipt.get("status"),
+                    "old_session": receipt.get("old_session"),
+                    "new_session": receipt.get("new_session"),
+                    "completion_message_id": receipt.get("completion_message_id"),
+                }
+
+        original_unit: str | None = None
+        old_session: str | None = None
+        mutation_started = False
+        try:
+            original_unit = _read_canonical_unit(config)
+            old_session = _latest_session_id(config)
+            if session_id == old_session:
+                raise ValueError("selected session is already the active session")
+
+            mutation_started = True
+            _atomic_write(config.unit_path, resume_unit_from_continue(original_unit, session_id))
+            _reload_and_restart(config)
+            _wait_for_resumed_session(config, session_id, timeout)
+            # Restoring the canonical unit is a file write plus daemon-reload only; it does not
+            # restart the process, so the running Claude still carries `--resume <id>` here.
+            # The check below therefore still sees the target flag. It guards the narrow case
+            # where the service was restarted for an unrelated reason between readiness and
+            # steady-state restoration, which would have booted `--continue` instead.
+            _atomic_write(config.unit_path, original_unit)
+            _reload_only()
+            if not _service_health(config, session_id, flag="--resume"):
+                raise RuntimeError("post-restore health check failed")
+        except Exception as exc:
+            # Before the unit mutation begins, there is nothing to roll back. Once mutation starts,
+            # recovery must explicitly restore the exact previously active session.
+            recovered = not mutation_started
+            if mutation_started and original_unit is not None and old_session is not None:
+                recovered = _recover_old(config, original_unit, old_session)
+            if token is not None and chat_id is not None:
+                status = (
+                    "no service change was made"
+                    if not mutation_started
+                    else "previous session restored" if recovered
+                    else "manual recovery required"
+                )
+                try:
+                    _notify(token, chat_id, f"Session resume failed; {status}.")
+                except Exception:
+                    pass
+            if request_id is not None:
+                try:
+                    finish_request(
+                        REQUEST_STATE_ROOT,
+                        request_id,
+                        "failed",
+                        {"old_session": old_session, "recovered": recovered},
+                    )
+                except Exception:
+                    pass
+            raise RuntimeError("session resume failed") from exc
+
+        # The switch already succeeded. A failed notification is recorded, never rolled back.
+        completion_id: int | None = None
+        if token is not None and chat_id is not None:
+            try:
+                completion_id = _notify(
+                    token,
+                    chat_id,
+                    f"Session resumed. Now on session: {session_id[:8]}\u2026",
+                )
+            except Exception:
+                completion_id = None
+
+        result: dict[str, Any] = {
+            "status": "resume_complete",
+            "old_session": old_session,
+            "new_session": session_id,
+            "completion_message_id": completion_id,
+        }
+        if request_id is not None:
+            finish_request(
+                REQUEST_STATE_ROOT,
+                request_id,
+                "complete",
+                {
+                    "old_session": old_session,
+                    "new_session": session_id,
+                    "completion_message_id": completion_id,
+                },
+            )
+            result["request_id"] = request_id
+        return result
+    finally:
+        os.close(lock_fd)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Reset a Telegram-connected Claude Code session")
+    parser = argparse.ArgumentParser(
+        description="Reset or resume a Telegram-connected Claude Code session"
+    )
     parser.add_argument(
         "--config",
         default=os.environ.get("CLAUDE_SESSION_RESET_CONFIG", str(DEFAULT_CONFIG_PATH)),
     )
+    parser.add_argument(
+        "--capabilities",
+        action="store_true",
+        help="print the supported protocol and actions, then exit without touching any state",
+    )
+    parser.add_argument("--protocol", type=int, default=PROTOCOL_VERSION)
+    parser.add_argument("--action", choices=SUPPORTED_ACTIONS, default="reset")
+    parser.add_argument("--session-id", help="exact resume target; only valid with --action resume")
     parser.add_argument("--chat-id")
     parser.add_argument("--request-id")
     parser.add_argument("--timeout", type=float, default=90.0)
     args = parser.parse_args(argv)
+
+    if args.capabilities:
+        print(json.dumps(capabilities(), separators=(",", ":")))
+        return 0
+
     try:
+        if args.protocol != PROTOCOL_VERSION:
+            raise ValueError("unsupported helper protocol version")
+        if args.action == "reset" and args.session_id is not None:
+            raise ValueError("--session-id is only valid with --action resume")
+        if args.action == "resume":
+            if args.session_id is None:
+                raise ValueError("--action resume requires --session-id")
+            _validate_uuid(args.session_id)
+
         config = load_config(Path(args.config))
-        result = reset_session(
-            config,
-            chat_id=args.chat_id,
-            request_id=args.request_id,
-            timeout=args.timeout,
-        )
+        if args.action == "resume":
+            result = resume_session(
+                config,
+                session_id=args.session_id,
+                chat_id=args.chat_id,
+                request_id=args.request_id,
+                timeout=args.timeout,
+            )
+        else:
+            result = reset_session(
+                config,
+                chat_id=args.chat_id,
+                request_id=args.request_id,
+                timeout=args.timeout,
+            )
     except Exception as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, separators=(",", ":")), file=sys.stderr)
         return 1

@@ -10,6 +10,12 @@ send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
 
 The renderer quotes `message_id` by default. Set `reply_to` only to intentionally quote a different message; reactions still target `message_id`.
 
+## Hook-driven tool disclosure
+
+`examples/telegram-settings.json` wires `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `Stop`, and `StopFailure` to four internal MCP tools. The internal tools are denied to the model but remain callable by Claude Code's supported `mcp_tool` hook handler.
+
+One direct Telegram turn owns at most one silent progress bubble. Tool names map to a fixed safe label set; raw tool input, output, commands, paths, URLs, and provider errors are never accepted by the disclosure tools. Updates debounce, deduplicate by `tool_use_id`, stop after a Telegram flood response, and never block the agent or final reply.
+
 ## Routing
 
 - GFM pipe tables, task lists, `<details>`, and block math use `sendRichMessage` when within the Rich Message limit.
@@ -23,6 +29,7 @@ The renderer quotes `message_id` by default. Set `reply_to` only to intentionall
 - Permanent MarkdownV2 rejection may fall back to plain text.
 - Timeout, 429, 5xx, transport, and unknown outcomes never trigger a resend.
 - A proven endpoint capability failure holds Rich off for a 30-minute cooldown, then re-probes.
+- A progress send with an unknown outcome is never retried. Transient edits keep identity for a later catch-up; a 429 abandons disclosure for that turn rather than consuming Telegram's flood budget.
 
 ## Processing reactions
 

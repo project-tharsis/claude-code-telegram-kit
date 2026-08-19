@@ -6,6 +6,15 @@ Do not select a Telegram transport or pre-escape MarkdownV2. The renderer routes
 
 After any renderer receipt, stop. Do not call the official Telegram reply tool as a second delivery path.
 
+## Session commands
+
+Treat a direct inbound Telegram message as a session command only when its trimmed text is exactly `/sessions` or `/resume N`, where `N` is an integer from 1 through 10.
+
+- For `/sessions`, call `mcp__session-control__list_sessions` exactly once with the inbound private `chat_id`. The control MCP sends the numbered list itself. Do not send another message.
+- For `/resume N`, call `mcp__session-control__resume_session` exactly once with the inbound private `chat_id` and `index: N`. The control MCP sends the acknowledgement; the root-owned helper sends completion or failure. Do not send another message.
+- Do not retry either command after an interrupted or unknown tool outcome.
+- Conversational requests do not count as commands. Ask the user to send the exact slash command.
+
 ## Reset command
 
 Treat a direct inbound Telegram message as a reset request only when its trimmed text is exactly `/reset` or `/reset@BOT_USERNAME`.
