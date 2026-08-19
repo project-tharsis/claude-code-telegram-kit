@@ -39,10 +39,11 @@ SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 # Receipt schema written by the SessionStart command-hook writer and read back by this helper.
 RECEIPT_VERSION = 1
 MAX_RECEIPT_BYTES = 64 * 1024
-# Claude Code handles /status locally: it initializes Channel plumbing without an LLM turn
-# or a user/assistant transcript record. This avoids the old synthetic READY prompt while
-# still bootstrapping the official Telegram poller on Claude Code 2.1.235.
-LOCAL_CHANNEL_BOOTSTRAP_COMMAND = "/status"
+# Claude Code 2.1.235 starts Channel polling only after initial input. /agents is a
+# non-modal local command: it initializes Channel plumbing, returns to the prompt, calls no
+# LLM, and its local-command records are ignored by native ai-title generation. This avoids
+# both the old synthetic READY prompt and /status's blocking Settings modal.
+LOCAL_CHANNEL_BOOTSTRAP_COMMAND = "/agents"
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -363,7 +364,7 @@ def _transform_continue_unit(unit: str, replacement: str) -> str:
 
 def fresh_unit_from_continue(unit: str, session_id: str) -> str:
     _validate_uuid(session_id)
-    # The fresh unit pins the exact new session. /status is a Claude-local command, not an
+    # The fresh unit pins the exact new session. /agents is a Claude-local command, not an
     # LLM prompt; the SessionStart command hook reports readiness through a receipt.
     transformed = _transform_continue_unit(unit, f"--session-id {session_id}")
     marker = '" /dev/null'

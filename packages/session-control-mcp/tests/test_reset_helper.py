@@ -30,8 +30,8 @@ class UnitContractTests(unittest.TestCase):
             '" /dev/null',
             f" {reset.LOCAL_CHANNEL_BOOTSTRAP_COMMAND}\" /dev/null",
         )
-        # /status is handled locally by Claude Code: it starts Channel plumbing but creates
-        # no user/assistant transcript turn and does not call the LLM.
+        # /agents is handled locally by Claude Code: it starts Channel plumbing, returns to
+        # the prompt, calls no LLM, and native ai-title ignores its local-command records.
         self.assertEqual(unit, expected)
         self.assertNotIn("--continue", unit)
         self.assertNotIn("READY", unit)
