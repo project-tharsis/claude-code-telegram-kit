@@ -24,10 +24,15 @@ BASE_UNIT = """[Service]\nWorkingDirectory=/srv/claude-bot\nExecStart=/usr/bin/s
 
 
 class UnitContractTests(unittest.TestCase):
-    def test_fresh_unit_replaces_continue_with_exact_session_id_and_no_prompt(self):
+    def test_fresh_unit_replaces_continue_with_exact_session_id_and_local_bootstrap(self):
         unit = reset.fresh_unit_from_continue(BASE_UNIT, NEW_SESSION)
-        # The fresh unit must pin the exact session with no injected prompt or seed text.
-        self.assertEqual(unit, BASE_UNIT.replace("--continue", f"--session-id {NEW_SESSION}"))
+        expected = BASE_UNIT.replace("--continue", f"--session-id {NEW_SESSION}").replace(
+            '" /dev/null',
+            f" {reset.LOCAL_CHANNEL_BOOTSTRAP_COMMAND}\" /dev/null",
+        )
+        # /status is handled locally by Claude Code: it starts Channel plumbing but creates
+        # no user/assistant transcript turn and does not call the LLM.
+        self.assertEqual(unit, expected)
         self.assertNotIn("--continue", unit)
         self.assertNotIn("READY", unit)
 

@@ -14,6 +14,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -38,6 +39,10 @@ SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 # Receipt schema written by the SessionStart command-hook writer and read back by this helper.
 RECEIPT_VERSION = 1
 MAX_RECEIPT_BYTES = 64 * 1024
+# Claude Code handles /status locally: it initializes Channel plumbing without an LLM turn
+# or a user/assistant transcript record. This avoids the old synthetic READY prompt while
+# still bootstrapping the official Telegram poller on Claude Code 2.1.235.
+LOCAL_CHANNEL_BOOTSTRAP_COMMAND = "/status"
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -358,9 +363,17 @@ def _transform_continue_unit(unit: str, replacement: str) -> str:
 
 def fresh_unit_from_continue(unit: str, session_id: str) -> str:
     _validate_uuid(session_id)
-    # The fresh unit pins the exact new session and injects no prompt or seed text: the
-    # SessionStart command hook reports readiness through a receipt instead.
-    return _transform_continue_unit(unit, f"--session-id {session_id}")
+    # The fresh unit pins the exact new session. /status is a Claude-local command, not an
+    # LLM prompt; the SessionStart command hook reports readiness through a receipt.
+    transformed = _transform_continue_unit(unit, f"--session-id {session_id}")
+    marker = '" /dev/null'
+    if transformed.count(marker) != 1:
+        raise ValueError("unit must contain exactly one script output marker")
+    return transformed.replace(
+        marker,
+        f" {shlex.quote(LOCAL_CHANNEL_BOOTSTRAP_COMMAND)}\" /dev/null",
+        1,
+    )
 
 
 def resume_unit_from_continue(unit: str, session_id: str) -> str:
