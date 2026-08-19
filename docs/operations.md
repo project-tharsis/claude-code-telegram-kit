@@ -59,9 +59,14 @@ git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_ses
 sha256sum /tmp/claude-session-start-receipt
 sudo install -o root -g root -m 0755 /tmp/claude-session-start-receipt /usr/local/sbin/claude-session-start-receipt
 sudo sha256sum /usr/local/sbin/claude-session-start-receipt
+
+git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_control_guard.py > /tmp/claude-control-command-guard
+sha256sum /tmp/claude-control-command-guard
+sudo install -o root -g root -m 0755 /tmp/claude-control-command-guard /usr/local/sbin/claude-control-command-guard
+sudo sha256sum /usr/local/sbin/claude-control-command-guard
 ```
 
-Wire it in `telegram-channel-settings.json` as the `SessionStart` `startup` command hook, and set `session_start_receipt_dir` in the root `reset.json` to a service-user-owned `0700` directory. The writer runs as the service user, rejects spoofed or malformed input, and publishes a `0600` single-link receipt named by the exact session UUID.
+Wire the receipt writer as the `SessionStart` `startup` command hook. Wire the control guard in parallel with the `UserPromptSubmit` MCP dispatcher: the guard has no side effects and ensures control namespaces never reach the LLM even when MCP is unavailable. Set `session_start_receipt_dir` in root-owned `reset.json` (mode `0600` or `0644`) to a service-user-owned `0700` directory. The writer runs as the service user, rejects spoofed or malformed input, and publishes a `0600` single-link receipt named by the exact session UUID.
 
 ## Restart and verify
 

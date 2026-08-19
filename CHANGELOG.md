@@ -10,11 +10,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.
 - Control slash commands (`/sessions`, `/resume N`, `/reset`) no longer create tool-progress bubbles, which resume/reset could never close before restarting Claude.
+- Root reset configuration may use either secure root-owned mode `0600` or `0644`; the unprivileged scheduler and privileged helper now enforce the same exact mode set.
 
 ### Added
 
 - Hook-driven Telegram tool disclosure: Claude Code `mcp_tool` hooks bind each direct inbound turn and maintain one silent, bounded, edit-in-place progress bubble without exposing raw tool arguments or output.
-- Text-only session continuity commands: `/sessions` lists up to ten recent sessions from one configured workspace, and approval-gated `/resume N` resolves the selected UUID from a private ten-minute snapshot.
+- Deterministic pre-LLM Telegram control routing: `/sessions` lists up to ten recent sessions directly, while `/reset` and `/resume N` use action-bound, session-bound, single-use 60-second confirmation challenges. The MCP dispatcher blocks handled commands before the model, a side-effect-free command hook keeps control namespaces blocked during MCP outages, destructive controls are private-chat only, and all session-control tools are denied to model use.
 - Session Control Protocol v3 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact current/target session binding, durable action-bound receipts, exact worker health checks, and rollback.
 - Deterministic seedless session reset: a fresh `--session-id` start injects no prompt, a `SessionStart` command hook publishes a secure receipt under the service user, and the root helper accepts only the exact receipt plus process/poller/worker health as readiness. No LLM response and no transcript content prove readiness, and the first real Telegram message is the first user turn, so Claude's native `ai-title` is no longer anchored to a synthetic handshake.
 

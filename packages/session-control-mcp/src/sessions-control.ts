@@ -16,6 +16,27 @@ export const RESUME_SCHEDULER_FAILED_TEXT =
   "Session resume scheduling failed. No resume was started.";
 
 const telegramChatId = z.string().regex(/^-?\d+$/);
+const trustedMessageId = z.string().regex(/^\d+$/);
+const trustedSessionId = z.string().regex(
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  "invalid current session UUID"
+);
+
+export const TrustedListSessionsRequestSchema = z.object({
+  chatId: telegramChatId,
+  messageId: trustedMessageId,
+  currentSessionId: trustedSessionId
+}).strict();
+
+export const TrustedResumeSessionRequestSchema = z.object({
+  chatId: telegramChatId,
+  messageId: trustedMessageId,
+  currentSessionId: trustedSessionId,
+  index: z.number().int().min(1).max(MAX_SESSION_INDEX)
+}).strict();
+
+export type TrustedListSessionsRequest = z.infer<typeof TrustedListSessionsRequestSchema>;
+export type TrustedResumeSessionRequest = z.infer<typeof TrustedResumeSessionRequestSchema>;
 
 export const ListSessionsRequestSchema = z.object({
   chat_id: telegramChatId
@@ -91,101 +112,122 @@ export function createSessionsController(deps: SessionsControllerDeps) {
     return config;
   }
 
+  async function listSessionsTrusted(rawRequest: TrustedListSessionsRequest): Promise<ListSessionsReceipt> {
+    const request = TrustedListSessionsRequestSchema.parse(rawRequest);
+    const config = authorize(request.chatId);
+
+    // The listing session is excluded here, so it can never be offered as a resume target.
+    const entries = deps.scanSessions(request.currentSessionId);
+
+    const text = entries.length === 0 ? NO_SESSIONS_TEXT : renderList(entries, deps.now());
+    let ackMessageId: number;
+    try {
+      ackMessageId = await deps.sendMessage(config, request.chatId, text, request.messageId);
+    } catch {
+      throw new Error("session list delivery failed");
+    }
+    if (entries.length > 0) {
+      // Activate the mapping only after the list is visible. A failed replacement request must
+      // never silently repoint an older list the user can still see.
+      deps.writeSnapshot({
+        chatId: request.chatId,
+        sessionId: request.currentSessionId,
+        entries: entries.map((entry, offset) => ({ index: offset + 1, sessionId: entry.sessionId }))
+      });
+    }
+    try {
+      await deps.react(config, request.chatId, request.messageId, "success");
+    } catch {
+      // Reaction UX is best-effort and never changes a confirmed list delivery.
+    }
+    return { status: "listed", count: entries.length, ackMessageId };
+  }
+
+  async function resumeSessionTrusted(rawRequest: TrustedResumeSessionRequest): Promise<ResumeSessionReceipt> {
+    const request = TrustedResumeSessionRequestSchema.parse(rawRequest);
+    if (!deps.helperReady()) throw new Error("session resume is unavailable on this host");
+    const config = authorize(request.chatId);
+
+    const snapshot = deps.readSnapshot(request.chatId);
+    if (snapshot === null) throw new Error("session selection expired; send /sessions again");
+    if (snapshot.chatId !== request.chatId) throw new Error("session selection does not match this chat");
+
+    // The UUID comes from the user-private snapshot and from nowhere else.
+    const sessionId = resolveSelection(snapshot, request.index);
+    if (sessionId === null) throw new Error("session selection expired; send /sessions again");
+    if (sessionId === request.currentSessionId || sessionId === snapshot.sessionId) {
+      throw new Error("cannot resume the current session");
+    }
+    deps.verifySelectedSession(sessionId);
+
+    let ackMessageId: number;
+    try {
+      ackMessageId = await deps.sendMessage(
+        config,
+        request.chatId,
+        `Resuming session ${request.index}. Switching now…`,
+        request.messageId
+      );
+    } catch {
+      throw new Error("ACK delivery failed; resume was not scheduled");
+    }
+    try {
+      await deps.react(config, request.chatId, request.messageId, "success");
+    } catch {
+      // Reaction UX is best-effort and never blocks a confirmed resume ACK.
+    }
+
+    let unit: string;
+    try {
+      unit = await deps.scheduleResume(
+        request.chatId,
+        request.messageId,
+        request.currentSessionId,
+        sessionId
+      );
+    } catch {
+      try {
+        await deps.sendMessage(config, request.chatId, RESUME_SCHEDULER_FAILED_TEXT);
+      } catch {
+        // The primary failure is scheduler rejection; notification is best-effort.
+      }
+      try {
+        // The ACK already marked the command with 👍; a rejection that never started the
+        // resume must not leave the triggering message looking successful.
+        await deps.react(config, request.chatId, request.messageId, "failure");
+      } catch {
+        // Reaction UX is best-effort and never changes the reported failure.
+      }
+      throw new Error("resume scheduler failed");
+    }
+
+    return { status: "scheduled", ackMessageId, unit };
+  }
+
   return {
+    listSessionsTrusted,
+    resumeSessionTrusted,
     async listSessions(rawRequest: ListSessionsRequest): Promise<ListSessionsReceipt> {
       const request = ListSessionsRequestSchema.parse(rawRequest);
       const capability = deps.capabilities.take(request.chat_id, "sessions");
       if (capability === null) throw new Error("no current /sessions command is authorized");
-      const config = authorize(capability.chatId);
-
-      // The listing session is excluded here, so it can never be offered as a resume target.
-      const entries = deps.scanSessions(capability.sessionId);
-
-      const text = entries.length === 0 ? NO_SESSIONS_TEXT : renderList(entries, deps.now());
-      let ackMessageId: number;
-      try {
-        ackMessageId = await deps.sendMessage(config, capability.chatId, text, capability.messageId);
-      } catch {
-        throw new Error("session list delivery failed");
-      }
-      if (entries.length > 0) {
-        // Activate the mapping only after the list is visible. A failed replacement request must
-        // never silently repoint an older list the user can still see.
-        deps.writeSnapshot({
-          chatId: capability.chatId,
-          sessionId: capability.sessionId,
-          entries: entries.map((entry, offset) => ({ index: offset + 1, sessionId: entry.sessionId }))
-        });
-      }
-      try {
-        await deps.react(config, capability.chatId, capability.messageId, "success");
-      } catch {
-        // Reaction UX is best-effort and never changes a confirmed list delivery.
-      }
-      return { status: "listed", count: entries.length, ackMessageId };
+      return listSessionsTrusted({
+        chatId: capability.chatId,
+        messageId: capability.messageId,
+        currentSessionId: capability.sessionId
+      });
     },
 
     async resumeSession(rawRequest: ResumeSessionRequest): Promise<ResumeSessionReceipt> {
       const request = ResumeSessionRequestSchema.parse(rawRequest);
       const capability = deps.capabilities.take(request.chat_id, "resume", request.index);
       if (capability === null) throw new Error("no current /resume N command is authorized");
-      if (!deps.helperReady()) throw new Error("session resume is unavailable on this host");
-      const config = authorize(capability.chatId);
-
-      const snapshot = deps.readSnapshot(capability.chatId);
-      if (snapshot === null) throw new Error("session selection expired; send /sessions again");
-      if (snapshot.chatId !== capability.chatId) throw new Error("session selection does not match this chat");
-
-      // The UUID comes from the user-private snapshot and from nowhere else.
-      const sessionId = resolveSelection(snapshot, request.index);
-      if (sessionId === null) throw new Error("session selection expired; send /sessions again");
-      if (sessionId === capability.sessionId || sessionId === snapshot.sessionId) {
-        throw new Error("cannot resume the current session");
-      }
-      deps.verifySelectedSession(sessionId);
-
-      let ackMessageId: number;
-      try {
-        ackMessageId = await deps.sendMessage(
-          config,
-          capability.chatId,
-          `Resuming session ${request.index}. Switching now…`,
-          capability.messageId
-        );
-      } catch {
-        throw new Error("ACK delivery failed; resume was not scheduled");
-      }
-      try {
-        await deps.react(config, capability.chatId, capability.messageId, "success");
-      } catch {
-        // Reaction UX is best-effort and never blocks a confirmed resume ACK.
-      }
-
-      let unit: string;
-      try {
-        unit = await deps.scheduleResume(
-          capability.chatId,
-          capability.messageId,
-          capability.sessionId,
-          sessionId
-        );
-      } catch {
-        try {
-          await deps.sendMessage(config, capability.chatId, RESUME_SCHEDULER_FAILED_TEXT);
-        } catch {
-          // The primary failure is scheduler rejection; notification is best-effort.
-        }
-        try {
-          // The ACK already marked the command with 👍; a rejection that never started the
-          // resume must not leave the triggering message looking successful.
-          await deps.react(config, capability.chatId, capability.messageId, "failure");
-        } catch {
-          // Reaction UX is best-effort and never changes the reported failure.
-        }
-        throw new Error("resume scheduler failed");
-      }
-
-      return { status: "scheduled", ackMessageId, unit };
+      return resumeSessionTrusted({
+        chatId: capability.chatId,
+        messageId: capability.messageId,
+        currentSessionId: capability.sessionId,
+        index: request.index
+      });
     }
   };
 }

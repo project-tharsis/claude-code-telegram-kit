@@ -1,0 +1,218 @@
+import {
+  assertAuthorizedChat,
+  parseDirectTelegramEnvelope,
+  type RuntimeConfig
+} from "@project-tharsis/claude-code-telegram-shared";
+import { CONFIRMATION, type ResetReceipt, type ResetRequest } from "./control.js";
+import {
+  parseControlCommand,
+  type ConfirmationChallengeStore
+} from "./control-command.js";
+import type {
+  ListSessionsReceipt,
+  ResumeSessionReceipt,
+  TrustedListSessionsRequest,
+  TrustedResumeSessionRequest
+} from "./sessions-control.js";
+import type { BindCommandInput } from "./command-capability.js";
+
+export const RESET_CHALLENGE_PREFIX = "Reset requested. Confirm within 60 seconds:";
+export const RESUME_CHALLENGE_PREFIX = "Resume session {index} requested. Confirm within 60 seconds:";
+export const CONTROL_CONFIRMATION_INVALID_TEXT =
+  "Confirmation is invalid or expired. Send the original command again.";
+export const CONTROL_COMMAND_USAGE_TEXT =
+  "Use /sessions, /reset, /resume N, /reset confirm CODE, or /resume confirm CODE.";
+export const PRIVATE_CONTROL_ONLY_TEXT = "Reset and resume are available only in a private Telegram chat.";
+export const CONTROL_OPERATION_FAILED_TEXT =
+  "Session control could not complete that command. Try again.";
+
+export interface ControlCommandDispatcherDeps {
+  loadConfig: () => RuntimeConfig;
+  challenges: ConfirmationChallengeStore;
+  sendMessage: (
+    config: RuntimeConfig,
+    chatId: string,
+    text: string,
+    replyTo?: string
+  ) => Promise<number>;
+  react: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string,
+    state: "success" | "failure"
+  ) => Promise<boolean>;
+  listSessionsTrusted: (request: TrustedListSessionsRequest) => Promise<ListSessionsReceipt>;
+  resumeSessionTrusted: (request: TrustedResumeSessionRequest) => Promise<ResumeSessionReceipt>;
+  resetSession: (request: ResetRequest) => Promise<ResetReceipt>;
+}
+
+export interface ControlDispatchResult {
+  handled: boolean;
+}
+
+function botSuffix(body: string): string {
+  return /^\/(?:sessions|reset|resume)(@[A-Za-z0-9_]{1,32})?/.exec(body)?.[1] ?? "";
+}
+
+async function bestEffortReact(
+  deps: ControlCommandDispatcherDeps,
+  config: RuntimeConfig,
+  chatId: string,
+  messageId: string,
+  state: "success" | "failure"
+): Promise<void> {
+  try {
+    await deps.react(config, chatId, messageId, state);
+  } catch {
+    // Reaction UX is never the authority for a control action.
+  }
+}
+
+async function bestEffortFailure(
+  deps: ControlCommandDispatcherDeps,
+  config: RuntimeConfig,
+  chatId: string,
+  messageId: string,
+  text = CONTROL_OPERATION_FAILED_TEXT
+): Promise<void> {
+  try {
+    await deps.sendMessage(config, chatId, text, messageId);
+  } catch {
+    // A failed failure-notification must not route the command into the LLM.
+  }
+  await bestEffortReact(deps, config, chatId, messageId, "failure");
+}
+
+function alreadyNotified(error: unknown): boolean {
+  return error instanceof Error
+    && (error.message === "reset scheduler failed" || error.message === "resume scheduler failed");
+}
+
+/**
+ * Deterministic control router for the UserPromptSubmit hook.
+ *
+ * A direct Telegram control command is always consumed here and never reaches the LLM. Ordinary
+ * messages return handled=false. Authority comes from the exact Channel envelope and live
+ * allowlist, while destructive actions additionally require a short-lived one-shot challenge.
+ */
+export function createControlCommandDispatcher(deps: ControlCommandDispatcherDeps) {
+  return async (input: BindCommandInput): Promise<ControlDispatchResult> => {
+    const envelope = parseDirectTelegramEnvelope(input.prompt);
+    if (envelope === null) return { handled: false };
+
+    const command = parseControlCommand(envelope.body);
+    if (command.kind === "other") return { handled: false };
+
+    let config: RuntimeConfig;
+    try {
+      config = deps.loadConfig();
+      assertAuthorizedChat(config, envelope.chatId);
+    } catch {
+      // It is still a control command, so block it instead of allowing the LLM to reinterpret it.
+      return { handled: true };
+    }
+
+    const destructiveNamespace = command.kind !== "sessions"
+      && !(command.kind === "malformed" && command.namespace === "sessions");
+    if (destructiveNamespace && envelope.chatId.startsWith("-")) {
+      await bestEffortFailure(
+        deps,
+        config,
+        envelope.chatId,
+        envelope.messageId,
+        PRIVATE_CONTROL_ONLY_TEXT
+      );
+      return { handled: true };
+    }
+
+    if (command.kind === "malformed") {
+      await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId, CONTROL_COMMAND_USAGE_TEXT);
+      return { handled: true };
+    }
+
+    if (command.kind === "sessions") {
+      try {
+        await deps.listSessionsTrusted({
+          chatId: envelope.chatId,
+          messageId: envelope.messageId,
+          currentSessionId: input.session_id
+        });
+      } catch {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+      return { handled: true };
+    }
+
+    if (command.kind === "reset" || command.kind === "resume") {
+      const action = command.kind;
+      const challenge = deps.challenges.issue(
+        envelope.chatId,
+        action === "reset"
+          ? { action, sessionId: input.session_id }
+          : { action, index: command.index, sessionId: input.session_id }
+      );
+      const suffix = botSuffix(envelope.body);
+      const confirmation = `/${action}${suffix} confirm ${challenge.code}`;
+      const prefix = action === "reset"
+        ? RESET_CHALLENGE_PREFIX
+        : RESUME_CHALLENGE_PREFIX.replace("{index}", String(command.index));
+      try {
+        await deps.sendMessage(
+          config,
+          envelope.chatId,
+          `${prefix}\n\n${confirmation}`,
+          envelope.messageId
+        );
+      } catch {
+        // Revoke a code the user never received.
+        deps.challenges.consume(envelope.chatId, action, challenge.code, input.session_id);
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "failure");
+        return { handled: true };
+      }
+      await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      return { handled: true };
+    }
+
+    const action = command.kind === "reset-confirm" ? "reset" : "resume";
+    const confirmed = deps.challenges.consume(envelope.chatId, action, command.code, input.session_id);
+    if (confirmed === null) {
+      await bestEffortFailure(
+        deps,
+        config,
+        envelope.chatId,
+        envelope.messageId,
+        CONTROL_CONFIRMATION_INVALID_TEXT
+      );
+      return { handled: true };
+    }
+
+    if (confirmed.action === "reset") {
+      try {
+        await deps.resetSession({
+          chat_id: envelope.chatId,
+          message_id: envelope.messageId,
+          confirmation: CONFIRMATION
+        });
+      } catch (error) {
+        if (!alreadyNotified(error)) {
+          await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+        }
+      }
+      return { handled: true };
+    }
+
+    try {
+      await deps.resumeSessionTrusted({
+        chatId: envelope.chatId,
+        messageId: envelope.messageId,
+        currentSessionId: confirmed.sessionId,
+        index: confirmed.index!
+      });
+    } catch (error) {
+      if (!alreadyNotified(error)) {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+    }
+    return { handled: true };
+  };
+}

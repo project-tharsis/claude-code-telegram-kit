@@ -36,26 +36,41 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
-  test("denies every internal hook tool to the model while allowing public delivery", () => {
+  test("denies every session-control tool to the model while allowing only reply delivery", () => {
     for (const tool of HOOK_TOOL_NAMES) {
       expect(settings.permissions.deny).toContain(`mcp__telegram-renderer__${tool}`);
     }
-    expect(settings.permissions.deny).toContain("mcp__session-control__bind_command");
     expect(settings.permissions.allow).toContain("mcp__telegram-renderer__send_reply");
-    expect(settings.permissions.allow).toContain("mcp__session-control__list_sessions");
-    expect(settings.permissions.ask).toContain("mcp__session-control__resume_session");
-    expect(settings.permissions.ask).toContain("mcp__session-control__schedule_session_reset");
+    for (const tool of [
+      "dispatch_command",
+      "bind_command",
+      "list_sessions",
+      "resume_session",
+      "schedule_session_reset"
+    ]) {
+      expect(settings.permissions.deny).toContain(`mcp__session-control__${tool}`);
+    }
+    expect(settings.permissions.allow.some(tool => tool.startsWith("mcp__session-control__"))).toBe(false);
+    expect(settings.permissions.ask.some(tool => tool.startsWith("mcp__session-control__"))).toBe(false);
   });
 
   test("wires each lifecycle event to the exact internal MCP tool", () => {
     expect(toolsFor("UserPromptSubmit").map(hook => `${hook.server}:${hook.tool}`)).toEqual([
       "telegram-renderer:bind_turn",
-      "session-control:bind_command"
+      "session-control:dispatch_command"
     ]);
     expect(toolsFor("PreToolUse").map(hook => hook.tool)).toEqual(["record_tool"]);
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("Stop").map(hook => hook.tool)).toEqual(["finish_turn"]);
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
+  });
+
+  test("fails control namespaces closed with an independent command hook guard", () => {
+    const guard = settings.hooks.UserPromptSubmit!
+      .flatMap(entry => entry.hooks)
+      .find(hook => hook.type === "command");
+    expect(guard?.command).toBe("/usr/local/sbin/claude-control-command-guard");
+    expect(guard?.timeout).toBe(5);
   });
 
   test("wires a deterministic SessionStart receipt hook for fresh resets", () => {

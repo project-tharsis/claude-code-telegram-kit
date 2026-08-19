@@ -119,7 +119,7 @@ The local recovery authority is:
 sudo claude-code-session-reset --config /etc/claude-code-telegram-kit/reset.json
 ```
 
-The optional Telegram `/reset` command is a thin MCP front end. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
+The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/sessions` executes immediately; `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
 
 ## Development
 

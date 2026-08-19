@@ -113,6 +113,44 @@ describe("/sessions listing", () => {
     expect(receipt).toEqual({ status: "listed", count: 2, ackMessageId: 900 });
   });
 
+  test("trusted entrypoint lists without consuming a capability", async () => {
+    const h = harness({ entries: ENTRIES, capability: null });
+
+    const receipt = await h.controller.listSessionsTrusted({
+      chatId: "123",
+      messageId: "51",
+      currentSessionId: CURRENT
+    });
+
+    expect(h.takes).toEqual([]);
+    expect(h.sent[0]).toEqual({
+      text: "Recent sessions (2). Reply /resume N to continue one.\n\n"
+        + "1. Refactor the parser — 12m ago\n"
+        + "2. Draft the release notes — 3h ago",
+      replyTo: "51"
+    });
+    expect(h.written[0]).toMatchObject({ chatId: "123", sessionId: CURRENT });
+    expect(h.reactions).toEqual([["123", "51", "success"]]);
+    expect(receipt).toEqual({ status: "listed", count: 2, ackMessageId: 900 });
+  });
+
+  test("trusted listing rejects malformed message and current-session IDs", async () => {
+    for (const fields of [
+      { messageId: "not-a-message-id" },
+      { currentSessionId: "not-a-uuid" }
+    ]) {
+      const h = harness({ entries: ENTRIES });
+      await expect(h.controller.listSessionsTrusted({
+        chatId: "123",
+        messageId: "51",
+        currentSessionId: CURRENT,
+        ...fields
+      })).rejects.toThrow();
+      expect(h.sent).toEqual([]);
+      expect(h.written).toEqual([]);
+    }
+  });
+
   test("keeps a confirmed list successful when reaction finalization fails", async () => {
     const h = harness({
       entries: ENTRIES,
@@ -211,6 +249,45 @@ describe("/resume N", () => {
       ackMessageId: 900,
       unit: "claude-session-reset-resume-abc"
     });
+  });
+
+  test("trusted entrypoint resumes without consuming a capability", async () => {
+    const h = harness({ capability: null, snapshot });
+
+    const receipt = await h.controller.resumeSessionTrusted({
+      chatId: "123",
+      messageId: "51",
+      currentSessionId: CURRENT,
+      index: 2
+    });
+
+    expect(h.takes).toEqual([]);
+    expect(h.sent).toEqual([{ text: "Resuming session 2. Switching now…", replyTo: "51" }]);
+    expect(h.scheduled).toEqual([["123", "51", CURRENT, uuid(2)]]);
+    expect(h.reactions).toEqual([["123", "51", "success"]]);
+    expect(receipt).toEqual({
+      status: "scheduled",
+      ackMessageId: 900,
+      unit: "claude-session-reset-resume-abc"
+    });
+  });
+
+  test("trusted resume rejects malformed message and current-session IDs", async () => {
+    for (const fields of [
+      { messageId: "not-a-message-id" },
+      { currentSessionId: "not-a-uuid" }
+    ]) {
+      const h = harness({ snapshot });
+      await expect(h.controller.resumeSessionTrusted({
+        chatId: "123",
+        messageId: "51",
+        currentSessionId: CURRENT,
+        index: 1,
+        ...fields
+      })).rejects.toThrow();
+      expect(h.sent).toEqual([]);
+      expect(h.scheduled).toEqual([]);
+    }
   });
 
   test("fails closed without a matching capability index", async () => {

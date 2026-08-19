@@ -121,7 +121,17 @@ describe("turn disclosure lifecycle", () => {
   });
 
   test("control slash commands never create tool-progress bubbles", async () => {
-    for (const body of ["/sessions", "/resume 1", "/resume@ExampleAssistant 10", "/reset", "/reset@ExampleAssistant"]) {
+    for (const body of [
+      "/sessions",
+      "/resume 1",
+      "/resume@ExampleAssistant 10",
+      "/resume confirm ABC234",
+      "/resume@ExampleAssistant confirm ABC234",
+      "/reset",
+      "/reset@ExampleAssistant",
+      "/reset confirm ABC234",
+      "/reset@ExampleAssistant confirm ABC234"
+    ]) {
       const h = harness();
       bind(h, `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${body}`);
       tool(h, "t1", "ToolSearch");

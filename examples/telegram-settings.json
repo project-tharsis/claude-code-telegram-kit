@@ -1,19 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "mcp__telegram-renderer__send_reply",
-      "mcp__session-control__list_sessions"
+      "mcp__telegram-renderer__send_reply"
     ],
-    "ask": [
-      "mcp__session-control__resume_session",
-      "mcp__session-control__schedule_session_reset"
-    ],
+    "ask": [],
     "deny": [
       "mcp__telegram-renderer__bind_turn",
       "mcp__telegram-renderer__record_tool",
       "mcp__telegram-renderer__record_tool_failure",
       "mcp__telegram-renderer__finish_turn",
-      "mcp__session-control__bind_command"
+      "mcp__session-control__dispatch_command",
+      "mcp__session-control__bind_command",
+      "mcp__session-control__list_sessions",
+      "mcp__session-control__resume_session",
+      "mcp__session-control__schedule_session_reset"
     ]
   },
   "hooks": {
@@ -33,6 +33,11 @@
       {
         "hooks": [
           {
+            "type": "command",
+            "command": "/usr/local/sbin/claude-control-command-guard",
+            "timeout": 5
+          },
+          {
             "type": "mcp_tool",
             "server": "telegram-renderer",
             "tool": "bind_turn",
@@ -46,7 +51,8 @@
           {
             "type": "mcp_tool",
             "server": "session-control",
-            "tool": "bind_command",
+            "tool": "dispatch_command",
+            "timeout": 30,
             "input": {
               "session_id": "${session_id}",
               "prompt_id": "${prompt_id}",
