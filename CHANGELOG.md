@@ -13,10 +13,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Fresh sessions are named from their first real Telegram message via the supported `UserPromptSubmit` `sessionTitle` output instead of the empty reset seed, so `/sessions` lists recognizable titles. Only the first message of a session sets the name; control commands and empty bodies never title a session.
 - Hook-driven Telegram tool disclosure: Claude Code `mcp_tool` hooks bind each direct inbound turn and maintain one silent, bounded, edit-in-place progress bubble without exposing raw tool arguments or output.
 - Text-only session continuity commands: `/sessions` lists up to ten recent sessions from one configured workspace, and approval-gated `/resume N` resolves the selected UUID from a private ten-minute snapshot.
-- Session Control Protocol v2 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact current/target session binding, durable action-bound receipts, exact worker health checks, and rollback.
+- Session Control Protocol v3 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact current/target session binding, durable action-bound receipts, exact worker health checks, and rollback.
+- Deterministic seedless session reset: a fresh `--session-id` start injects no prompt, a `SessionStart` command hook publishes a secure receipt under the service user, and the root helper accepts only the exact receipt plus process/poller/worker health as readiness. No LLM response and no transcript content prove readiness, and the first real Telegram message is the first user turn, so Claude's native `ai-title` is no longer anchored to a synthetic handshake.
 
 ### Fixed
 

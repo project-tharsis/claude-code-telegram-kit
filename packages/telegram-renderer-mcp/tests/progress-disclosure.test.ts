@@ -292,6 +292,21 @@ describe("turn disclosure lifecycle", () => {
     expect(h.sends.length).toBe(2);
     expect(h.sends[1]!.text).toBe("Working…\n• Running commands");
   });
+
+  test("a second message in the same session still binds progress", async () => {
+    const h = harness();
+    bind(h, ENVELOPE, "p1");
+    bind(h, ENVELOPE, "p2");
+    h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: "p2",
+      tool_use_id: "u1",
+      tool_name: "Read",
+      hook_event_name: "PreToolUse"
+    });
+    await h.tick();
+    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• Reading files" }]);
+  });
 });
 
 describe("turn disclosure failure handling", () => {

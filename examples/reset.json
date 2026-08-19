@@ -3,6 +3,7 @@
   "service_user": "USER",
   "workspace": "/home/USER/claude-bot-workspace",
   "project_sessions": "/home/USER/.claude/projects/-home-USER-claude-bot-workspace",
+  "session_start_receipt_dir": "/home/USER/.local/state/claude-code-telegram-kit/session-start",
   "channel_state": "/home/USER/.claude/channels/telegram",
   "lock_path": "/run/lock/claude-telegram-session-reset.lock",
   "poller_process_marker": "bun server.ts",

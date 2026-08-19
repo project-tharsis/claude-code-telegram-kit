@@ -6,8 +6,6 @@ import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared
 import { SEND_REPLY_TOOL } from "../src/unified-tool.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
-/** Dedicated session for title tests so module-level titledSessions never collides across files. */
-const TITLE_SESSION = "4fcbaf06-4378-4339-b026-8c2e026a65e7";
 
 function recorder() {
   const calls: Array<{ kind: string; input: unknown }> = [];
@@ -106,7 +104,7 @@ describe("internal hook tool handler", () => {
     expect(result!.content).toEqual([{ type: "text", text: "" }]);
   });
 
-  test("bind_turn returns a sessionTitle only for the first real message of a session", async () => {
+  test("bind_turn never emits a sessionTitle for ordinary Telegram messages", async () => {
     const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
     const realDisclosure = createTurnDisclosure({
       loadConfig: () => config,
@@ -115,36 +113,69 @@ describe("internal hook tool handler", () => {
       schedule: () => () => undefined
     });
     const handle = createHookToolHandler(realDisclosure);
-    const first = await handle("bind_turn", {
-      session_id: TITLE_SESSION,
+    const result = await handle("bind_turn", {
+      session_id: SESSION,
       prompt_id: "p1",
       prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">git bisect is stuck</channel>',
       hook_event_name: "UserPromptSubmit"
     });
-    expect(first!.content).toEqual([{
-      type: "text",
-      text: JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          sessionTitle: "git bisect is stuck"
-        }
-      })
-    }]);
+    expect(result!.isError).toBeFalsy();
+    expect(result!.content).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("a second message in the same session still binds progress without a sessionTitle", async () => {
+    const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
+    const sends: string[] = [];
+    const scheduled: { run: (() => Promise<void>) | null } = { run: null };
+    const realDisclosure = createTurnDisclosure({
+      loadConfig: () => config,
+      send: async () => {
+        sends.push("sent");
+        return { kind: "sent", messageId: 1 };
+      },
+      edit: async () => ({ kind: "edited" }),
+      schedule: run => {
+        scheduled.run = run;
+        return () => {
+          scheduled.run = null;
+        };
+      }
+    });
+    const handle = createHookToolHandler(realDisclosure);
+
+    const first = await handle("bind_turn", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">first message</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(first!.content).toEqual([{ type: "text", text: "" }]);
 
     const second = await handle("bind_turn", {
-      session_id: TITLE_SESSION,
+      session_id: SESSION,
       prompt_id: "p2",
-      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="10">still stuck</channel>',
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="10">second message</channel>',
       hook_event_name: "UserPromptSubmit"
     });
     expect(second!.content).toEqual([{ type: "text", text: "" }]);
+
+    await handle("record_tool", {
+      session_id: SESSION,
+      prompt_id: "p2",
+      tool_use_id: "t1",
+      tool_name: "Read",
+      hook_event_name: "PreToolUse"
+    });
+    expect(scheduled.run).not.toBeNull();
+    await scheduled.run!();
+    expect(sends).toEqual(["sent"]);
   });
 
   test("bind_turn never titles control commands or empty bodies", async () => {
     const { handle } = recorder();
     for (const body of ["/sessions", "/resume 1", "/reset", ""]) {
       const result = await handle("bind_turn", {
-        session_id: TITLE_SESSION,
+        session_id: SESSION,
         prompt_id: "p9",
         prompt: `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${body}</channel>`,
         hook_event_name: "UserPromptSubmit"
