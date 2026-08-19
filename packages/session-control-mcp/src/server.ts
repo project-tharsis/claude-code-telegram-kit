@@ -18,7 +18,8 @@ const configRoot = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", "telegram");
 const controller = createResetController({
   loadConfig: () => loadRuntimeConfig(stateDir),
-  sendMessage: sendTelegramMessage,
+  sendMessage: (config, chatId, text, replyTo) =>
+    sendTelegramMessage(config, chatId, text, fetch, replyTo),
   react: finalizeTelegramReaction,
   schedule: createResetScheduler()
 });

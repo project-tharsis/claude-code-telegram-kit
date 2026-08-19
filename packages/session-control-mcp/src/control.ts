@@ -5,9 +5,16 @@ export const CONFIRMATION = "RESET SESSION";
 export const RESET_ACCEPTED_TEXT = "Session reset accepted. Starting a fresh session now…";
 export const RESET_SCHEDULER_FAILED_TEXT = "Session reset scheduling failed. No reset was started.";
 
+const telegramMessageId = z.string()
+  .regex(/^\d+$/)
+  .refine(value => {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 1;
+  }, "invalid Telegram message ID");
+
 export const ResetRequestSchema = z.object({
   chat_id: z.string().regex(/^\d+$/),
-  message_id: z.string().regex(/^\d+$/),
+  message_id: telegramMessageId,
   confirmation: z.literal(CONFIRMATION)
 }).strict();
 
@@ -21,7 +28,7 @@ export interface ResetReceipt {
 
 export interface ResetControllerDeps {
   loadConfig: () => RuntimeConfig;
-  sendMessage: (config: RuntimeConfig, chatId: string, text: string) => Promise<number>;
+  sendMessage: (config: RuntimeConfig, chatId: string, text: string, replyTo?: string) => Promise<number>;
   react: (
     config: RuntimeConfig,
     chatId: string,
@@ -39,7 +46,7 @@ export function createResetController(deps: ResetControllerDeps) {
 
     let ackMessageId: number;
     try {
-      ackMessageId = await deps.sendMessage(config, request.chat_id, RESET_ACCEPTED_TEXT);
+      ackMessageId = await deps.sendMessage(config, request.chat_id, RESET_ACCEPTED_TEXT, request.message_id);
     } catch {
       throw new Error("ACK delivery failed; reset was not scheduled");
     }

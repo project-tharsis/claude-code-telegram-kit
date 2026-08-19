@@ -14,7 +14,7 @@ import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared
 export const SEND_REPLY_TOOL = {
   name: "send_reply",
   description:
-    "Send one Telegram reply from canonical raw Markdown. The sidecar deterministically chooses native Rich Message only for tables, task lists, details, or block math; ordinary Markdown uses MarkdownV2. Use exactly once per user-facing answer.",
+    "Send one Telegram reply from canonical raw Markdown and quote the inbound message by default. The sidecar deterministically chooses native Rich Message only for tables, task lists, details, or block math; ordinary Markdown uses MarkdownV2. Use exactly once per user-facing answer.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -29,7 +29,7 @@ export const SEND_REPLY_TOOL = {
         type: "string",
         pattern: "^\\d+$",
         maxLength: 16,
-        description: "Inbound Telegram message ID whose processing reaction will be finalized."
+        description: "Inbound Telegram message ID to quote by default and whose processing reaction will be finalized."
       },
       content: {
         type: "string",
@@ -41,7 +41,7 @@ export const SEND_REPLY_TOOL = {
         type: "string",
         pattern: "^\\d+$",
         maxLength: 16,
-        description: "Optional inbound message_id to quote."
+        description: "Only set when intentionally quoting a different message instead of message_id."
       },
       disable_notification: {
         type: "boolean",

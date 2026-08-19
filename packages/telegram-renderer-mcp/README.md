@@ -8,6 +8,8 @@ A project-scoped MCP server that accepts one raw CommonMark/GFM document and det
 send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
 ```
 
+The renderer quotes `message_id` by default. Set `reply_to` only to intentionally quote a different message; reactions still target `message_id`.
+
 ## Routing
 
 - GFM pipe tables, task lists, `<details>`, and block math use `sendRichMessage` when within the Rich Message limit.
@@ -20,7 +22,7 @@ send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
 - Permanent Rich parser/capability rejection may fall back to MarkdownV2.
 - Permanent MarkdownV2 rejection may fall back to plain text.
 - Timeout, 429, 5xx, transport, and unknown outcomes never trigger a resend.
-- A proven endpoint capability failure latches Rich off for the MCP process lifetime.
+- A proven endpoint capability failure holds Rich off for a 30-minute cooldown, then re-probes.
 
 ## Processing reactions
 

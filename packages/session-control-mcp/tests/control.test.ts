@@ -13,12 +13,20 @@ const config: RuntimeConfig = {
 };
 
 describe("reset control plane", () => {
+  test("rejects a lossy inbound message ID", () => {
+    expect(() => ResetRequestSchema.parse({
+      chat_id: "123456789",
+      message_id: "9007199254740993",
+      confirmation: CONFIRMATION
+    })).toThrow();
+  });
+
   test("authorizes, acknowledges, then schedules the root helper", async () => {
     const events: string[] = [];
     const controller = createResetController({
       loadConfig: () => config,
-      sendMessage: async (_cfg, chatId, text) => {
-        events.push(`ack:${chatId}:${text}`);
+      sendMessage: async (_cfg, chatId, text, replyTo) => {
+        events.push(`ack:${chatId}:${replyTo}:${text}`);
         return 71;
       },
       react: async (_cfg, chatId, messageId, state) => {
@@ -43,7 +51,7 @@ describe("reset control plane", () => {
       ackMessageId: 71,
       unit: "claude-session-reset-test"
     });
-    expect(events[0]?.startsWith("ack:123456789:")).toBe(true);
+    expect(events[0]?.startsWith("ack:123456789:51:")).toBe(true);
     expect(events[1]).toBe("react:123456789:51:success");
     expect(events[2]).toBe("schedule:123456789");
   });
@@ -107,8 +115,8 @@ describe("reset control plane", () => {
     const messages: string[] = [];
     const controller = createResetController({
       loadConfig: () => config,
-      sendMessage: async (_cfg, _chatId, text) => {
-        messages.push(text);
+      sendMessage: async (_cfg, _chatId, text, replyTo) => {
+        messages.push(`${replyTo ?? "independent"}:${text}`);
         return messages.length;
       },
       react: async () => true,
@@ -119,6 +127,7 @@ describe("reset control plane", () => {
       "reset scheduler failed"
     );
     expect(messages).toHaveLength(2);
-    expect(messages[1]).toContain("No reset was started");
+    expect(messages[0]).toContain("51:Session reset accepted");
+    expect(messages[1]).toContain("independent:Session reset scheduling failed");
   });
 });

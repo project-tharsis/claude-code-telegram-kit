@@ -63,7 +63,13 @@ async function attemptTelegram(
     return { kind: "uncertain" };
   }
   const messageId = envelope.result?.message_id;
-  if (response.ok && envelope.ok === true && typeof messageId === "number" && Number.isInteger(messageId)) {
+  if (
+    response.ok
+    && envelope.ok === true
+    && typeof messageId === "number"
+    && Number.isSafeInteger(messageId)
+    && messageId >= 1
+  ) {
     return { kind: "success", messageId };
   }
   if (response.status === 400 || response.status === 404) {
@@ -92,8 +98,10 @@ export function createUnifiedDeliverer(
 
   return async (input: UnifiedReplyInput, config: RuntimeConfig): Promise<UnifiedDeliveryReceipt> => {
     assertAuthorizedChat(config, input.chat_id);
-    const common: Record<string, unknown> = { chat_id: input.chat_id };
-    if (input.reply_to !== undefined) common.reply_parameters = { message_id: Number(input.reply_to) };
+    const common: Record<string, unknown> = {
+      chat_id: input.chat_id,
+      reply_parameters: { message_id: Number(input.reply_to ?? input.message_id) }
+    };
     if (input.disable_notification) common.disable_notification = true;
 
     if (now() >= richDisabledUntil && needsRichRendering(input.content)) {

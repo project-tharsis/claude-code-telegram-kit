@@ -28,14 +28,34 @@ describe("control runtime boundaries", () => {
       });
     };
 
-    const id = await sendTelegramMessage(config, "123456789", "Reset accepted", fetchImpl);
+    const id = await sendTelegramMessage(config, "123456789", "Reset accepted", fetchImpl, "51");
 
     expect(id).toBe(71);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url.endsWith("/sendMessage")).toBe(true);
     expect(calls[0]!.init?.redirect).toBe("error");
     expect(calls[0]!.init?.signal).toBeDefined();
-    expect(calls[0]!.body).toEqual({ chat_id: "123456789", text: "Reset accepted" });
+    expect(calls[0]!.body).toEqual({
+      chat_id: "123456789",
+      reply_parameters: { message_id: 51 },
+      text: "Reset accepted"
+    });
+  });
+
+  test("keeps injected fetch as the fourth argument", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl: FetchLike = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 72 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+
+    const id = await sendTelegramMessage(config, "123456789", "Independent", fetchImpl);
+
+    expect(id).toBe(72);
+    expect(bodies).toEqual([{ chat_id: "123456789", text: "Independent" }]);
   });
 
   test("rejects an unauthorized chat before the Telegram request", async () => {
@@ -43,7 +63,16 @@ describe("control runtime boundaries", () => {
     await expect(sendTelegramMessage(config, "999", "Reset accepted", async () => {
       calls += 1;
       return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), { status: 200 });
-    })).rejects.toThrow("chat is not authorized");
+    }, undefined)).rejects.toThrow("chat is not authorized");
+    expect(calls).toBe(0);
+  });
+
+  test("rejects a lossy reply message ID before the Telegram request", async () => {
+    let calls = 0;
+    await expect(sendTelegramMessage(config, "123456789", "Reset accepted", async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), { status: 200 });
+    }, "9007199254740993")).rejects.toThrow("invalid reply message ID");
     expect(calls).toBe(0);
   });
 
@@ -52,8 +81,23 @@ describe("control runtime boundaries", () => {
       config,
       "123456789",
       "Reset accepted",
-      async () => new Response("x".repeat(MAX_TELEGRAM_RESPONSE_BYTES + 1), { status: 200 })
+      async () => new Response("x".repeat(MAX_TELEGRAM_RESPONSE_BYTES + 1), { status: 200 }),
+      undefined
     )).rejects.toThrow("notification failed");
+  });
+
+  test("rejects invalid Telegram response message IDs", async () => {
+    for (const messageId of [0, -1, 9_007_199_254_740_992]) {
+      await expect(sendTelegramMessage(
+        config,
+        "123456789",
+        "Reset accepted",
+        async () => new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )).rejects.toThrow("notification failed");
+    }
   });
 
   test("constructs one fixed no-shell systemd-run command", async () => {
