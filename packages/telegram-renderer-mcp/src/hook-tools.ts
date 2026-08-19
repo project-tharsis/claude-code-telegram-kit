@@ -119,7 +119,8 @@ export const INTERNAL_HOOK_TOOLS = [
 export const HOOK_TOOL_NAMES: string[] = INTERNAL_HOOK_TOOLS.map(tool => tool.name);
 
 export interface HookDisclosure {
-  bindTurn: (input: BindTurnInput) => void;
+  /** Returns a bounded sessionTitle candidate for the first real message, or null. */
+  bindTurn: (input: BindTurnInput) => string | null;
   recordTool: (input: RecordToolInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
   finishTurn: (input: FinishTurnInput) => Promise<void>;
@@ -137,9 +138,23 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
     if (!HOOK_TOOL_NAMES.includes(name)) return null;
     try {
       switch (name) {
-        case BIND_TURN_TOOL.name:
-          disclosure.bindTurn(BindTurnInputSchema.parse(arguments_));
+        case BIND_TURN_TOOL.name: {
+          const title = disclosure.bindTurn(BindTurnInputSchema.parse(arguments_));
+          if (title !== null) {
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  hookSpecificOutput: {
+                    hookEventName: "UserPromptSubmit",
+                    sessionTitle: title
+                  }
+                })
+              }]
+            };
+          }
           break;
+        }
         case RECORD_TOOL_TOOL.name:
           disclosure.recordTool(RecordToolInputSchema.parse(arguments_));
           break;

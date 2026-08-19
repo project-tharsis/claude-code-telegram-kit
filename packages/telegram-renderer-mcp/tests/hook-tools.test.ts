@@ -1,20 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import {
-  createHookToolHandler,
-  HOOK_TOOL_NAMES,
-  INTERNAL_HOOK_TOOLS,
-  RECORD_TOOL_TOOL
-} from "../src/hook-tools.js";
+import { createHookToolHandler, HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS, RECORD_TOOL_TOOL } from "../src/hook-tools.js";
 import { RecordToolInputSchema } from "../src/hook-contract.js";
+import { createTurnDisclosure } from "../src/progress-disclosure.js";
+import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 import { SEND_REPLY_TOOL } from "../src/unified-tool.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
+/** Dedicated session for title tests so module-level titledSessions never collides across files. */
+const TITLE_SESSION = "4fcbaf06-4378-4339-b026-8c2e026a65e7";
 
 function recorder() {
   const calls: Array<{ kind: string; input: unknown }> = [];
   const disclosure = {
     bindTurn: (input: unknown) => {
       calls.push({ kind: "bind", input });
+      return null;
     },
     recordTool: (input: unknown) => {
       calls.push({ kind: "tool", input });
@@ -104,6 +104,53 @@ describe("internal hook tool handler", () => {
     });
     expect(result!.isError).toBeFalsy();
     expect(result!.content).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("bind_turn returns a sessionTitle only for the first real message of a session", async () => {
+    const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
+    const realDisclosure = createTurnDisclosure({
+      loadConfig: () => config,
+      send: async () => ({ kind: "sent", messageId: 1 }),
+      edit: async () => ({ kind: "edited" }),
+      schedule: () => () => undefined
+    });
+    const handle = createHookToolHandler(realDisclosure);
+    const first = await handle("bind_turn", {
+      session_id: TITLE_SESSION,
+      prompt_id: "p1",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">git bisect is stuck</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(first!.content).toEqual([{
+      type: "text",
+      text: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          sessionTitle: "git bisect is stuck"
+        }
+      })
+    }]);
+
+    const second = await handle("bind_turn", {
+      session_id: TITLE_SESSION,
+      prompt_id: "p2",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="10">still stuck</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(second!.content).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("bind_turn never titles control commands or empty bodies", async () => {
+    const { handle } = recorder();
+    for (const body of ["/sessions", "/resume 1", "/reset", ""]) {
+      const result = await handle("bind_turn", {
+        session_id: TITLE_SESSION,
+        prompt_id: "p9",
+        prompt: `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${body}</channel>`,
+        hook_event_name: "UserPromptSubmit"
+      });
+      expect(result!.content).toEqual([{ type: "text", text: "" }]);
+    }
   });
 
   test("rejects a spoofed or mismatched hook_event_name without acting", async () => {

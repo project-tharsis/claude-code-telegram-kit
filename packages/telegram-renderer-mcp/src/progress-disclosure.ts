@@ -29,6 +29,28 @@ export const MAX_RETAINED_TURNS = 32;
 
 const CONTROL_COMMAND = /^(?:\/sessions(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
 
+/** Telegram bodies are collapsed to one line and bounded before becoming titles. */
+const MAX_SESSION_TITLE_CHARS = 60;
+/** Sessions that already received a first-message title. Process-local and bounded. */
+const MAX_TITLED_SESSIONS = 256;
+const titledSessions = new Set<string>();
+
+function sessionTitleFromBody(body: string): string | null {
+  const collapsed = body.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return null;
+  return collapsed.length <= MAX_SESSION_TITLE_CHARS
+    ? collapsed
+    : `${collapsed.slice(0, MAX_SESSION_TITLE_CHARS - 1)}…`;
+}
+
+function markTitled(sessionId: string): void {
+  if (titledSessions.size >= MAX_TITLED_SESSIONS) {
+    const oldest = titledSessions.values().next();
+    if (!oldest.done) titledSessions.delete(oldest.value);
+  }
+  titledSessions.add(sessionId);
+}
+
 export type CancelScheduled = () => void;
 
 export interface TurnDisclosureDeps {
@@ -189,14 +211,14 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       return turns.size;
     },
 
-    bindTurn(input: BindTurnInput): void {
+    bindTurn(input: BindTurnInput): string | null {
       try {
         const envelope = parseDirectTelegramEnvelope(input.prompt);
-        if (envelope === null) return;
+        if (envelope === null) return null;
         // Session-control commands already have their own ACK/list/permission/completion UX.
         // A progress bubble is redundant, and resume/reset kill the current process before
         // Stop can close it, leaving a permanent stale "Working…" bubble.
-        if (CONTROL_COMMAND.test(envelope.body)) return;
+        if (CONTROL_COMMAND.test(envelope.body)) return null;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 
         // A newer prompt in the same chat retires the previous bubble; a stale turn must
@@ -224,8 +246,17 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           chain: Promise.resolve()
         });
         evict();
+
+        // The first real user message names the session via the supported UserPromptSubmit
+        // sessionTitle output. Later messages bind turns normally but never rename it.
+        if (titledSessions.has(input.session_id)) return null;
+        const title = sessionTitleFromBody(envelope.body);
+        if (title === null) return null;
+        markTitled(input.session_id);
+        return title;
       } catch {
         // Presentation only: an unreadable channel state simply produces no bubble.
+        return null;
       }
     },
 
