@@ -49,7 +49,10 @@ export function parseDirectTelegramEnvelope(prompt: string): DirectTelegramEnvel
     match = pattern.exec(tag);
   }
 
-  if (attributes.get("source") !== "telegram") return null;
+  // The official Channel emits `plugin:telegram:telegram`; earlier versions emitted `telegram`.
+  // Accept both exact values only — prefixes or suffixes must not pass.
+  const source = attributes.get("source");
+  if (source !== "telegram" && source !== "plugin:telegram:telegram") return null;
   const chatId = attributes.get("chat_id");
   const messageId = attributes.get("message_id");
   if (chatId === undefined || messageId === undefined) return null;

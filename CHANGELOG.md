@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.
+
 ### Added
 
 - Hook-driven Telegram tool disclosure: Claude Code `mcp_tool` hooks bind each direct inbound turn and maintain one silent, bounded, edit-in-place progress bubble without exposing raw tool arguments or output.
