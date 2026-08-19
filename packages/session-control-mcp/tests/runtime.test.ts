@@ -129,7 +129,7 @@ describe("control runtime boundaries", () => {
       "--config",
       "/etc/claude-code-telegram-kit/reset.json",
       "--protocol",
-      "1",
+      String(HELPER_PROTOCOL_VERSION),
       "--action",
       "reset",
       "--chat-id",
@@ -164,9 +164,12 @@ describe("session action scheduling", () => {
       argvSeen.push(argv);
       return { exitCode: 0, stderr: "" };
     });
-    const requestId = createHash("sha256").update("resume:123456789:51").digest("hex").slice(0, 24);
+    const requestId = createHash("sha256")
+      .update(`resume:123456789:51:${SESSION}`)
+      .digest("hex")
+      .slice(0, 24);
 
-    const unit = await schedule.scheduleResume("123456789", "51", SESSION);
+    const unit = await schedule.scheduleResume("123456789", "51", SESSION, SESSION);
 
     expect(unit).toBe(`claude-session-reset-resume-${requestId}`);
     expect(argvSeen).toEqual([[
@@ -183,6 +186,8 @@ describe("session action scheduling", () => {
       String(HELPER_PROTOCOL_VERSION),
       "--action",
       "resume",
+      "--current-session-id",
+      SESSION,
       "--session-id",
       SESSION,
       "--chat-id",
@@ -200,7 +205,7 @@ describe("session action scheduling", () => {
     });
 
     const resetUnit = await schedule.scheduleReset("123456789", "51");
-    const resumeUnit = await schedule.scheduleResume("123456789", "51", SESSION);
+    const resumeUnit = await schedule.scheduleResume("123456789", "51", SESSION, SESSION);
 
     expect(resetUnit).not.toBe(resumeUnit);
     expect(argvSeen[0]!.at(-1)).not.toBe(argvSeen[1]!.at(-1));
@@ -221,14 +226,35 @@ describe("session action scheduling", () => {
       "3FCBAF06-4378-4339-B026-8C2E026A65E7",
       ""
     ]) {
-      await expect(schedule.scheduleResume("123456789", "51", bad)).rejects.toThrow("invalid session UUID");
+      await expect(schedule.scheduleResume("123456789", "51", SESSION, bad)).rejects.toThrow("invalid session UUID");
+    }
+    expect(calls).toBe(0);
+  });
+
+  test("never accepts a non-UUID current session identity", async () => {
+    let calls = 0;
+    const schedule = scheduler(async () => {
+      calls += 1;
+      return { exitCode: 0, stderr: "" };
+    });
+
+    for (const bad of [
+      "3fcbaf06-4378-4339-b026-8c2e026a65e7 --continue",
+      "../../etc/passwd",
+      "claude-telegram.service",
+      "3FCBAF06-4378-4339-B026-8C2E026A65E7",
+      ""
+    ]) {
+      await expect(schedule.scheduleResume("123456789", "51", bad, SESSION)).rejects.toThrow(
+        "invalid current session UUID"
+      );
     }
     expect(calls).toBe(0);
   });
 
   test("reports a systemd rejection instead of reporting success", async () => {
     const schedule = scheduler(async () => ({ exitCode: 1, stderr: "denied" }));
-    await expect(schedule.scheduleResume("123456789", "51", SESSION)).rejects.toThrow("systemd rejected");
+    await expect(schedule.scheduleResume("123456789", "51", SESSION, SESSION)).rejects.toThrow("systemd rejected");
   });
 });
 
@@ -240,20 +266,20 @@ describe("root helper capability preflight", () => {
         argvSeen.push(argv);
         return {
           exitCode: 0,
-          stdout: JSON.stringify({ protocol: 1, actions: ["reset", "resume"] }),
+          stdout: JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
           stderr: ""
         };
       },
       verifyHelper: () => undefined
     });
 
-    expect(capabilities).toEqual({ protocol: 1, actions: ["reset", "resume"] });
+    expect(capabilities).toEqual({ protocol: 2, actions: ["reset", "resume"] });
     expect(argvSeen).toEqual([["/usr/local/sbin/claude-code-session-reset", "--capabilities"]]);
   });
 
   test("fails closed on a protocol mismatch, a missing action, or unusable output", async () => {
     for (const output of [
-      JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
+      JSON.stringify({ protocol: 3, actions: ["reset", "resume"] }),
       JSON.stringify({ protocol: 1, actions: ["reset"] }),
       JSON.stringify({ protocol: 1 }),
       JSON.stringify({ actions: ["reset", "resume"] }),

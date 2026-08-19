@@ -10,7 +10,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Hook-driven Telegram tool disclosure: Claude Code `mcp_tool` hooks bind each direct inbound turn and maintain one silent, bounded, edit-in-place progress bubble without exposing raw tool arguments or output.
 - Text-only session continuity commands: `/sessions` lists up to ten recent sessions from one configured workspace, and approval-gated `/resume N` resolves the selected UUID from a private ten-minute snapshot.
-- Session Control Protocol v1 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact resume health checks, durable receipts, and rollback.
+- Session Control Protocol v2 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact current/target session binding, durable action-bound receipts, exact worker health checks, and rollback.
 
 ### Fixed
 

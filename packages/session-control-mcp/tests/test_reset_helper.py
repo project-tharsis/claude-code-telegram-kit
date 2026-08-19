@@ -172,6 +172,24 @@ class RequestIdempotencyTests(unittest.TestCase):
             self.assertEqual(third["receipt"]["status"], "complete")
             self.assertEqual(third["receipt"]["new_session"], NEW_SESSION)
 
+    def test_request_receipt_binds_action_and_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            request_id = "d" * 24
+            first = reset.claim_request(state, request_id, TEST_CHAT_ID, action="resume",
+                                        target_session=OLD_SESSION, expected_uid=os.getuid())
+            self.assertTrue(first["claimed"])
+            duplicate = reset.claim_request(state, request_id, TEST_CHAT_ID, action="resume",
+                                            target_session=OLD_SESSION, expected_uid=os.getuid())
+            self.assertFalse(duplicate["claimed"])
+            self.assertEqual(duplicate["receipt"]["status"], "in_progress")
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                reset.claim_request(state, request_id, TEST_CHAT_ID, action="reset",
+                                    target_session=None, expected_uid=os.getuid())
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                reset.claim_request(state, request_id, TEST_CHAT_ID, action="resume",
+                                    target_session=NEW_SESSION, expected_uid=os.getuid())
+
 
 
 def _make_config(root: Path, **overrides):
@@ -200,10 +218,10 @@ def _write_transcript(directory: Path, session_id: str) -> Path:
 
 
 class ProtocolTests(unittest.TestCase):
-    def test_capabilities_declare_protocol_one_and_both_actions(self):
+    def test_capabilities_declare_protocol_two_and_both_actions(self):
         capabilities = reset.capabilities()
         self.assertEqual(capabilities["protocol"], reset.PROTOCOL_VERSION)
-        self.assertEqual(reset.PROTOCOL_VERSION, 1)
+        self.assertEqual(reset.PROTOCOL_VERSION, 2)
         self.assertEqual(sorted(capabilities["actions"]), ["reset", "resume"])
 
     def test_capabilities_flag_prints_json_and_exits_zero_without_config(self):
@@ -215,7 +233,7 @@ class ProtocolTests(unittest.TestCase):
             code = reset.main(["--capabilities"])
         self.assertEqual(code, 0)
         payload = json.loads(buffer.getvalue())
-        self.assertEqual(payload["protocol"], 1)
+        self.assertEqual(payload["protocol"], 2)
         self.assertIn("resume", payload["actions"])
 
     def test_capabilities_never_mutates_state(self):
@@ -233,14 +251,26 @@ class ProtocolTests(unittest.TestCase):
 
     def test_rejects_an_unknown_protocol_before_doing_anything(self):
         with mock.patch.object(reset, "load_config") as load:
-            self.assertEqual(reset.main(["--protocol", "2", "--action", "reset"]), 1)
+            self.assertEqual(reset.main(["--protocol", "3", "--action", "reset"]), 1)
         load.assert_not_called()
 
     def test_rejects_a_session_id_on_reset_and_requires_one_on_resume(self):
         with mock.patch.object(reset, "load_config") as load:
             self.assertEqual(reset.main(["--action", "reset", "--session-id", NEW_SESSION]), 1)
+            self.assertEqual(reset.main(["--action", "reset", "--current-session-id", NEW_SESSION]), 1)
             self.assertEqual(reset.main(["--action", "resume"]), 1)
             self.assertEqual(reset.main(["--action", "resume", "--session-id", "not-a-uuid"]), 1)
+        load.assert_not_called()
+
+    def test_resume_requires_and_validates_the_current_session_id(self):
+        with mock.patch.object(reset, "load_config") as load:
+            self.assertEqual(reset.main(["--action", "resume", "--session-id", OLD_SESSION]), 1)
+            self.assertEqual(
+                reset.main(["--action", "resume", "--session-id", OLD_SESSION,
+                            "--current-session-id", "not-a-uuid"]), 1)
+            self.assertEqual(
+                reset.main(["--action", "resume", "--session-id", "not-a-uuid",
+                            "--current-session-id", NEW_SESSION]), 1)
         load.assert_not_called()
 
     def test_default_reset_invocation_stays_compatible(self):
@@ -372,7 +402,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
         with mock.patch.object(reset, "_service_health", return_value=True), \
                 mock.patch.object(reset, "_notify", return_value=77) as notify:
             result = reset.resume_session(
-                self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                self.config, session_id=OLD_SESSION, current_session_id=NEW_SESSION, chat_id=None, request_id=None, timeout=1
             )
 
         self.assertEqual(result["status"], "resume_complete")
@@ -399,7 +429,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
                     side_effect=lambda *a, **k: events.append("health") or True,
                 ):
             reset.resume_session(
-                self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                self.config, session_id=OLD_SESSION, current_session_id=NEW_SESSION, chat_id=None, request_id=None, timeout=1
             )
 
         # The resumed process must be verified while the unit still pins `--resume <id>`.
@@ -412,7 +442,12 @@ class ResumeOrchestrationTests(unittest.TestCase):
         with mock.patch.object(reset, "_service_health", return_value=True):
             with self.assertRaises(Exception):
                 reset.resume_session(
-                    self.config, session_id=NEW_SESSION, chat_id=None, request_id=None, timeout=1
+                    self.config,
+                    session_id=NEW_SESSION,
+                    current_session_id=NEW_SESSION,
+                    chat_id=None,
+                    request_id=None,
+                    timeout=1,
                 )
         self.assertEqual(self.writes, [])
 
@@ -423,6 +458,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
                 reset.resume_session(
                     self.config,
                     session_id=NEW_SESSION,
+                    current_session_id=NEW_SESSION,
                     chat_id=TEST_CHAT_ID,
                     request_id="c" * 24,
                     timeout=1,
@@ -445,7 +481,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
             clock.time.return_value = 0
             with self.assertRaises(RuntimeError):
                 reset.resume_session(
-                    self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                    self.config, session_id=OLD_SESSION, current_session_id=NEW_SESSION, chat_id=None, request_id=None, timeout=1
                 )
 
         self.assertIn(f"--resume {OLD_SESSION}", self.writes[0])
@@ -459,6 +495,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
             result = reset.resume_session(
                 self.config,
                 session_id=OLD_SESSION,
+                current_session_id=NEW_SESSION,
                 chat_id=TEST_CHAT_ID,
                 request_id="b" * 24,
                 timeout=1,
@@ -480,6 +517,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
             result = reset.resume_session(
                 self.config,
                 session_id=OLD_SESSION,
+                current_session_id=NEW_SESSION,
                 chat_id=TEST_CHAT_ID,
                 request_id="c" * 24,
                 timeout=1,
@@ -496,7 +534,7 @@ class ResumeOrchestrationTests(unittest.TestCase):
             with mock.patch.object(reset, "_service_health", return_value=True):
                 with self.assertRaisesRegex(RuntimeError, "already running"):
                     reset.resume_session(
-                        self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                        self.config, session_id=OLD_SESSION, current_session_id=NEW_SESSION, chat_id=None, request_id=None, timeout=1
                     )
         finally:
             os.close(holder)
@@ -506,8 +544,123 @@ class ResumeOrchestrationTests(unittest.TestCase):
         with mock.patch.object(reset.os, "geteuid", return_value=1000):
             with self.assertRaises(PermissionError):
                 reset.resume_session(
-                    self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                    self.config, session_id=OLD_SESSION, current_session_id=NEW_SESSION,
+                    chat_id=None, request_id=None, timeout=1,
                 )
+
+    def test_resume_rejects_a_non_uuid_current_session_id(self):
+        with self.assertRaisesRegex(ValueError, "invalid session UUID"):
+            reset.resume_session(
+                self.config, session_id=OLD_SESSION, current_session_id="not-a-uuid",
+                chat_id=None, request_id=None, timeout=1,
+            )
+        self.assertEqual(self.writes, [])
+        reset.claim_request.assert_not_called()
+
+    def test_resume_requires_the_current_session_transcript_to_exist(self):
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            reset.resume_session(
+                self.config,
+                session_id=OLD_SESSION,
+                current_session_id="33333333-3333-4333-8333-333333333333",
+                chat_id=None,
+                request_id=None,
+                timeout=1,
+            )
+        self.assertEqual(self.writes, [])
+        reset.claim_request.assert_not_called()
+
+    def test_resume_uses_the_supplied_current_session_as_rollback_authority(self):
+        with mock.patch.object(reset, "_service_health", return_value=True):
+            result = reset.resume_session(
+                self.config, session_id=OLD_SESSION, current_session_id=NEW_SESSION,
+                chat_id=None, request_id=None, timeout=1,
+            )
+        self.assertEqual(result["old_session"], NEW_SESSION)
+        self.assertEqual(result["new_session"], OLD_SESSION)
+        reset._latest_session_id.assert_not_called()
+
+    def test_resume_receipt_failure_after_success_is_not_reclassified(self):
+        with mock.patch.object(reset, "_service_health", return_value=True), \
+                mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
+                mock.patch.object(reset, "_notify", return_value=77) as notify, \
+                mock.patch.object(reset, "finish_request", side_effect=OSError("disk full")):
+            result = reset.resume_session(
+                self.config,
+                session_id=OLD_SESSION,
+                current_session_id=NEW_SESSION,
+                chat_id=TEST_CHAT_ID,
+                request_id="b" * 24,
+                timeout=1,
+            )
+
+        self.assertEqual(result["status"], "resume_complete")
+        self.assertEqual(result["new_session"], OLD_SESSION)
+        self.assertFalse(result["receipt_persisted"])
+        self.assertIn("disk full", result["receipt_error"])
+        self.assertEqual(self.writes[-1], BASE_UNIT)
+        self.assertEqual(notify.call_count, 2)
+
+
+class ResetOrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        self.state_root = root / "requests"
+        self.config = _make_config(root, lock_path=root / "locks" / "reset.lock")
+        _write_transcript(self.config.project_sessions, OLD_SESSION)
+        self.writes = []
+
+        patches = [
+            mock.patch.object(reset.os, "geteuid", return_value=0),
+            mock.patch.object(reset, "REQUEST_STATE_ROOT", self.state_root),
+            mock.patch.object(reset, "_read_canonical_unit", return_value=BASE_UNIT),
+            mock.patch.object(reset, "_atomic_write", side_effect=lambda path, content, mode=0o644: self.writes.append(content)),
+            mock.patch.object(reset, "_reload_and_restart"),
+            mock.patch.object(reset, "_reload_only"),
+            mock.patch.object(reset, "_wait_for_fresh_session"),
+            mock.patch.object(reset, "_latest_session_id", return_value=OLD_SESSION),
+            mock.patch.object(reset, "_service_health", return_value=True),
+            mock.patch.object(reset, "claim_request", side_effect=lambda *a, **k: {"claimed": True, "receipt": {}}),
+            mock.patch.object(reset, "finish_request", side_effect=lambda root_, rid, status, details, **k: {
+                "request_id": rid, "status": status, **details
+            }),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_reset_claims_an_action_bound_receipt_and_persists_on_success(self):
+        with mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
+                mock.patch.object(reset, "_notify", return_value=77):
+            result = reset.reset_session(
+                self.config, chat_id=TEST_CHAT_ID, request_id="e" * 24, timeout=1,
+            )
+
+        self.assertEqual(result["status"], "reset_complete")
+        self.assertTrue(result["receipt_persisted"])
+        self.assertEqual(result["old_session"], OLD_SESSION)
+        self.assertEqual(reset.claim_request.call_args.kwargs["action"], "reset")
+        self.assertIsNone(reset.claim_request.call_args.kwargs["target_session"])
+        self.assertEqual(reset.finish_request.call_args.args[2], "complete")
+        self.assertEqual(self.writes[0], reset.fresh_unit_from_continue(BASE_UNIT, result["new_session"]))
+        self.assertEqual(self.writes[-1], BASE_UNIT)
+
+    def test_reset_receipt_failure_after_success_is_not_reclassified(self):
+        with mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
+                mock.patch.object(reset, "_notify", return_value=77) as notify, \
+                mock.patch.object(reset, "finish_request", side_effect=OSError("disk full")):
+            result = reset.reset_session(
+                self.config, chat_id=TEST_CHAT_ID, request_id="e" * 24, timeout=1,
+            )
+
+        self.assertEqual(result["status"], "reset_complete")
+        self.assertFalse(result["receipt_persisted"])
+        self.assertIn("disk full", result["receipt_error"])
+        self.assertEqual(result["old_session"], OLD_SESSION)
+        self.assertEqual(self.writes[-1], BASE_UNIT)
+        self.assertEqual(notify.call_count, 2)
 
 if __name__ == "__main__":
     unittest.main()

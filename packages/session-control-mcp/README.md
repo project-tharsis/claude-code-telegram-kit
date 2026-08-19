@@ -38,7 +38,7 @@ CLAUDE_PROJECT_SESSIONS_DIR
 
 Defaults are documented in `src/runtime.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
 
-At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v1 with both `reset` and `resume`. Version skew disables privileged actions while leaving listing and rendering available.
+At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v2 with both `reset` and `resume`. Version skew disables privileged actions while leaving listing and rendering available. Protocol v2 binds every resume to both the current session and the selected target, and root-owned receipts bind the action payload so a request ID cannot be reused for another switch.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
 

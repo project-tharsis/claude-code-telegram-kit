@@ -67,7 +67,12 @@ export interface SessionsControllerDeps {
     messageId: string,
     state: "success" | "failure"
   ) => Promise<boolean>;
-  scheduleResume: (chatId: string, messageId: string, sessionId: string) => Promise<string>;
+  scheduleResume: (
+    chatId: string,
+    messageId: string,
+    currentSessionId: string,
+    sessionId: string
+  ) => Promise<string>;
   helperReady: () => boolean;
   now: () => number;
 }
@@ -158,7 +163,12 @@ export function createSessionsController(deps: SessionsControllerDeps) {
 
       let unit: string;
       try {
-        unit = await deps.scheduleResume(capability.chatId, capability.messageId, sessionId);
+        unit = await deps.scheduleResume(
+          capability.chatId,
+          capability.messageId,
+          capability.sessionId,
+          sessionId
+        );
       } catch {
         try {
           await deps.sendMessage(config, capability.chatId, RESUME_SCHEDULER_FAILED_TEXT);
