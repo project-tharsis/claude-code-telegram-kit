@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   createResetScheduler,
+  createSessionScheduler,
+  HELPER_PROTOCOL_VERSION,
+  probeHelperCapabilities,
   sendTelegramMessage,
   type CommandRunner,
   type FetchLike
@@ -125,6 +128,10 @@ describe("control runtime boundaries", () => {
       "/usr/local/sbin/claude-code-session-reset",
       "--config",
       "/etc/claude-code-telegram-kit/reset.json",
+      "--protocol",
+      "1",
+      "--action",
+      "reset",
       "--chat-id",
       "123456789",
       "--request-id",
@@ -141,5 +148,135 @@ describe("control runtime boundaries", () => {
 
     await expect(schedule("1;rm -rf /", "51")).rejects.toThrow("invalid chat ID");
     expect(calls).toBe(0);
+  });
+});
+
+const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
+
+describe("session action scheduling", () => {
+  function scheduler(run: CommandRunner) {
+    return createSessionScheduler({ run, verifyHelper: () => undefined });
+  }
+
+  test("schedules a resume with a fixed argv carrying the exact session UUID", async () => {
+    const argvSeen: string[][] = [];
+    const schedule = scheduler(async argv => {
+      argvSeen.push(argv);
+      return { exitCode: 0, stderr: "" };
+    });
+    const requestId = createHash("sha256").update("resume:123456789:51").digest("hex").slice(0, 24);
+
+    const unit = await schedule.scheduleResume("123456789", "51", SESSION);
+
+    expect(unit).toBe(`claude-session-reset-resume-${requestId}`);
+    expect(argvSeen).toEqual([[
+      "/usr/bin/sudo",
+      "-n",
+      "/usr/bin/systemd-run",
+      `--unit=claude-session-reset-resume-${requestId}`,
+      "--collect",
+      "--no-block",
+      "/usr/local/sbin/claude-code-session-reset",
+      "--config",
+      "/etc/claude-code-telegram-kit/reset.json",
+      "--protocol",
+      String(HELPER_PROTOCOL_VERSION),
+      "--action",
+      "resume",
+      "--session-id",
+      SESSION,
+      "--chat-id",
+      "123456789",
+      "--request-id",
+      requestId
+    ]]);
+  });
+
+  test("gives reset and resume distinct idempotency keys and units", async () => {
+    const argvSeen: string[][] = [];
+    const schedule = scheduler(async argv => {
+      argvSeen.push(argv);
+      return { exitCode: 0, stderr: "" };
+    });
+
+    const resetUnit = await schedule.scheduleReset("123456789", "51");
+    const resumeUnit = await schedule.scheduleResume("123456789", "51", SESSION);
+
+    expect(resetUnit).not.toBe(resumeUnit);
+    expect(argvSeen[0]!.at(-1)).not.toBe(argvSeen[1]!.at(-1));
+  });
+
+  test("never accepts a path, service, or command in place of a session UUID", async () => {
+    let calls = 0;
+    const schedule = scheduler(async () => {
+      calls += 1;
+      return { exitCode: 0, stderr: "" };
+    });
+
+    for (const bad of [
+      "/etc/passwd",
+      "../../etc/passwd",
+      "claude-telegram.service",
+      "3fcbaf06-4378-4339-b026-8c2e026a65e7 --continue",
+      "3FCBAF06-4378-4339-B026-8C2E026A65E7",
+      ""
+    ]) {
+      await expect(schedule.scheduleResume("123456789", "51", bad)).rejects.toThrow("invalid session UUID");
+    }
+    expect(calls).toBe(0);
+  });
+
+  test("reports a systemd rejection instead of reporting success", async () => {
+    const schedule = scheduler(async () => ({ exitCode: 1, stderr: "denied" }));
+    await expect(schedule.scheduleResume("123456789", "51", SESSION)).rejects.toThrow("systemd rejected");
+  });
+});
+
+describe("root helper capability preflight", () => {
+  test("accepts a matching protocol and action set", async () => {
+    const argvSeen: string[][] = [];
+    const capabilities = await probeHelperCapabilities({
+      run: async argv => {
+        argvSeen.push(argv);
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ protocol: 1, actions: ["reset", "resume"] }),
+          stderr: ""
+        };
+      },
+      verifyHelper: () => undefined
+    });
+
+    expect(capabilities).toEqual({ protocol: 1, actions: ["reset", "resume"] });
+    expect(argvSeen).toEqual([["/usr/local/sbin/claude-code-session-reset", "--capabilities"]]);
+  });
+
+  test("fails closed on a protocol mismatch, a missing action, or unusable output", async () => {
+    for (const output of [
+      JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
+      JSON.stringify({ protocol: 1, actions: ["reset"] }),
+      JSON.stringify({ protocol: 1 }),
+      JSON.stringify({ actions: ["reset", "resume"] }),
+      "not json",
+      "x".repeat(70_000)
+    ]) {
+      await expect(probeHelperCapabilities({
+        run: async () => ({ exitCode: 0, stdout: output, stderr: "" }),
+        verifyHelper: () => undefined
+      })).rejects.toThrow();
+    }
+  });
+
+  test("fails closed when the helper cannot run at all", async () => {
+    await expect(probeHelperCapabilities({
+      run: async () => ({ exitCode: 127, stdout: "", stderr: "not found" }),
+      verifyHelper: () => undefined
+    })).rejects.toThrow();
+    await expect(probeHelperCapabilities({
+      run: async () => {
+        throw new Error("ENOENT");
+      },
+      verifyHelper: () => undefined
+    })).rejects.toThrow();
   });
 });

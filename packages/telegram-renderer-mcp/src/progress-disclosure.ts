@@ -1,0 +1,267 @@
+import {
+  assertAuthorizedChat,
+  parseDirectTelegramEnvelope,
+  type RuntimeConfig
+} from "@project-tharsis/claude-code-telegram-shared";
+import {
+  type BindTurnInput,
+  type FinishTurnInput,
+  type RecordToolFailureInput,
+  type RecordToolInput
+} from "./hook-contract.js";
+import { safeStepLabel } from "./progress-labels.js";
+import { TurnProgress } from "./progress-state.js";
+import type {
+  ProgressEditOutcome,
+  ProgressSendOutcome
+} from "./progress-transport.js";
+
+/** Long enough to coalesce a parallel tool burst, short enough to still read as progress. */
+export const PROGRESS_DEBOUNCE_MS = 1_500;
+/**
+ * The Stop/StopFailure hook must never hold Claude's turn end open for a full Telegram
+ * timeout. The final drain is bounded; if the transport is slow, the hook returns and the
+ * drain continues in the background.
+ */
+export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
+/** Ephemeral state only. A long session must not accumulate turns without bound. */
+export const MAX_RETAINED_TURNS = 32;
+
+export type CancelScheduled = () => void;
+
+export interface TurnDisclosureDeps {
+  loadConfig: () => RuntimeConfig;
+  send: (
+    config: RuntimeConfig,
+    chatId: string,
+    replyToMessageId: string,
+    text: string
+  ) => Promise<ProgressSendOutcome>;
+  edit: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: number,
+    text: string
+  ) => Promise<ProgressEditOutcome>;
+  schedule: (run: () => Promise<void>, delayMs: number) => CancelScheduled;
+}
+
+/**
+ * `unknown` is terminal: Telegram may already have created the bubble, so sending again is
+ * the one action that can duplicate it. `abandoned` is terminal for a definitive refusal.
+ */
+type BubbleState = "none" | "have" | "unknown" | "abandoned";
+
+interface Turn {
+  chatId: string;
+  quoteMessageId: string;
+  progress: TurnProgress;
+  bubbleMessageId: number | null;
+  state: BubbleState;
+  replacementUsed: boolean;
+  lastSentText: string | null;
+  cancel: CancelScheduled | null;
+  chain: Promise<void>;
+}
+
+function turnKey(sessionId: string, promptId: string): string {
+  return `${sessionId}/${promptId}`;
+}
+
+/**
+ * Presentation-only turn disclosure. Every entry point swallows its own failures: a hook must
+ * never block, slow, or fail the agent because a progress bubble could not be drawn.
+ */
+export function createTurnDisclosure(deps: TurnDisclosureDeps) {
+  const turns = new Map<string, Turn>();
+
+  function drop(turn: Turn): void {
+    turn.cancel?.();
+    turn.cancel = null;
+    turn.state = "abandoned";
+  }
+
+  function evict(): void {
+    while (turns.size > MAX_RETAINED_TURNS) {
+      const oldest = turns.keys().next();
+      if (oldest.done === true) return;
+      const stale = turns.get(oldest.value);
+      if (stale !== undefined) drop(stale);
+      turns.delete(oldest.value);
+    }
+  }
+
+  async function flush(turn: Turn): Promise<void> {
+    if (turn.state === "unknown" || turn.state === "abandoned") return;
+    if (!turn.progress.hasSteps) return;
+
+    let config: RuntimeConfig;
+    try {
+      config = deps.loadConfig();
+      assertAuthorizedChat(config, turn.chatId);
+    } catch {
+      turn.state = "abandoned";
+      return;
+    }
+
+    const text = turn.progress.render();
+    if (text === turn.lastSentText) return;
+
+    // At most two transport calls: one edit, plus one replacement send if the bubble is gone.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (turn.state === "have" && turn.bubbleMessageId !== null) {
+        let outcome: ProgressEditOutcome;
+        try {
+          outcome = await deps.edit(config, turn.chatId, turn.bubbleMessageId, text);
+        } catch {
+          outcome = { kind: "transient" };
+        }
+        if (outcome.kind === "edited" || outcome.kind === "unchanged") {
+          turn.lastSentText = text;
+          return;
+        }
+        if (outcome.kind === "transient") return;
+        if (outcome.kind === "throttled") {
+          turn.state = "abandoned";
+          return;
+        }
+        if (outcome.kind === "gone") {
+          if (turn.replacementUsed) {
+            turn.state = "abandoned";
+            return;
+          }
+          turn.replacementUsed = true;
+          turn.state = "none";
+          turn.bubbleMessageId = null;
+          continue;
+        }
+        turn.state = "abandoned";
+        return;
+      }
+
+      let outcome: ProgressSendOutcome;
+      try {
+        outcome = await deps.send(config, turn.chatId, turn.quoteMessageId, text);
+      } catch {
+        outcome = { kind: "uncertain" };
+      }
+      if (outcome.kind === "sent") {
+        turn.bubbleMessageId = outcome.messageId;
+        turn.state = "have";
+        turn.lastSentText = text;
+        return;
+      }
+      turn.state = outcome.kind === "uncertain" ? "unknown" : "abandoned";
+      return;
+    }
+  }
+
+  function enqueue(turn: Turn): Promise<void> {
+    turn.chain = turn.chain.then(() => flush(turn)).catch(() => undefined);
+    return turn.chain;
+  }
+
+  function touch(turn: Turn): void {
+    if (
+      turn.progress.closed
+      || turn.cancel !== null
+      || turn.state === "unknown"
+      || turn.state === "abandoned"
+    ) return;
+    try {
+      turn.cancel = deps.schedule(async () => {
+        turn.cancel = null;
+        await enqueue(turn);
+      }, PROGRESS_DEBOUNCE_MS);
+    } catch {
+      turn.cancel = null;
+    }
+  }
+
+  function lookup(sessionId: string, promptId: string): Turn | undefined {
+    return turns.get(turnKey(sessionId, promptId));
+  }
+
+  return {
+    get size(): number {
+      return turns.size;
+    },
+
+    bindTurn(input: BindTurnInput): void {
+      try {
+        const envelope = parseDirectTelegramEnvelope(input.prompt);
+        if (envelope === null) return;
+        assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
+
+        // A newer prompt in the same chat retires the previous bubble; a stale turn must
+        // never reopen and edit a message that no longer describes what is happening.
+        for (const existing of turns.values()) {
+          if (existing.chatId === envelope.chatId) drop(existing);
+        }
+
+        const key = turnKey(input.session_id, input.prompt_id);
+        turns.delete(key);
+        turns.set(key, {
+          chatId: envelope.chatId,
+          quoteMessageId: envelope.messageId,
+          progress: new TurnProgress({
+            chatId: envelope.chatId,
+            messageId: envelope.messageId,
+            sessionId: input.session_id,
+            promptId: input.prompt_id
+          }),
+          bubbleMessageId: null,
+          state: "none",
+          replacementUsed: false,
+          lastSentText: null,
+          cancel: null,
+          chain: Promise.resolve()
+        });
+        evict();
+      } catch {
+        // Presentation only: an unreadable channel state simply produces no bubble.
+      }
+    },
+
+    recordTool(input: RecordToolInput): void {
+      try {
+        const turn = lookup(input.session_id, input.prompt_id);
+        if (turn === undefined) return;
+        const label = safeStepLabel(input.tool_name, input.agent_id);
+        if (label === null) return;
+        if (turn.progress.recordTool(input.tool_use_id, label)) touch(turn);
+      } catch {
+        // Never surface a disclosure failure to the agent.
+      }
+    },
+
+    recordFailure(input: RecordToolFailureInput): void {
+      try {
+        const turn = lookup(input.session_id, input.prompt_id);
+        if (turn === undefined) return;
+        if (turn.progress.recordFailure(input.tool_use_id)) touch(turn);
+      } catch {
+        // Never surface a disclosure failure to the agent.
+      }
+    },
+
+    async finishTurn(input: FinishTurnInput): Promise<void> {
+      try {
+        const turn = lookup(input.session_id, input.prompt_id);
+        if (turn === undefined) return;
+        turn.cancel?.();
+        turn.cancel = null;
+        turn.progress.close(input.hook_event_name);
+        await Promise.race([
+          enqueue(turn),
+          new Promise<void>(resolve => {
+            const timer = setTimeout(resolve, FINAL_DRAIN_TIMEOUT_MS);
+            timer.unref?.();
+          })
+        ]);
+      } catch {
+        // Never surface a disclosure failure to the agent.
+      }
+    }
+  };
+}

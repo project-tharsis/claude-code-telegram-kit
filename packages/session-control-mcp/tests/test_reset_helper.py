@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -145,6 +146,14 @@ class NotificationTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "response too large"):
                 reset._notify(TEST_TOKEN, TEST_CHAT_ID, "done")
 
+    def test_notify_rejects_nonpositive_or_noninteger_message_receipts(self):
+        for message_id in (0, -1, True, "71"):
+            body = json.dumps({"ok": True, "result": {"message_id": message_id}}).encode()
+            opener = self.FakeOpener(self.FakeResponse(body))
+            with mock.patch.object(reset.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaisesRegex(RuntimeError, "notification failed"):
+                    reset._notify(TEST_TOKEN, TEST_CHAT_ID, "done")
+
 
 class RequestIdempotencyTests(unittest.TestCase):
     def test_request_receipt_prevents_a_second_reset(self):
@@ -163,6 +172,342 @@ class RequestIdempotencyTests(unittest.TestCase):
             self.assertEqual(third["receipt"]["status"], "complete")
             self.assertEqual(third["receipt"]["new_session"], NEW_SESSION)
 
+
+
+def _make_config(root: Path, **overrides):
+    defaults = dict(
+        service_name="claude-telegram.service",
+        service_user="tester",
+        service_uid=os.getuid(),
+        workspace=root / "workspace",
+        project_sessions=root / "sessions",
+        channel_state=root / "state",
+        lock_path=root / "lock",
+        poller_process_marker="bun server.ts",
+        required_process_markers=("renderer", "control"),
+        allow_multiple_chats=False,
+    )
+    defaults.update(overrides)
+    return reset.ResetConfig(**defaults)
+
+
+def _write_transcript(directory: Path, session_id: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.jsonl"
+    path.write_text(json.dumps({"type": "mode", "sessionId": session_id}) + "\n")
+    os.chmod(path, 0o600)
+    return path
+
+
+class ProtocolTests(unittest.TestCase):
+    def test_capabilities_declare_protocol_one_and_both_actions(self):
+        capabilities = reset.capabilities()
+        self.assertEqual(capabilities["protocol"], reset.PROTOCOL_VERSION)
+        self.assertEqual(reset.PROTOCOL_VERSION, 1)
+        self.assertEqual(sorted(capabilities["actions"]), ["reset", "resume"])
+
+    def test_capabilities_flag_prints_json_and_exits_zero_without_config(self):
+        import io
+        from contextlib import redirect_stdout
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = reset.main(["--capabilities"])
+        self.assertEqual(code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["protocol"], 1)
+        self.assertIn("resume", payload["actions"])
+
+    def test_capabilities_never_mutates_state(self):
+        import io
+        from contextlib import redirect_stdout
+
+        with mock.patch.object(reset, "reset_session") as reset_call, \
+                mock.patch.object(reset, "resume_session") as resume_call, \
+                mock.patch.object(reset, "load_config") as load:
+            with redirect_stdout(io.StringIO()):
+                reset.main(["--capabilities"])
+        reset_call.assert_not_called()
+        resume_call.assert_not_called()
+        load.assert_not_called()
+
+    def test_rejects_an_unknown_protocol_before_doing_anything(self):
+        with mock.patch.object(reset, "load_config") as load:
+            self.assertEqual(reset.main(["--protocol", "2", "--action", "reset"]), 1)
+        load.assert_not_called()
+
+    def test_rejects_a_session_id_on_reset_and_requires_one_on_resume(self):
+        with mock.patch.object(reset, "load_config") as load:
+            self.assertEqual(reset.main(["--action", "reset", "--session-id", NEW_SESSION]), 1)
+            self.assertEqual(reset.main(["--action", "resume"]), 1)
+            self.assertEqual(reset.main(["--action", "resume", "--session-id", "not-a-uuid"]), 1)
+        load.assert_not_called()
+
+    def test_default_reset_invocation_stays_compatible(self):
+        with mock.patch.object(reset, "load_config", return_value="cfg") as load, \
+                mock.patch.object(reset, "reset_session", return_value={"status": "reset_complete"}) as run:
+            self.assertEqual(reset.main(["--config", "/tmp/x.json"]), 0)
+        load.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["chat_id"], None)
+        self.assertEqual(run.call_args.kwargs["request_id"], None)
+
+
+class SelectedSessionValidationTests(unittest.TestCase):
+    def test_accepts_an_owned_regular_transcript_in_the_configured_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = _make_config(root)
+            _write_transcript(config.project_sessions, OLD_SESSION)
+            path = reset.validate_selected_session(config, OLD_SESSION)
+            self.assertEqual(path, config.project_sessions / f"{OLD_SESSION}.jsonl")
+
+    def test_rejects_a_non_uuid_traversal_or_absolute_selection(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            config.project_sessions.mkdir(parents=True)
+            for bad in ["../../etc/passwd", "/etc/passwd", "not-a-uuid", "", f"{OLD_SESSION}.jsonl"]:
+                with self.assertRaises(ValueError):
+                    reset.validate_selected_session(config, bad)
+
+    def test_rejects_missing_symlinked_and_wrongly_owned_transcripts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = _make_config(root)
+            real = _write_transcript(config.project_sessions, OLD_SESSION)
+            os.symlink(real, config.project_sessions / f"{NEW_SESSION}.jsonl")
+
+            with self.assertRaises(ValueError):
+                reset.validate_selected_session(config, "33333333-3333-4333-8333-333333333333")
+            with self.assertRaises(ValueError):
+                reset.validate_selected_session(config, NEW_SESSION)
+
+            foreign = _make_config(root, service_uid=os.getuid() + 4242)
+            with self.assertRaises(ValueError):
+                reset.validate_selected_session(foreign, OLD_SESSION)
+
+    def test_rejects_a_group_or_world_writable_transcript(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            path = _write_transcript(config.project_sessions, OLD_SESSION)
+            os.chmod(path, 0o666)
+            with self.assertRaises(ValueError):
+                reset.validate_selected_session(config, OLD_SESSION)
+
+    def test_rejects_a_transcript_with_an_extra_hardlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            path = _write_transcript(config.project_sessions, OLD_SESSION)
+            os.link(path, config.project_sessions / "shadow.jsonl")
+            with self.assertRaisesRegex(ValueError, "one hardlink"):
+                reset.validate_selected_session(config, OLD_SESSION)
+
+
+class TargetHealthTests(unittest.TestCase):
+    def test_health_matches_the_exact_resume_flag_and_all_required_workers(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            commands = [
+                f"claude --resume {OLD_SESSION} --channels plugin:telegram",
+                "bun server.ts",
+                "bun renderer",
+                "bun control",
+            ]
+            with mock.patch.object(reset, "_run") as run, \
+                    mock.patch.object(reset, "_process_rows", return_value={
+                        10: (1, "main"),
+                        11: (10, commands[0]),
+                        12: (10, commands[1]),
+                        13: (10, commands[2]),
+                        14: (10, commands[3]),
+                    }):
+                run.return_value = subprocess.CompletedProcess([], 0, stdout="10\n", stderr="")
+                self.assertTrue(reset._service_health(config, OLD_SESSION, flag="--resume"))
+                self.assertFalse(reset._service_health(config, NEW_SESSION, flag="--resume"))
+                self.assertFalse(reset._service_health(config, OLD_SESSION, flag="--session-id"))
+
+    def test_health_fails_when_the_official_poller_is_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            with mock.patch.object(reset, "_run") as run, \
+                    mock.patch.object(reset, "_process_rows", return_value={
+                        10: (1, "main"),
+                        11: (10, f"claude --resume {OLD_SESSION}"),
+                        12: (10, "bun renderer"),
+                        13: (10, "bun control"),
+                    }):
+                run.return_value = subprocess.CompletedProcess([], 0, stdout="10\n", stderr="")
+                self.assertFalse(reset._service_health(config, OLD_SESSION, flag="--resume"))
+
+
+class ResumeOrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        self.state_root = root / "requests"
+        self.config = _make_config(root, lock_path=root / "locks" / "resume.lock")
+        _write_transcript(self.config.project_sessions, OLD_SESSION)
+        _write_transcript(self.config.project_sessions, NEW_SESSION)
+        self.writes = []
+
+        patches = [
+            mock.patch.object(reset.os, "geteuid", return_value=0),
+            mock.patch.object(reset, "REQUEST_STATE_ROOT", self.state_root),
+            mock.patch.object(reset, "_read_canonical_unit", return_value=BASE_UNIT),
+            mock.patch.object(reset, "_atomic_write", side_effect=lambda path, content, mode=0o644: self.writes.append(content)),
+            mock.patch.object(reset, "_reload_and_restart"),
+            mock.patch.object(reset, "_reload_only"),
+            mock.patch.object(reset, "_wait_active"),
+            mock.patch.object(reset, "_latest_session_id", return_value=NEW_SESSION),
+            mock.patch.object(reset, "claim_request", side_effect=lambda *a, **k: {"claimed": True, "receipt": {}}),
+            mock.patch.object(reset, "finish_request", side_effect=lambda root_, rid, status, details, **k: {
+                "request_id": rid, "status": status, **details
+            }),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_resume_switches_to_the_target_then_restores_steady_continue(self):
+        with mock.patch.object(reset, "_service_health", return_value=True), \
+                mock.patch.object(reset, "_notify", return_value=77) as notify:
+            result = reset.resume_session(
+                self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+            )
+
+        self.assertEqual(result["status"], "resume_complete")
+        self.assertEqual(result["new_session"], OLD_SESSION)
+        self.assertEqual(len(self.writes), 2)
+        self.assertIn(f"--resume {OLD_SESSION}", self.writes[0])
+        self.assertNotIn(reset.DEFAULT_FRESH_SEED, self.writes[0])
+        self.assertEqual(self.writes[1], BASE_UNIT)
+        notify.assert_not_called()
+        self.assertEqual(reset._reload_and_restart.call_count, 1)
+        self.assertEqual(reset._reload_only.call_count, 1)
+
+    def test_resume_verifies_the_target_while_the_unit_still_pins_it(self):
+        events: list[str] = []
+        original_write = reset._atomic_write
+
+        def recording_write(path, content, mode=0o644):
+            events.append("write_canonical" if content == BASE_UNIT else "write_target")
+            return original_write(path, content, mode)
+
+        with mock.patch.object(reset, "_atomic_write", side_effect=recording_write), \
+                mock.patch.object(
+                    reset, "_service_health",
+                    side_effect=lambda *a, **k: events.append("health") or True,
+                ):
+            reset.resume_session(
+                self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+            )
+
+        # The resumed process must be verified while the unit still pins `--resume <id>`.
+        # The canonical `--continue` unit may only be written back afterwards; a health check
+        # that ran against the steady state would never see the flag it must confirm.
+        self.assertLess(events.index("health"), events.index("write_canonical"))
+        self.assertGreaterEqual(events.count("health"), 1)
+
+    def test_resume_refuses_the_currently_active_session(self):
+        with mock.patch.object(reset, "_service_health", return_value=True):
+            with self.assertRaises(Exception):
+                reset.resume_session(
+                    self.config, session_id=NEW_SESSION, chat_id=None, request_id=None, timeout=1
+                )
+        self.assertEqual(self.writes, [])
+
+    def test_resume_closes_the_root_receipt_when_the_target_is_already_active(self):
+        with mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
+                mock.patch.object(reset, "_notify") as notify:
+            with self.assertRaisesRegex(RuntimeError, "session resume failed") as caught:
+                reset.resume_session(
+                    self.config,
+                    session_id=NEW_SESSION,
+                    chat_id=TEST_CHAT_ID,
+                    request_id="c" * 24,
+                    timeout=1,
+                )
+
+        self.assertIsInstance(caught.exception.__cause__, ValueError)
+        self.assertIn("already the active session", str(caught.exception.__cause__))
+
+        self.assertEqual(self.writes, [])
+        reset.finish_request.assert_called_once()
+        self.assertEqual(reset.finish_request.call_args.args[2], "failed")
+        self.assertTrue(reset.finish_request.call_args.args[3]["recovered"])
+        self.assertIn("no service change was made", notify.call_args.args[2])
+
+    def test_resume_rolls_back_to_the_old_session_when_the_target_never_becomes_healthy(self):
+        with mock.patch.object(reset, "_service_health", return_value=False), \
+                mock.patch.object(reset, "time") as clock:
+            clock.monotonic.side_effect = [0, 0, 100, 0, 100]
+            clock.sleep.return_value = None
+            clock.time.return_value = 0
+            with self.assertRaises(RuntimeError):
+                reset.resume_session(
+                    self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                )
+
+        self.assertIn(f"--resume {OLD_SESSION}", self.writes[0])
+        self.assertIn(f"--resume {NEW_SESSION}", self.writes[1])
+        self.assertEqual(self.writes[-1], BASE_UNIT)
+
+    def test_resume_notification_failure_never_rolls_back_a_successful_resume(self):
+        with mock.patch.object(reset, "_service_health", return_value=True), \
+                mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
+                mock.patch.object(reset, "_notify", side_effect=RuntimeError("telegram down")):
+            result = reset.resume_session(
+                self.config,
+                session_id=OLD_SESSION,
+                chat_id=TEST_CHAT_ID,
+                request_id="b" * 24,
+                timeout=1,
+            )
+
+        self.assertEqual(result["status"], "resume_complete")
+        self.assertIsNone(result["completion_message_id"])
+        self.assertEqual(self.writes[-1], BASE_UNIT)
+        reset.finish_request.assert_called_once()
+        self.assertEqual(reset.finish_request.call_args.args[2], "complete")
+        self.assertIsNone(reset.finish_request.call_args.args[3]["completion_message_id"])
+
+    def test_resume_is_idempotent_through_the_root_request_receipt(self):
+        with mock.patch.object(reset, "claim_request", return_value={
+            "claimed": False,
+            "receipt": {"status": "complete", "new_session": OLD_SESSION, "completion_message_id": 5},
+        }), mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
+                mock.patch.object(reset, "_service_health", return_value=True):
+            result = reset.resume_session(
+                self.config,
+                session_id=OLD_SESSION,
+                chat_id=TEST_CHAT_ID,
+                request_id="c" * 24,
+                timeout=1,
+            )
+
+        self.assertEqual(result["status"], "duplicate_request")
+        self.assertEqual(self.writes, [])
+
+    def test_resume_refuses_a_concurrent_run_through_the_global_lock(self):
+        self.config.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = os.open(self.config.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            reset.fcntl.flock(holder, reset.fcntl.LOCK_EX | reset.fcntl.LOCK_NB)
+            with mock.patch.object(reset, "_service_health", return_value=True):
+                with self.assertRaisesRegex(RuntimeError, "already running"):
+                    reset.resume_session(
+                        self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                    )
+        finally:
+            os.close(holder)
+        self.assertEqual(self.writes, [])
+
+    def test_resume_requires_root(self):
+        with mock.patch.object(reset.os, "geteuid", return_value=1000):
+            with self.assertRaises(PermissionError):
+                reset.resume_session(
+                    self.config, session_id=OLD_SESSION, chat_id=None, request_id=None, timeout=1
+                )
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,14 +1,18 @@
 # Session Control MCP
 
-An approval-gated MCP front end for resetting a Telegram-connected Claude Code service to a fresh session.
+An MCP front end for resetting, listing, and resuming sessions for one Telegram-connected Claude Code workspace.
 
 ## Tool
 
 ```text
 schedule_session_reset(chat_id, message_id, confirmation="RESET SESSION")
+list_sessions(chat_id)
+resume_session(chat_id, index)
 ```
 
-The tool is marked destructive and should be listed under Claude Code `permissions.ask`.
+Reset and resume are destructive and should be listed under Claude Code `permissions.ask`; listing is explicitly allowed. An internal `bind_command` hook tool creates a short-lived current-turn capability only for exact `/sessions` and `/resume N` messages.
+
+`/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. The model never receives or supplies a session UUID, transcript path, unit, service, helper path, or command. `/resume N` revalidates the selected transcript in both the unprivileged MCP and root helper before any restart.
 
 ## Control-plane order
 
@@ -29,9 +33,12 @@ The MCP reads:
 CLAUDE_SESSION_RESET_HELPER
 CLAUDE_SESSION_RESET_CONFIG
 CLAUDE_SESSION_RESET_UNIT_PREFIX
+CLAUDE_PROJECT_SESSIONS_DIR
 ```
 
-Defaults are documented in `src/runtime.ts`. The reset helper reads a root-owned JSON configuration. See `examples/reset.json`.
+Defaults are documented in `src/runtime.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
+
+At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v1 with both `reset` and `resume`. Version skew disables privileged actions while leaving listing and rendering available.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
 
@@ -46,6 +53,7 @@ git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_ses
 sha256sum /tmp/claude-code-session-reset
 sudo install -o root -g root -m 0755 /tmp/claude-code-session-reset /usr/local/sbin/claude-code-session-reset
 sudo sha256sum /usr/local/sbin/claude-code-session-reset
+/usr/local/sbin/claude-code-session-reset --capabilities
 ```
 
 Never run a privileged installer directly from a mutable checkout or user-writable `current` symlink.

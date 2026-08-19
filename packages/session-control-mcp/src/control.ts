@@ -66,6 +66,13 @@ export function createResetController(deps: ResetControllerDeps) {
       } catch {
         // The primary failure is scheduler rejection; notification is best-effort.
       }
+      try {
+        // The ACK already marked the command with 👀/👍; a rejection that never started the
+        // reset must not leave the triggering message looking successful.
+        await deps.react(config, request.chat_id, request.message_id, "failure");
+      } catch {
+        // Reaction UX is best-effort and never changes the reported failure.
+      }
       throw new Error("reset scheduler failed");
     }
 

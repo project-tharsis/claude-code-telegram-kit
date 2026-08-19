@@ -15,7 +15,8 @@
       ],
       "env": {
         "CLAUDE_SESSION_RESET_HELPER": "/usr/local/sbin/claude-code-session-reset",
-        "CLAUDE_SESSION_RESET_CONFIG": "/etc/claude-code-telegram-kit/reset.json"
+        "CLAUDE_SESSION_RESET_CONFIG": "/etc/claude-code-telegram-kit/reset.json",
+        "CLAUDE_PROJECT_SESSIONS_DIR": "/home/USER/.claude/projects/PROJECT"
       }
     }
   }

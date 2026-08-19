@@ -113,13 +113,17 @@ describe("reset control plane", () => {
 
   test("reports scheduler failure after a successful ACK", async () => {
     const messages: string[] = [];
+    const reactions: Array<[string, string, string]> = [];
     const controller = createResetController({
       loadConfig: () => config,
       sendMessage: async (_cfg, _chatId, text, replyTo) => {
         messages.push(`${replyTo ?? "independent"}:${text}`);
         return messages.length;
       },
-      react: async () => true,
+      react: async (_cfg, chatId, messageId, state) => {
+        reactions.push([chatId, messageId, state]);
+        return true;
+      },
       schedule: async () => { throw new Error("systemd rejected"); }
     });
 
@@ -129,5 +133,9 @@ describe("reset control plane", () => {
     expect(messages).toHaveLength(2);
     expect(messages[0]).toContain("51:Session reset accepted");
     expect(messages[1]).toContain("independent:Session reset scheduling failed");
+    expect(reactions).toEqual([
+      ["123456789", "51", "success"],
+      ["123456789", "51", "failure"]
+    ]);
   });
 });

@@ -1,10 +1,119 @@
 {
   "permissions": {
     "allow": [
-      "mcp__telegram-renderer__send_reply"
+      "mcp__telegram-renderer__send_reply",
+      "mcp__session-control__list_sessions"
     ],
     "ask": [
+      "mcp__session-control__resume_session",
       "mcp__session-control__schedule_session_reset"
+    ],
+    "deny": [
+      "mcp__telegram-renderer__bind_turn",
+      "mcp__telegram-renderer__record_tool",
+      "mcp__telegram-renderer__record_tool_failure",
+      "mcp__telegram-renderer__finish_turn",
+      "mcp__session-control__bind_command"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "bind_turn",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "prompt": "${prompt}",
+              "hook_event_name": "UserPromptSubmit"
+            }
+          },
+          {
+            "type": "mcp_tool",
+            "server": "session-control",
+            "tool": "bind_command",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "prompt": "${prompt}",
+              "hook_event_name": "UserPromptSubmit"
+            }
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(?!mcp__telegram-renderer__|mcp__session-control__).*",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_tool",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "tool_use_id": "${tool_use_id}",
+              "tool_name": "${tool_name}",
+              "agent_id": "${agent_id}",
+              "hook_event_name": "PreToolUse"
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^(?!mcp__telegram-renderer__|mcp__session-control__).*",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_tool_failure",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "tool_use_id": "${tool_use_id}",
+              "hook_event_name": "PostToolUseFailure"
+            }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "finish_turn",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "hook_event_name": "Stop"
+            }
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "finish_turn",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "hook_event_name": "StopFailure"
+            }
+          }
+        ]
+      }
     ]
   }
 }
