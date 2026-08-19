@@ -1,13 +1,20 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ZodError } from "zod";
-import { UnifiedReplyInputSchema, type UnifiedReplyInput } from "./unified-contract.js";
-import type { UnifiedDeliveryReceipt } from "./unified-delivery.js";
+import {
+  ReactionTargetSchema,
+  UnifiedReplyInputSchema,
+  type UnifiedReplyInput
+} from "./unified-contract.js";
+import {
+  TelegramUncertainOutcomeError,
+  type UnifiedDeliveryReceipt
+} from "./unified-delivery.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
 export const SEND_REPLY_TOOL = {
   name: "send_reply",
   description:
-    "Send one Telegram reply from canonical raw Markdown. The sidecar deterministically chooses native Rich Message only for tables, task lists, details, or block math; ordinary Markdown uses MarkdownV2. Use exactly once per user-facing answer.",
+    "Send one Telegram reply from canonical raw Markdown and quote the inbound message by default. The sidecar deterministically chooses native Rich Message only for tables, task lists, details, or block math; ordinary Markdown uses MarkdownV2. Use exactly once per user-facing answer.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -22,7 +29,7 @@ export const SEND_REPLY_TOOL = {
         type: "string",
         pattern: "^\\d+$",
         maxLength: 16,
-        description: "Inbound Telegram message ID whose processing reaction will be finalized."
+        description: "Inbound Telegram message ID to quote by default and whose processing reaction will be finalized."
       },
       content: {
         type: "string",
@@ -34,7 +41,7 @@ export const SEND_REPLY_TOOL = {
         type: "string",
         pattern: "^\\d+$",
         maxLength: 16,
-        description: "Optional inbound message_id to quote."
+        description: "Only set when intentionally quoting a different message instead of message_id."
       },
       disable_notification: {
         type: "boolean",
@@ -47,6 +54,28 @@ export const SEND_REPLY_TOOL = {
 export interface UnifiedToolDeps {
   loadConfig: () => RuntimeConfig;
   deliver: (input: UnifiedReplyInput, config: RuntimeConfig) => Promise<UnifiedDeliveryReceipt>;
+  react: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string,
+    state: "success" | "failure"
+  ) => Promise<boolean>;
+}
+
+/**
+ * Every definitive local failure ends the turn as 👎, including inputs rejected before
+ * delivery. Only an unknown Telegram outcome leaves the 👀 acknowledgement in place.
+ */
+async function reactToLocalFailure(
+  deps: UnifiedToolDeps,
+  arguments_: unknown
+): Promise<void> {
+  try {
+    const target = ReactionTargetSchema.parse(arguments_);
+    await deps.react(deps.loadConfig(), target.chat_id, target.message_id, "failure");
+  } catch {
+    // An unusable target, an unauthorized chat, or an unreachable API leaves 👀 untouched.
+  }
 }
 
 export function createUnifiedToolHandler(deps: UnifiedToolDeps) {
@@ -67,6 +96,9 @@ export function createUnifiedToolHandler(deps: UnifiedToolDeps) {
         }]
       };
     } catch (error) {
+      if (!(error instanceof TelegramUncertainOutcomeError)) {
+        await reactToLocalFailure(deps, arguments_);
+      }
       const message = error instanceof ZodError
         ? `invalid input: ${error.issues.map(issue => issue.message).join("; ")}`
         : "send_reply failed";

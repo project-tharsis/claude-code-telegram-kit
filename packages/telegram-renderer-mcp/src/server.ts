@@ -6,7 +6,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadRuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  finalizeTelegramReaction,
+  loadRuntimeConfig
+} from "@project-tharsis/claude-code-telegram-shared";
 import { createUnifiedDeliverer } from "./unified-delivery.js";
 import { createUnifiedToolHandler, SEND_REPLY_TOOL } from "./unified-tool.js";
 
@@ -15,7 +18,8 @@ const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", 
 const deliver = createUnifiedDeliverer();
 const handleTool = createUnifiedToolHandler({
   loadConfig: () => loadRuntimeConfig(stateDir),
-  deliver
+  deliver,
+  react: finalizeTelegramReaction
 });
 
 const server = new Server(

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { UnifiedReplyInputSchema } from "../src/unified-contract.js";
-import { createUnifiedDeliverer, type UnifiedFetchLike } from "../src/unified-delivery.js";
+import {
+  createUnifiedDeliverer,
+  RICH_CAPABILITY_COOLDOWN_MS,
+  TelegramUncertainOutcomeError,
+  type UnifiedFetchLike
+} from "../src/unified-delivery.js";
 import {
   MAX_TELEGRAM_RESPONSE_BYTES,
   type RuntimeConfig
@@ -50,9 +55,33 @@ describe("unified deterministic delivery", () => {
     expect(calls[0]!.init?.signal).toBeDefined();
     expect(calls[0]!.body).toEqual({
       chat_id: "123456789",
+      reply_parameters: { message_id: 51 },
       parse_mode: "MarkdownV2",
       text: "*状态*\n\n*在线*"
     });
+  });
+
+  test("lets an explicit reply target override the inbound message", async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const fakeFetch: UnifiedFetchLike = async (_input, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 78 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    const deliver = createUnifiedDeliverer(withReactionSupport(fakeFetch));
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      reply_to: "49",
+      content: "done"
+    });
+
+    await deliver(input, config);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body.reply_parameters).toEqual({ message_id: 49 });
   });
 
   test("sends rich CJK tables through native Rich Message", async () => {
@@ -75,6 +104,7 @@ describe("unified deterministic delivery", () => {
     expect(calls[0]!.url.endsWith("/sendRichMessage")).toBe(true);
     expect(calls[0]!.body).toEqual({
       chat_id: "123456789",
+      reply_parameters: { message_id: 51 },
       rich_message: { markdown: content }
     });
   });
@@ -102,10 +132,14 @@ describe("unified deterministic delivery", () => {
 
     expect(receipt).toEqual({ mode: "text", messageIds: [99] });
     expect(calls).toHaveLength(2);
-    expect(calls[1]!.body).toEqual({ chat_id: "123456789", text: "**Hello**." });
+    expect(calls[1]!.body).toEqual({
+      chat_id: "123456789",
+      reply_parameters: { message_id: 51 },
+      text: "**Hello**."
+    });
   });
 
-  test("latches Rich capability off after a permanent endpoint failure", async () => {
+  test("holds Rich off for the cooldown after a permanent endpoint failure", async () => {
     const methods: string[] = [];
     let messageId = 100;
     const fakeFetch: UnifiedFetchLike = async (input) => {
@@ -184,6 +218,27 @@ describe("unified deterministic delivery", () => {
     expect(calls).toBe(1);
   });
 
+  test("treats invalid Telegram response message IDs as unknown", async () => {
+    for (const messageId of [0, -1, 9_007_199_254_740_992]) {
+      let calls = 0;
+      const deliver = createUnifiedDeliverer(async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      });
+      const input = UnifiedReplyInputSchema.parse({
+        chat_id: "123456789",
+        message_id: "51",
+        content: "done"
+      });
+
+      await expect(deliver(input, config)).rejects.toBeInstanceOf(TelegramUncertainOutcomeError);
+      expect(calls).toBe(1);
+    }
+  });
+
   test("finalizes a successful reply with thumbs up", async () => {
     const methods: string[] = [];
     const bodies: Record<string, unknown>[] = [];
@@ -233,5 +288,91 @@ describe("unified deterministic delivery", () => {
       if (previous === undefined) delete process.env.TELEGRAM_STATUS_STATE_DIR;
       else process.env.TELEGRAM_STATUS_STATE_DIR = previous;
     }
+  });
+
+  test("types an unknown outcome so the acknowledgement survives it", async () => {
+    const deliver = createUnifiedDeliverer(async () => { throw new TypeError("connection reset"); });
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      content: "done"
+    });
+
+    await expect(deliver(input, config)).rejects.toBeInstanceOf(TelegramUncertainOutcomeError);
+  });
+
+  test("leaves failure reactions to the tool handler", async () => {
+    const methods: string[] = [];
+    const deliver = createUnifiedDeliverer(async input => {
+      methods.push(String(input).split("/").pop()!);
+      return new Response(JSON.stringify({ ok: false }), { status: 400 });
+    });
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      content: "done"
+    });
+
+    await expect(deliver(input, config)).rejects.toThrow("Telegram delivery rejected");
+    expect(methods).toEqual(["sendMessage", "sendMessage"]);
+  });
+
+  test("absorbs Telegram tail latency instead of reporting an unknown outcome", async () => {
+    const slow = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        if (new URL(request.url).pathname.endsWith("/setMessageReaction")) {
+          return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+        }
+        await Bun.sleep(3_500);
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 91 } }), { status: 200 });
+      }
+    });
+    try {
+      const deliver = createUnifiedDeliverer((url, init) =>
+        fetch(`http://127.0.0.1:${slow.port}/${String(url).split("/").pop()}`, init));
+      const receipt = await deliver(UnifiedReplyInputSchema.parse({
+        chat_id: "123456789",
+        message_id: "51",
+        content: "slow but delivered"
+      }), config);
+
+      expect(receipt).toEqual({ mode: "markdownv2", messageIds: [91] });
+    } finally {
+      slow.stop(true);
+    }
+  }, 20_000);
+
+  test("re-probes Rich once the capability cooldown expires", async () => {
+    const methods: string[] = [];
+    let clock = 1_000;
+    let messageId = 200;
+    const fakeFetch: UnifiedFetchLike = async input => {
+      const method = String(input).split("/").pop()!;
+      methods.push(method);
+      if (method === "sendRichMessage" && methods.length === 1) {
+        return new Response(JSON.stringify({ ok: false, description: "Not Found" }), { status: 404 });
+      }
+      messageId += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), { status: 200 });
+    };
+    const deliver = createUnifiedDeliverer(withReactionSupport(fakeFetch), () => clock);
+    const input = UnifiedReplyInputSchema.parse({
+      chat_id: "123456789",
+      message_id: "51",
+      content: "| A | B |\n|---|---|\n| 1 | 2 |"
+    });
+
+    expect((await deliver(input, config)).mode).toBe("markdownv2");
+    clock += RICH_CAPABILITY_COOLDOWN_MS - 1;
+    expect((await deliver(input, config)).mode).toBe("markdownv2");
+    clock += 1;
+    expect((await deliver(input, config)).mode).toBe("rich");
+    expect(methods).toEqual([
+      "sendRichMessage",
+      "sendMessage",
+      "sendMessage",
+      "sendRichMessage"
+    ]);
   });
 });

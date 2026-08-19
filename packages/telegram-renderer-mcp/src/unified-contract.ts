@@ -20,3 +20,9 @@ export const UnifiedReplyInputSchema = z.object({
 }).strict();
 
 export type UnifiedReplyInput = z.infer<typeof UnifiedReplyInputSchema>;
+
+/** Loose target extraction so a rejected input can still finalize its 👀 acknowledgement. */
+export const ReactionTargetSchema = z.object({
+  chat_id: z.string().regex(/^-?\d+$/),
+  message_id: telegramMessageId
+});

@@ -8,6 +8,8 @@ A project-scoped MCP server that accepts one raw CommonMark/GFM document and det
 send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
 ```
 
+The renderer quotes `message_id` by default. Set `reply_to` only to intentionally quote a different message; reactions still target `message_id`.
+
 ## Routing
 
 - GFM pipe tables, task lists, `<details>`, and block math use `sendRichMessage` when within the Rich Message limit.
@@ -20,7 +22,7 @@ send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
 - Permanent Rich parser/capability rejection may fall back to MarkdownV2.
 - Permanent MarkdownV2 rejection may fall back to plain text.
 - Timeout, 429, 5xx, transport, and unknown outcomes never trigger a resend.
-- A proven endpoint capability failure latches Rich off for the MCP process lifetime.
+- A proven endpoint capability failure holds Rich off for a 30-minute cooldown, then re-probes.
 
 ## Processing reactions
 
@@ -37,6 +39,7 @@ The renderer then replaces the triggering message reaction deterministically:
 - successful Telegram reply → `👍`
 - definitive local/parser/delivery rejection → `👎`
 - timeout, rate limit, server error, or unknown delivery outcome → leave `👀`
+- input rejected before delivery (empty, oversized, malformed) → `👎`
 
 Install [`examples/access-ux.json`](../../examples/access-ux.json) to enable the initial `👀`; no Claude hook is required. Reaction calls are bounded, do not follow redirects, and are best-effort: a reaction failure never changes a confirmed reply result.
 

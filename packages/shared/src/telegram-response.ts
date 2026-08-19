@@ -34,3 +34,8 @@ export async function readTelegramJson(
   }
   return JSON.parse(text) as unknown;
 }
+
+/** Body sends absorb Telegram tail latency; aborting early risks a delivered-but-unreported message. */
+export const TELEGRAM_SEND_TIMEOUT_MS = 10_000;
+/** Reactions are UX only, so they stay short and never hold up a confirmed reply. */
+export const TELEGRAM_REACTION_TIMEOUT_MS = 3_000;

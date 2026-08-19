@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import {
   assertAuthorizedChat,
   readTelegramJson,
+  TELEGRAM_SEND_TIMEOUT_MS,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 
@@ -22,9 +23,18 @@ export async function sendTelegramMessage(
   config: RuntimeConfig,
   chatId: string,
   text: string,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  replyTo?: string
 ): Promise<number> {
   assertAuthorizedChat(config, chatId);
+  const body: Record<string, unknown> = { chat_id: chatId, text };
+  if (replyTo !== undefined) {
+    const replyMessageId = Number(replyTo);
+    if (!/^\d+$/.test(replyTo) || !Number.isSafeInteger(replyMessageId) || replyMessageId < 1) {
+      throw new Error("invalid reply message ID");
+    }
+    body.reply_parameters = { message_id: replyMessageId };
+  }
   let response: Response;
   try {
     response = await fetchImpl(
@@ -33,8 +43,8 @@ export async function sendTelegramMessage(
         method: "POST",
         redirect: "error",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text }),
-        signal: AbortSignal.timeout(3_000)
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
       }
     );
   } catch {
@@ -47,7 +57,13 @@ export async function sendTelegramMessage(
     throw new Error("Telegram control notification failed");
   }
   const messageId = envelope.result?.message_id;
-  if (!response.ok || envelope.ok !== true || typeof messageId !== "number" || !Number.isInteger(messageId)) {
+  if (
+    !response.ok
+    || envelope.ok !== true
+    || typeof messageId !== "number"
+    || !Number.isSafeInteger(messageId)
+    || messageId < 1
+  ) {
     throw new Error("Telegram control notification failed");
   }
   return messageId;
