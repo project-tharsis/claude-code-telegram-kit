@@ -27,6 +27,8 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 /** Ephemeral state only. A long session must not accumulate turns without bound. */
 export const MAX_RETAINED_TURNS = 32;
 
+const CONTROL_COMMAND = /^(?:\/sessions(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
+
 export type CancelScheduled = () => void;
 
 export interface TurnDisclosureDeps {
@@ -191,6 +193,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const envelope = parseDirectTelegramEnvelope(input.prompt);
         if (envelope === null) return;
+        // Session-control commands already have their own ACK/list/permission/completion UX.
+        // A progress bubble is redundant, and resume/reset kill the current process before
+        // Stop can close it, leaving a permanent stale "Working…" bubble.
+        if (CONTROL_COMMAND.test(envelope.body)) return;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 
         // A newer prompt in the same chat retires the previous bubble; a stale turn must
