@@ -53,11 +53,13 @@ describe("supported Claude Code hook configuration", () => {
     expect(settings.statusLine?.command).toMatch(/^\/usr\/local\/sbin\/claude-usage-snapshot --output \/home\/USER\//);
   });
 
-  test("denies every session-control tool to the model while allowing only reply delivery", () => {
+  test("denies every model-facing reply and session-control tool", () => {
     for (const tool of HOOK_TOOL_NAMES) {
       expect(settings.permissions.deny).toContain(`mcp__telegram-renderer__${tool}`);
     }
-    expect(settings.permissions.allow).toContain("mcp__telegram-renderer__send_reply");
+    expect(settings.permissions.allow).not.toContain("mcp__telegram-renderer__send_reply");
+    expect(settings.permissions.deny).toContain("mcp__telegram-renderer__send_reply");
+    expect(settings.permissions.deny).toContain("mcp__plugin_telegram_telegram__reply");
     for (const tool of [
       "dispatch_command",
       "bind_command",
@@ -81,7 +83,9 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual(["record_tool_success"]);
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("Stop").map(hook => hook.tool)).toEqual(["finish_turn"]);
+    expect(toolsFor("Stop")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
+    expect(toolsFor("StopFailure")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
   });
 
   test("fails control namespaces closed with an independent command hook guard", () => {

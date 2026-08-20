@@ -21,6 +21,8 @@ export const RICH_CAPABILITY_COOLDOWN_MS = 30 * 60 * 1_000;
 
 /** Thrown when Telegram's outcome is unknown. The 👀 acknowledgement must survive it. */
 export class TelegramUncertainOutcomeError extends Error {}
+/** Proven local size rejection. A Stop hook may safely ask Claude for a shorter answer. */
+export class TelegramContentTooLargeError extends Error {}
 
 export interface UnifiedDeliveryReceipt {
   mode: "rich" | "markdownv2" | "text";
@@ -126,7 +128,7 @@ export function createUnifiedDeliverer(
 
     const rendered = toMarkdownV2(input.content);
     if (rendered.length > 4_096) {
-      throw new Error("content does not fit in a single Telegram message");
+      throw new TelegramContentTooLargeError("content does not fit in a single Telegram message");
     }
     const markdownAttempt = await attemptTelegram(
       "sendMessage",
@@ -143,7 +145,7 @@ export function createUnifiedDeliverer(
     }
 
     if (input.content.length > 4_096) {
-      throw new Error("content does not fit in a single Telegram message");
+      throw new TelegramContentTooLargeError("content does not fit in a single Telegram message");
     }
     const textAttempt = await attemptTelegram(
       "sendMessage",

@@ -84,8 +84,8 @@ systemctl is-active claude-telegram.service
 
 Verify from the real destination:
 
-1. ordinary Markdown reply returns `mode: markdownv2`;
-2. a GFM table returns `mode: rich`;
+1. ordinary final Markdown is delivered by the Stop hook with correct bold/code rendering and no model-facing reply tool call;
+2. a GFM table is delivered by the same Stop hook as native Rich Message;
 3. a direct message receives `👀`, then a confirmed reply replaces it with `👍`;
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
 5. a multi-tool turn creates one silent progress bubble with bold tool labels, escaped monospace previews, mobile-width truncation, redacted credentials, and success/failure state;

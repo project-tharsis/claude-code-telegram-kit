@@ -20,9 +20,9 @@ The README lists the five invariants that define the project's blast radius. Thi
 ## Processing reactions
 
 - The official Channel owns the initial `👀` acknowledgement.
-- A confirmed user-facing reply may replace `👀` with `👍`.
+- A confirmed user-facing reply may replace `👀` with `👍`; final delivery is reserved once before the Stop hook calls Telegram.
 - Only a definitive local/parser/delivery failure may replace `👀` with `👎`, including inputs the tool rejects before any send.
-- The reply tool owns every `👎`; delivery raises a typed unknown-outcome error the tool never converts into one.
+- The renderer owns every `👎`; typed unknown outcomes are never converted into failure or retried.
 - Timeout, rate-limit, server, transport, and unknown outcomes leave `👀` unchanged.
 - Reaction failures are best-effort and never change the main reply result.
 - Cancellation and `StopFailure` leave `👀` unchanged in v0.2 because the official Channel exposes no trusted per-turn lifecycle correlation to sidecars.
@@ -30,6 +30,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 ## Tool disclosure
 
 - Claude Code hooks, not the model, emit disclosure events.
+- The model returns canonical final Markdown and never chooses a Telegram reply tool or transport. Stop's official `last_assistant_message` field is the sole normal final-delivery input; the model-facing renderer and official Channel reply tools are denied.
 - Disclosure accepts turn/tool/agent IDs plus an explicit allowlist of bounded preview strings (`command`, `file_path`, `path`, `pattern`, `query`, `url`, `description`). It never accepts the raw `tool_input` object or any tool output.
 - `verbose` may expose ordinary VM commands, paths, queries, and URLs by user choice. Credential-shaped values are always replaced with fixed redaction markers before Telegram delivery; previews are then bounded to 40 characters (`verbose`) or 28 (`all`) and HTML-escaped before bold/code rendering.
 - PostToolUse and PostToolUseFailure mark each tool ID as running, completed, or failed; one turn still owns one bounded bubble.

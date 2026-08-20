@@ -3,6 +3,7 @@ import { UnifiedReplyInputSchema } from "../src/unified-contract.js";
 import {
   createUnifiedDeliverer,
   RICH_CAPABILITY_COOLDOWN_MS,
+  TelegramContentTooLargeError,
   TelegramUncertainOutcomeError,
   type UnifiedFetchLike
 } from "../src/unified-delivery.js";
@@ -182,7 +183,7 @@ describe("unified deterministic delivery", () => {
       content: "a".repeat(5_000)
     });
 
-    await expect(deliver(input, config)).rejects.toThrow("single Telegram message");
+    await expect(deliver(input, config)).rejects.toBeInstanceOf(TelegramContentTooLargeError);
     expect(calls).toBe(0);
   });
 

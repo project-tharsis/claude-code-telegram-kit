@@ -25,6 +25,7 @@ function recorder() {
     },
     finishTurn: async (input: unknown) => {
       calls.push({ kind: "finish", input });
+      return "finished" as const;
     }
   };
   return { calls, handle: createHookToolHandler(disclosure) };
@@ -38,7 +39,7 @@ describe("internal hook tool declarations", () => {
     expect(HOOK_TOOL_NAMES).not.toContain(SEND_REPLY_TOOL.name);
     for (const tool of INTERNAL_HOOK_TOOLS) {
       expect(tool.description).toContain("Internal Claude Code hook tool");
-      expect(tool.annotations.readOnlyHint).toBe(true);
+      expect(tool.annotations.readOnlyHint).toBe(tool.name !== "finish_turn");
       expect(tool.annotations.destructiveHint).toBe(false);
     }
   });
@@ -69,6 +70,29 @@ describe("internal hook tool declarations", () => {
 });
 
 describe("internal hook tool handler", () => {
+  test("blocks Stop only when final delivery asks Claude to shorten", async () => {
+    const handle = createHookToolHandler({
+      bindTurn: () => undefined,
+      recordTool: () => undefined,
+      recordSuccess: () => undefined,
+      recordFailure: () => undefined,
+      finishTurn: async () => "retry"
+    });
+    const result = await handle("finish_turn", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      last_assistant_message: "x".repeat(5_000),
+      hook_event_name: "Stop"
+    });
+    const first = result!.content[0]!;
+    if (first.type !== "text") throw new Error("expected text");
+    expect(JSON.parse(first.text)).toEqual({
+      decision: "block",
+      reason: "Final Telegram reply is too long. Return a shorter final response.",
+      hookSpecificOutput: { hookEventName: "Stop" }
+    });
+  });
+
   test("routes each hook event to its disclosure entry point", async () => {
     const { calls, handle } = recorder();
     await handle("bind_turn", {

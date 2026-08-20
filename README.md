@@ -11,13 +11,13 @@
 | --- | --- |
 | ![Markdown markup delivered literally](docs/media/render-before.png) | ![The same document routed to a Rich Message](docs/media/render-after.png) |
 
-The same Markdown document, both paths. The official `reply` tool defaults to `format: "text"`, so markup arrives literal; its `markdownv2` mode shifts MarkdownV2 escaping onto the model, where one missed character fails the send. `send_reply` takes the document unescaped and picks the transport itself. (Figures are rendered from both paths, not device screenshots.)
+The same Markdown document, both paths. The official `reply` tool defaults to `format: "text"`, so markup arrives literal; its `markdownv2` mode shifts escaping onto the model. With this kit, Claude returns ordinary CommonMark/GFM and a Stop hook passes `last_assistant_message` to the internal renderer, which picks the transport deterministically. (Figures are rendered from both paths, not device screenshots.)
 
 ## Why this exists
 
 Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control sidecars beside it, without a second `getUpdates` consumer:
 
-- **Telegram Renderer MCP** — canonical Markdown delivery plus hook-driven, silent, edit-in-place tool disclosure. Rendering, quote targets, fallback, reactions, and disclosure redaction are deterministic.
+- **Telegram Renderer MCP** — internal Stop-hook final delivery plus silent, edit-in-place tool disclosure. Rendering, quote targets, fallback, reactions, and disclosure redaction are deterministic; the model selects neither tool nor transport.
 - **Session Control MCP** — `/reset`, bounded `/sessions`, and approval-gated `/resume N`; privileged execution goes through a versioned, root-owned, fail-closed helper that PID 1 executes.
 
 Both gaps are open upstream. This kit is the interim answer:
@@ -39,9 +39,9 @@ sha=$(git rev-parse HEAD)
 python3 scripts/deploy_local.py install --repo . --ref "$sha" --bun "$(command -v bun)"
 ```
 
-Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and `PROJECT` with your own fixed paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the renderer should report `mode: rich`, and the inbound reaction should become `👍`.
+Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and `PROJECT` with your own fixed paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the final table should use Rich Message, and the inbound reaction should become `👍` without a model-facing reply tool call.
 
-The renderer works on its own. `/reset` and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
+The renderer package remains self-contained, but automatic final delivery requires the supplied Hook configuration. `/reset` and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
 
 For production deployment, rollback, and verification, follow the [operations runbook](docs/operations.md) rather than this section.
 
@@ -51,8 +51,9 @@ For production deployment, rollback, and verification, follow the [operations ru
 Telegram
   -> telegram@claude-plugins-official     # sole inbound poller
   -> Claude Code
-     -> telegram-renderer MCP              # bounded outbound rendering
-        + Claude Code hooks                # silent tool disclosure
+     -> Stop Hook(last_assistant_message)
+        -> telegram-renderer MCP            # internal final delivery
+        + lifecycle hooks                   # progress/typing/failure UX
      -> session-control MCP                # reset + list/resume control
         -> systemd transient unit
         -> root-owned session reset helper

@@ -31,6 +31,8 @@ export const MAX_RETAINED_TURNS = 32;
 const CONTROL_COMMAND = /^(?:\/(?:usage|sessions)(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/(?:reset|resume)(?:@[A-Za-z0-9_]{1,32})? confirm [23456789A-HJ-NP-Z]{6}|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
 
 export type CancelScheduled = () => void;
+export type FinalDeliveryOutcome = "delivered" | "uncertain" | "too_large" | "rejected";
+export type FinishTurnDisposition = "finished" | "retry";
 
 export interface TurnDisclosureDeps {
   loadConfig: () => RuntimeConfig;
@@ -45,6 +47,12 @@ export interface TurnDisclosureDeps {
     chatId: string,
     messageId: string
   ) => Promise<void>;
+  deliverFinal?: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string,
+    content: string
+  ) => Promise<FinalDeliveryOutcome>;
   send: (
     config: RuntimeConfig,
     chatId: string,
@@ -77,6 +85,8 @@ interface Turn {
   cancel: CancelScheduled | null;
   cancelTyping: CancelScheduled | null;
   cancelAuthWatch: CancelScheduled | null;
+  finalDeliveryAttempted: boolean;
+  finalDeliveryRetries: number;
   chain: Promise<void>;
 }
 
@@ -243,8 +253,11 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
 
         // A newer prompt in the same chat retires the previous bubble; a stale turn must
         // never reopen and edit a message that no longer describes what is happening.
-        for (const existing of turns.values()) {
-          if (existing.chatId === envelope.chatId) drop(existing);
+        for (const [existingKey, existing] of turns) {
+          if (existing.chatId === envelope.chatId) {
+            drop(existing);
+            turns.delete(existingKey);
+          }
         }
 
         const key = turnKey(input.session_id, input.prompt_id);
@@ -267,6 +280,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           cancel: null,
           cancelTyping: deps.startTyping(envelope.chatId),
           cancelAuthWatch: null,
+          finalDeliveryAttempted: false,
+          finalDeliveryRetries: 0,
           chain: Promise.resolve()
         };
         turns.set(key, turn);
@@ -334,13 +349,65 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       }
     },
 
-    async finishTurn(input: FinishTurnInput): Promise<void> {
+    async finishTurn(input: FinishTurnInput): Promise<FinishTurnDisposition> {
       try {
+        const key = turnKey(input.session_id, input.prompt_id);
         const turn = lookup(input.session_id, input.prompt_id);
-        if (turn === undefined) return;
+        if (turn === undefined) return "finished";
         await finalize(turn, input.hook_event_name);
+        if (turns.get(key) !== turn) return "finished";
+        if (input.hook_event_name === "StopFailure") return "finished";
+        if (
+          turn.finalDeliveryAttempted
+          || deps.deliverFinal === undefined
+          || input.last_assistant_message === undefined
+          || input.last_assistant_message.trim() === ""
+        ) {
+          drop(turn);
+          if (turns.get(key) === turn) turns.delete(key);
+          return "finished";
+        }
+        turn.finalDeliveryAttempted = true;
+        let outcome: FinalDeliveryOutcome = "rejected";
+        let config: RuntimeConfig | undefined;
+        try {
+          config = deps.loadConfig();
+          assertAuthorizedChat(config, turn.chatId);
+          outcome = await deps.deliverFinal(
+            config,
+            turn.chatId,
+            turn.quoteMessageId,
+            input.last_assistant_message
+          );
+        } catch {
+          outcome = "rejected";
+        }
+        if (outcome === "too_large") {
+          if (turn.finalDeliveryRetries < 1) {
+            turn.finalDeliveryRetries += 1;
+            turn.finalDeliveryAttempted = false;
+            turn.cancelTyping = deps.startTyping(turn.chatId);
+            return "retry";
+          }
+          if (config !== undefined) {
+            try {
+              await deps.deliverFinal(
+                config,
+                turn.chatId,
+                turn.quoteMessageId,
+                "The response was too long to deliver. Ask for a shorter answer."
+              );
+            } catch {
+              // The fixed fallback is attempted once; unknown outcomes are never replayed.
+            }
+          }
+        }
+        drop(turn);
+        if (turns.get(key) === turn) turns.delete(key);
+        return "finished";
       } catch {
         // Never surface a disclosure failure to the agent.
+        return "finished";
       }
     },
 
@@ -348,6 +415,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       const pending: Promise<void>[] = [];
       for (const turn of turns.values()) {
         if (turn.chatId !== chatId) continue;
+        turn.finalDeliveryAttempted = true;
         pending.push(finalize(turn, "Stop"));
       }
       await Promise.allSettled(pending);
