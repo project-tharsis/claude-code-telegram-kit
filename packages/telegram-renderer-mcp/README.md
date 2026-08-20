@@ -25,6 +25,7 @@ The renderer also owns sustained Telegram typing after the official Channel's in
 ## Routing
 
 - GFM pipe tables, task lists, `<details>`, and block math use `sendRichMessage` when within the Rich Message limit.
+- Before Rich delivery, canonical GFM is parsed into mdast and serialized back with CommonMark text delimiters escaped; source-position metadata preserves Telegram's `__underline__` extension. Canonicalization failure skips Rich and falls back safely.
 - Ordinary Markdown uses Telegram MarkdownV2.
 - Ordinary replies whose rendered MarkdownV2 exceeds 4,096 characters fail before any network call; the Stop hook asks Claude for one shorter replacement.
 - CJK downgrade is a deployment policy; this package keeps CJK rich structures eligible by default.

@@ -8,6 +8,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Native Rich delivery now canonicalizes GFM through mdast before `sendRichMessage`, preserving literal multiplication stars, intraword underscores, empty delimiter runs, and unmatched markers without breaking valid emphasis, code, links, tables, or Telegram underline.
 - Verbose Telegram tool disclosure no longer lets one command or path consume most of a mobile screen.
 - Progress labels now come from one fixed allowlist, and `/usage` names rolling quota windows as 5-hour / 7-day limits instead of conversation or calendar periods.
 - The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.

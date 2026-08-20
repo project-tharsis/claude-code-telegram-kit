@@ -7,6 +7,10 @@ This repository depends on the following direct packages. Their licenses apply t
 - `@modelcontextprotocol/sdk` — MIT
 - `zod` — MIT
 - `telegramify-markdown` — MIT
+- `mdast-util-from-markdown` — MIT
+- `mdast-util-to-markdown` — MIT
+- `mdast-util-gfm` — MIT
+- `micromark-extension-gfm` — MIT
 
 ## Development dependencies
 

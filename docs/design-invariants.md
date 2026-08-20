@@ -8,6 +8,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 - No arbitrary Bot API method tool.
 - No arbitrary shell command tool.
 - Raw Markdown is canonical; transport choice is deterministic, never model-selected.
+- Rich delivery compiles canonical GFM through an AST before native parsing: literal delimiter text is escaped, valid emphasis/code/link/table structure is preserved, and Telegram underline syntax is retained from source positions. A failed compilation downgrades before any Rich request.
 - Rich fallback occurs only after clearly permanent parser or capability rejection.
 - Timeouts, 429s, 5xx responses, and unknown outcomes never trigger a resend.
 - Every Bot API request rejects redirects; JSON responses are capped at 64 KiB before parsing.

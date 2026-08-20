@@ -1,5 +1,7 @@
+import { canonicalizeRichMarkdown } from "./rich-canonical.js";
+
 const RICH_MESSAGE_MAX_CHARS = 32_768;
-const TABLE_DELIMITER = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
 const TASK_LIST = /^\s*[-*]\s+\[[ xX]\]\s+/m;
 const DETAILS = /^\s*<\/?(?:details|summary)\b/mi;
 
@@ -9,7 +11,10 @@ function codePointLength(text: string): number {
 
 export function needsRichRendering(content: string): boolean {
   if (!content.trim() || codePointLength(content) > RICH_MESSAGE_MAX_CHARS) return false;
-  if (content.split("\n").some(line => TABLE_DELIMITER.test(line))) return true;
+  const lines = content.split("\n");
+  if (lines.some((line, index) =>
+    index > 0 && TABLE_DELIMITER.test(line) && lines[index - 1]!.includes("|")
+  )) return true;
   if (TASK_LIST.test(content)) return true;
   if (DETAILS.test(content)) return true;
   return content.includes("$$");
@@ -23,12 +28,13 @@ function protectedLines(lines: string[]): boolean[] {
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index]!.trimStart();
     const match = trimmed.match(/^(```+|~~~+)/);
-    if (!inFence && match) {
+    const wasInFence = inFence;
+    if (!wasInFence && match) {
       inFence = true;
       fenceMarker = match[1]![0]!;
     }
     if (inFence) protectedLine[index] = true;
-    if (inFence && match && match[1]![0] === fenceMarker && trimmed.slice(match[1]!.length).trim() === "") {
+    if (wasInFence && match && match[1]![0] === fenceMarker && trimmed.slice(match[1]!.length).trim() === "") {
       inFence = false;
       fenceMarker = "";
     }
@@ -46,8 +52,10 @@ function protectedLines(lines: string[]): boolean[] {
   return protectedLine;
 }
 
-export function normalizeRichMarkdown(content: string): string {
-  const lines = content.split("\n");
+export function normalizeRichMarkdown(content: string): string | null {
+  const canonical = canonicalizeRichMarkdown(content);
+  if (canonical === null) return null;
+  const lines = canonical.split("\n");
   const protectedLine = protectedLines(lines);
   let output = "";
 
@@ -63,5 +71,5 @@ export function normalizeRichMarkdown(content: string): string {
     output += hardBreak ? "  \n" : "\n";
   }
 
-  return output;
+  return codePointLength(output) <= RICH_MESSAGE_MAX_CHARS ? output : null;
 }
