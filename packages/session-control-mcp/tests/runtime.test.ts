@@ -72,6 +72,24 @@ describe("control runtime boundaries", () => {
     });
   });
 
+  test("adds HTML parse mode only for an explicitly formatted notification", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl: FetchLike = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 73 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    await sendTelegramMessage(config, "123456789", "<b>Usage</b>", fetchImpl, "51", "HTML");
+    expect(bodies).toEqual([{
+      chat_id: "123456789",
+      text: "<b>Usage</b>",
+      parse_mode: "HTML",
+      reply_parameters: { message_id: 51 }
+    }]);
+  });
+
   test("keeps injected fetch as the fourth argument", async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchImpl: FetchLike = async (_input, init) => {

@@ -23,7 +23,7 @@ function input(body: string, messageId = "9", sessionId = SESSION) {
 }
 
 function harness(options: { now?: () => number; sendFails?: boolean; usageFails?: boolean; config?: RuntimeConfig } = {}) {
-  const sent: Array<{ chatId: string; text: string; replyTo?: string }> = [];
+  const sent: Array<{ chatId: string; text: string; replyTo?: string; parseMode?: "HTML" }> = [];
   const reactions: Array<[string, string, string]> = [];
   const lists: unknown[] = [];
   const usageCalls: string[] = [];
@@ -36,9 +36,14 @@ function harness(options: { now?: () => number; sendFails?: boolean; usageFails?
   const dispatch = createControlCommandDispatcher({
     loadConfig: () => options.config ?? config,
     challenges,
-    sendMessage: async (_cfg, chatId, text, replyTo) => {
+    sendMessage: async (_cfg, chatId, text, replyTo, parseMode) => {
       if (options.sendFails) throw new Error("send failed");
-      sent.push({ chatId, text, ...(replyTo === undefined ? {} : { replyTo }) });
+      sent.push({
+        chatId,
+        text,
+        ...(replyTo === undefined ? {} : { replyTo }),
+        ...(parseMode === undefined ? {} : { parseMode })
+      });
       return 100 + sent.length;
     },
     react: async (_cfg, chatId, messageId, state) => {
@@ -52,7 +57,7 @@ function harness(options: { now?: () => number; sendFails?: boolean; usageFails?
     getUsage: async () => {
       usageCalls.push("usage");
       if (options.usageFails) throw new Error("usage unavailable");
-      return "Current session: 1% used\nCurrent week (all models): 11% used";
+      return "<b>Claude Code subscription usage</b>";
     },
     resumeSessionTrusted: async request => {
       resumes.push(request);
@@ -87,7 +92,8 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.sent).toEqual([{
       chatId: "123",
       replyTo: "9",
-      text: "Current session: 1% used\nCurrent week (all models): 11% used"
+      text: "<b>Claude Code subscription usage</b>",
+      parseMode: "HTML"
     }]);
     expect(h.reactions).toEqual([["123", "9", "success"]]);
   });

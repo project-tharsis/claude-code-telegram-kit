@@ -14,13 +14,20 @@ describe("progress preview modes", () => {
       .toBe("Run command — pytest tests/auth.py --token=[REDACTED]");
   });
 
-  test("all mode gives a shorter bounded preview", () => {
-    const step = buildProgressStep("Bash", { command: "x".repeat(200) }, "all")!;
-    expect(step.endsWith("…")).toBe(true);
-    expect(step.length).toBeLessThan(120);
+  test("all and verbose modes use distinct mobile-width preview bounds", () => {
+    const all = buildProgressStep("Bash", { command: "x".repeat(200) }, "all")!;
+    const verbose = buildProgressStep("Bash", { command: "x".repeat(200) }, "verbose")!;
+    const allPreview = all.split(" — ")[1]!;
+    const verbosePreview = verbose.split(" — ")[1]!;
+    expect(allPreview.endsWith("…")).toBe(true);
+    expect(verbosePreview.endsWith("…")).toBe(true);
+    expect(Array.from(allPreview)).toHaveLength(32);
+    expect(Array.from(verbosePreview)).toHaveLength(48);
   });
 
-  test("shows integration names but never internal sidecar plumbing", () => {
+  test("shows integration and tool-search names without internal sidecar plumbing", () => {
+    expect(buildProgressStep("ToolSearch", { query: "select:mcp__telegram-renderer__send_reply" }, "verbose"))
+      .toBe("Find tool — select:mcp__telegram-renderer__send_reply");
     expect(buildProgressStep("mcp__github__search_issues", { query: "bug" }, "verbose"))
       .toBe("Use github.search_issues — bug");
     expect(buildProgressStep("mcp__telegram-renderer__send_reply", {}, "verbose")).toBeNull();

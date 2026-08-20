@@ -106,8 +106,8 @@ const handleSessionsTool = createSessionsToolHandler({
 const dispatchControlCommand = createControlCommandDispatcher({
   loadConfig,
   challenges,
-  sendMessage: (config, chatId, text, replyTo) =>
-    sendTelegramMessage(config, chatId, text, fetch, replyTo),
+  sendMessage: (config, chatId, text, replyTo, parseMode) =>
+    sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode),
   react: finalizeTelegramReaction,
   listSessionsTrusted: request => sessionsController.listSessionsTrusted(request),
   getUsage: () => readSubscriptionUsage(),

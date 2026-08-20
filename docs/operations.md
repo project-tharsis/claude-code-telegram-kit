@@ -88,10 +88,10 @@ Verify from the real destination:
 2. a GFM table returns `mode: rich`;
 3. a direct message receives `👀`, then a confirmed reply replaces it with `👍`;
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
-5. a multi-tool turn creates one silent verbose progress bubble with redacted credentials and success/failure state;
+5. a multi-tool turn creates one silent progress bubble with bold tool labels, escaped monospace previews, mobile-width truncation, redacted credentials, and success/failure state;
 6. typing remains visible across a long turn and stops before the final reply;
 7. with either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`, an exact runtime `authentication_failed` event stops sustained typing/progress and sends one quoted auth explanation;
-8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot without an extra Claude process or model turn;
+8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot as bold percentages and compact micro-bars without an extra Claude process or model turn;
 9. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
 10. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
 11. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;

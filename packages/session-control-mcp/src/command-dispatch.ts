@@ -34,7 +34,8 @@ export interface ControlCommandDispatcherDeps {
     config: RuntimeConfig,
     chatId: string,
     text: string,
-    replyTo?: string
+    replyTo?: string,
+    parseMode?: "HTML"
   ) => Promise<number>;
   react: (
     config: RuntimeConfig,
@@ -150,7 +151,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
     if (command.kind === "usage") {
       try {
         const text = await deps.getUsage();
-        await deps.sendMessage(config, envelope.chatId, text, envelope.messageId);
+        await deps.sendMessage(config, envelope.chatId, text, envelope.messageId, "HTML");
         await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
       } catch {
         await bestEffortFailure(
