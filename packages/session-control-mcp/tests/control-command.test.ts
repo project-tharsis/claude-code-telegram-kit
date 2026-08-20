@@ -15,6 +15,11 @@ describe("exact control command parser", () => {
     expect(parseControlCommand("/sessions@my_bot")).toEqual({ kind: "sessions" });
     expect(parseControlCommand("/usage")).toEqual({ kind: "usage" });
     expect(parseControlCommand("/usage@my_bot")).toEqual({ kind: "usage" });
+    expect(parseControlCommand("/model")).toEqual({ kind: "model-status" });
+    expect(parseControlCommand("/model@my_bot")).toEqual({ kind: "model-status" });
+    for (const model of ["opus", "sonnet", "haiku", "inherit"] as const) {
+      expect(parseControlCommand(`/model ${model}`)).toEqual({ kind: "model-switch", model });
+    }
     expect(parseControlCommand("/reset@my_bot")).toEqual({ kind: "reset" });
     expect(parseControlCommand("/resume 1")).toEqual({ kind: "resume", index: 1 });
     expect(parseControlCommand("/resume@my_bot 10")).toEqual({ kind: "resume", index: 10 });
@@ -34,8 +39,11 @@ describe("exact control command parser", () => {
   test("recognizes malformed control namespace without accepting it", () => {
     for (const input of [
       "/sessions now",
-      "/sessionsx",
       "/usage now",
+      "/model fable",
+      "/model claude-opus-5",
+      "/model OPUS",
+      "/model opus extra",
       "/reset extra",
       "/resume",
       "/resume 0",
@@ -54,6 +62,8 @@ describe("exact control command parser", () => {
 
   test("does not treat prose or unrelated slash commands as control commands", () => {
     expect(parseControlCommand("please run /sessions")).toEqual({ kind: "other" });
+    expect(parseControlCommand("/sessionsx")).toEqual({ kind: "other" });
+    expect(parseControlCommand("/modeling")).toEqual({ kind: "other" });
     expect(parseControlCommand("/help")).toEqual({ kind: "other" });
     expect(parseControlCommand("" )).toEqual({ kind: "other" });
   });

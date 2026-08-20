@@ -28,8 +28,11 @@ from typing import Any, Callable
 DEFAULT_CONFIG_PATH = Path("/etc/claude-code-telegram-kit/reset.json")
 # Wire protocol between the unprivileged control MCP and this root helper. The MCP refuses to
 # schedule anything until --capabilities reports exactly this protocol and these actions.
-PROTOCOL_VERSION = 3
-SUPPORTED_ACTIONS = ("reset", "resume")
+PROTOCOL_VERSION = 4
+SUPPORTED_ACTIONS = ("reset", "resume", "model")
+SUPPORTED_MODELS = ("opus", "sonnet", "haiku", "inherit")
+MODEL_ENV_ROOT = Path("/etc/claude-code-telegram-kit")
+MODEL_ENV_FILE = MODEL_ENV_ROOT / "model.env"
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{24}$")
@@ -57,6 +60,7 @@ _ALLOWED_CONFIG_FIELDS = {
     "workspace",
     "project_sessions",
     "session_start_receipt_dir",
+    "model_env_file",
     "channel_state",
     "lock_path",
     "poller_process_marker",
@@ -74,6 +78,7 @@ class ResetConfig:
     workspace: Path
     project_sessions: Path
     session_start_receipt_dir: Path
+    model_env_file: Path
     channel_state: Path
     lock_path: Path
     poller_process_marker: str
@@ -90,6 +95,7 @@ def capabilities() -> dict[str, Any]:
     return {
         "protocol": PROTOCOL_VERSION,
         "actions": list(SUPPORTED_ACTIONS),
+        "models": list(SUPPORTED_MODELS),
         "helper": "claude-code-session-reset",
     }
 
@@ -204,6 +210,9 @@ def claim_request(
         if not isinstance(target_session, str):
             raise ValueError("resume claim requires a target session")
         _validate_uuid(target_session)
+    elif action == "model":
+        if target_session not in SUPPORTED_MODELS:
+            raise ValueError("model claim requires a fixed model target")
     elif target_session is not None:
         raise ValueError("reset claim must not carry a target session")
     if not REQUEST_ID_RE.fullmatch(request_id):
@@ -260,6 +269,8 @@ def finish_request(
     status_value: str,
     details: dict[str, Any],
     *,
+    action: str | None = None,
+    target_session: str | None = None,
     expected_uid: int = 0,
 ) -> dict[str, Any]:
     if status_value not in {"complete", "failed"}:
@@ -268,6 +279,8 @@ def finish_request(
     existing = json.loads(_read_secure_regular(receipt_path, expected_uid, 0o600, "reset request receipt"))
     if not isinstance(existing, dict) or existing.get("request_id") != request_id:
         raise ValueError("invalid reset request receipt")
+    if action is not None and (existing.get("action") != action or existing.get("target_session") != target_session):
+        raise ValueError("reset request receipt does not match request")
     payload = {
         **existing,
         **details,
@@ -341,6 +354,10 @@ def load_config(
     if not isinstance(allow_multiple_chats, bool):
         raise ValueError("allow_multiple_chats must be boolean")
 
+    model_env_file = _absolute_path(raw["model_env_file"], "model_env_file")
+    if model_env_file != MODEL_ENV_FILE:
+        raise ValueError("model_env_file must be /etc/claude-code-telegram-kit/model.env")
+
     return ResetConfig(
         service_name=service_name,
         service_user=service_user,
@@ -348,6 +365,7 @@ def load_config(
         workspace=_absolute_path(raw["workspace"], "workspace"),
         project_sessions=_absolute_path(raw["project_sessions"], "project_sessions"),
         session_start_receipt_dir=_absolute_path(raw["session_start_receipt_dir"], "session_start_receipt_dir"),
+        model_env_file=model_env_file,
         channel_state=_absolute_path(raw["channel_state"], "channel_state"),
         lock_path=lock_path,
         poller_process_marker=poller_marker,
@@ -625,6 +643,148 @@ def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
         os.close(parent_fd)
 
 
+def _read_process_environment(pid: int) -> dict[str, str]:
+    raw = Path(f"/proc/{pid}/environ").read_bytes()
+    return _parse_process_environment(raw)
+
+
+def _parse_process_environment(raw: bytes) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        if b"=" in item:
+            key, value = item.split(b"=", 1)
+            result[key.decode(errors="replace")] = value.decode(errors="replace")
+    return result
+
+
+def _process_uid(pid: int) -> int:
+    return Path(f"/proc/{pid}").stat().st_uid
+
+
+def _is_expected_claude_process(config: ResetConfig, pid: int, command: str) -> bool:
+    parts = command.split()
+    if not parts or Path(parts[0]).name != "claude":
+        return False
+    try:
+        if _process_uid(pid) != config.service_uid:
+            return False
+    except OSError:
+        return False
+    return (
+        "--continue" in parts
+        and "--channels" in parts
+        and "plugin:telegram@claude-plugins-official" in parts
+    )
+
+
+def _service_model_health(config: ResetConfig, model: str | None) -> bool:
+    try:
+        _run(["systemctl", "is-active", "--quiet", config.service_name], timeout=10)
+        main = int(_run(["systemctl", "show", "-p", "MainPID", "--value", config.service_name], timeout=10).stdout.strip())
+    except Exception:
+        return False
+    rows = _process_rows()
+    frontier, seen, descendants = [main], {main}, []
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, command) in rows.items():
+            if ppid == parent and pid not in seen:
+                seen.add(pid); frontier.append(pid); descendants.append((pid, command))
+    claude = [
+        (pid, command)
+        for pid, command in descendants
+        if _is_expected_claude_process(config, pid, command)
+    ]
+    if not claude:
+        return False
+    if not any(config.poller_process_marker in c for _, c in descendants):
+        return False
+    if not all(any(marker in c for _, c in descendants) for marker in config.required_process_markers):
+        return False
+    for pid, _ in claude:
+        try:
+            environment = _read_process_environment(pid)
+        except OSError:
+            continue
+        if model is None and "ANTHROPIC_MODEL" not in environment:
+            return True
+        if model is not None and environment.get("ANTHROPIC_MODEL") == model:
+            return True
+    return False
+
+
+def _validate_model_env_parent(path: Path) -> None:
+    if path != MODEL_ENV_FILE:
+        raise ValueError("model_env_file must be the fixed model.env path")
+    info = MODEL_ENV_ROOT.lstat()
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != 0
+        or stat.S_IMODE(info.st_mode) & 0o022
+        or MODEL_ENV_ROOT.resolve(strict=True) != MODEL_ENV_ROOT
+    ):
+        raise ValueError("model env directory must be canonical, root-owned, and not writable by group/world")
+
+
+def _read_model_env(path: Path) -> tuple[bool, bytes]:
+    _validate_model_env_parent(path)
+    parent_fd = os.open(MODEL_ENV_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            text = _read_secure_at(
+                parent_fd,
+                MODEL_ENV_FILE.name,
+                0,
+                0o644,
+                "model env file",
+                max_bytes=64,
+            )
+        except FileNotFoundError:
+            return False, b""
+    finally:
+        os.close(parent_fd)
+    data = text.encode("utf-8")
+    if re.fullmatch(rb"ANTHROPIC_MODEL=(opus|sonnet|haiku)\n", data) is None:
+        raise ValueError("model env file has invalid content")
+    return True, data
+
+
+def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o644) -> None:
+    _validate_model_env_parent(path)
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temp_name = f".{path.name}.tmp.{uuid.uuid4().hex}"
+    fd = None
+    try:
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent_fd)
+        os.write(fd, data); os.fsync(fd); os.close(fd); fd = None
+        os.replace(temp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd); os.fsync(parent_fd)
+    finally:
+        if fd is not None: os.close(fd)
+        try: os.unlink(temp_name, dir_fd=parent_fd)
+        except FileNotFoundError: pass
+        os.close(parent_fd)
+
+
+def _set_model_env(config: ResetConfig, model: str) -> None:
+    if model not in SUPPORTED_MODELS: raise ValueError("unsupported model alias")
+    if model == "inherit":
+        try:
+            _read_model_env(config.model_env_file)
+            config.model_env_file.unlink()
+            _fsync_dir(config.model_env_file.parent)
+        except FileNotFoundError:
+            pass
+    else:
+        _atomic_write_bytes(config.model_env_file, f"ANTHROPIC_MODEL={model}\n".encode())
+
+
+def _restore_model_env(config: ResetConfig, present: bool, data: bytes) -> None:
+    if present: _atomic_write_bytes(config.model_env_file, data)
+    else:
+        _validate_model_env_parent(config.model_env_file)
+        try: config.model_env_file.unlink(); _fsync_dir(config.model_env_file.parent)
+        except FileNotFoundError: pass
 def _read_canonical_unit(config: ResetConfig) -> str:
     unit = _read_secure_regular(config.unit_path, 0, 0o644, "service unit")
     if unit.count("--continue") != 1:
@@ -1094,6 +1254,143 @@ def resume_session(
         os.close(lock_fd)
 
 
+def model_session(
+    config: ResetConfig, *, model: str, chat_id: str, request_id: str, timeout: float
+) -> dict[str, Any]:
+    if os.geteuid() != 0:
+        raise PermissionError("model helper must run as root")
+    if model not in SUPPORTED_MODELS:
+        raise ValueError("unsupported model alias")
+    if not REQUEST_ID_RE.fullmatch(request_id):
+        raise ValueError("invalid reset request ID")
+    token = validate_notification_target(
+        config.channel_state,
+        chat_id,
+        expected_uid=config.service_uid,
+        allow_multiple_chats=config.allow_multiple_chats,
+    )
+    config.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    lock_fd = os.open(config.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another session reset is already running") from exc
+
+        claimed = claim_request(
+            REQUEST_STATE_ROOT,
+            request_id,
+            chat_id,
+            action="model",
+            target_session=model,
+        )
+        if not claimed["claimed"]:
+            receipt = claimed["receipt"]
+            return {
+                "status": "duplicate_request",
+                "request_id": request_id,
+                "prior_status": receipt.get("status"),
+                "new_model": receipt.get("new_model"),
+                "completion_message_id": receipt.get("completion_message_id"),
+            }
+
+        phase = "read_model_env"
+        previous_present = False
+        previous_bytes = b""
+        previous_model: str | None = None
+        mutation_attempted = False
+        try:
+            previous_present, previous_bytes = _read_model_env(config.model_env_file)
+            match = re.fullmatch(rb"ANTHROPIC_MODEL=(opus|sonnet|haiku)\n", previous_bytes)
+            if previous_present and match is not None:
+                previous_model = match.group(1).decode()
+
+            phase = "write_model_env"
+            mutation_attempted = True
+            _set_model_env(config, model)
+            phase = "restart_service"
+            _reload_and_restart(config)
+            phase = "verify_model_service"
+            _wait_active(config, timeout)
+            if not _service_model_health(config, None if model == "inherit" else model):
+                raise RuntimeError("model service health verification failed")
+        except Exception as exc:
+            recovered = not mutation_attempted
+            if mutation_attempted:
+                try:
+                    _restore_model_env(config, previous_present, previous_bytes)
+                    _reload_and_restart(config)
+                    _wait_active(config, timeout)
+                    recovered = _service_model_health(config, previous_model)
+                except Exception:
+                    recovered = False
+            try:
+                _notify(
+                    token,
+                    chat_id,
+                    "Model switch failed; "
+                    + ("previous model preserved." if recovered else "manual recovery required."),
+                )
+            except Exception:
+                pass
+            try:
+                finish_request(
+                    REQUEST_STATE_ROOT,
+                    request_id,
+                    "failed",
+                    {
+                        "old_model": previous_model,
+                        "recovered": recovered,
+                        "failure_phase": phase,
+                    },
+                    action="model",
+                    target_session=model,
+                )
+            except Exception:
+                pass
+            raise RuntimeError(f"model switch failed at {phase}") from exc
+
+        try:
+            completion_id = _notify(token, chat_id, f"Claude model switched to {model}.")
+        except Exception:
+            completion_id = None
+        result = {
+            "status": "model_complete",
+            "old_model": previous_model,
+            "new_model": model,
+            "completion_message_id": completion_id,
+            "request_id": request_id,
+        }
+        try:
+            finish_request(
+                REQUEST_STATE_ROOT,
+                request_id,
+                "complete",
+                {
+                    "old_model": previous_model,
+                    "new_model": model,
+                    "completion_message_id": completion_id,
+                },
+                action="model",
+                target_session=model,
+            )
+            result["receipt_persisted"] = True
+        except Exception as exc:
+            result["receipt_persisted"] = False
+            result["receipt_error"] = str(exc)
+            try:
+                _notify(
+                    token,
+                    chat_id,
+                    "Model switch complete, but the request receipt could not be persisted.",
+                )
+            except Exception:
+                pass
+        return result
+    finally:
+        os.close(lock_fd)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Reset or resume a Telegram-connected Claude Code session"
@@ -1110,10 +1407,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--protocol", type=int, default=PROTOCOL_VERSION)
     parser.add_argument("--action", choices=SUPPORTED_ACTIONS, default="reset")
     parser.add_argument("--session-id", help="exact resume target; only valid with --action resume")
-    parser.add_argument(
-        "--current-session-id",
-        help="exact currently active session; only valid with --action resume",
-    )
+    parser.add_argument("--current-session-id", help="exact currently active session; only valid with --action resume")
+    parser.add_argument("--model", choices=SUPPORTED_MODELS, help="fixed model alias; only valid with --action model")
     parser.add_argument("--chat-id")
     parser.add_argument("--request-id")
     parser.add_argument("--timeout", type=float, default=90.0)
@@ -1126,6 +1421,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.protocol != PROTOCOL_VERSION:
             raise ValueError("unsupported helper protocol version")
+        if args.action != "model" and args.model is not None:
+            raise ValueError("--model is only valid with --action model")
         if args.action == "reset":
             if args.session_id is not None:
                 raise ValueError("--session-id is only valid with --action resume")
@@ -1139,12 +1436,30 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--action resume requires --current-session-id")
             _validate_uuid(args.current_session_id)
 
+        if args.action == "model":
+            if args.model is None:
+                raise ValueError("--action model requires --model")
+            if args.session_id is not None or args.current_session_id is not None:
+                raise ValueError("session IDs are only valid with --action resume")
+            if args.chat_id is None or args.request_id is None:
+                raise ValueError("--action model requires --chat-id and --request-id")
         config = load_config(Path(args.config))
         if args.action == "resume":
             result = resume_session(
                 config,
                 session_id=args.session_id,
                 current_session_id=args.current_session_id,
+                chat_id=args.chat_id,
+                request_id=args.request_id,
+                timeout=args.timeout,
+            )
+        elif args.action == "model":
+            model = args.model
+            if not isinstance(model, str):
+                raise ValueError("--action model requires --model")
+            result = model_session(
+                config,
+                model=model,
                 chat_id=args.chat_id,
                 request_id=args.request_id,
                 timeout=args.timeout,

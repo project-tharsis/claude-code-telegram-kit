@@ -19,7 +19,11 @@ import {
   probeHelperCapabilities,
   sendTelegramMessage
 } from "./runtime.js";
-import { assertUsableSessionTranscript, scanResumableSessions } from "./session-catalog.js";
+import {
+  assertUsableSessionTranscript,
+  readLatestSessionModel,
+  scanResumableSessions
+} from "./session-catalog.js";
 import {
   defaultSelectionDirectory,
   readSelectionSnapshot,
@@ -28,6 +32,7 @@ import {
 import { createSessionsController } from "./sessions-control.js";
 import { createSessionsToolHandler, SESSIONS_TOOLS } from "./sessions-tool.js";
 import { createToolHandler, RESET_TOOL } from "./tool.js";
+import { DEFAULT_MODEL_ENV_FILE, readConfiguredModel } from "./model-status.js";
 import { readSubscriptionUsage } from "./subscription-usage.js";
 import {
   finalizeTelegramReaction,
@@ -111,6 +116,25 @@ const dispatchControlCommand = createControlCommandDispatcher({
   react: finalizeTelegramReaction,
   listSessionsTrusted: request => sessionsController.listSessionsTrusted(request),
   getUsage: () => readSubscriptionUsage(),
+  getModelStatus: async sessionId => {
+    const actual = projectSessionsDir === undefined
+      ? null
+      : readLatestSessionModel({ directory: projectSessionsDir, sessionId });
+    const configured = readConfiguredModel({ path: DEFAULT_MODEL_ENV_FILE });
+    return [
+      `Current actual: ${actual ?? "unknown"}`,
+      `Bot override: ${configured}`,
+      "",
+      "/model opus | sonnet | haiku | inherit"
+    ].join("\n");
+  },
+  switchModel: async request => {
+    if (!helperReady) throw new Error("model switch is unavailable on this host");
+    return {
+      status: "scheduled" as const,
+      unit: await scheduler.scheduleModel(request.chatId, request.messageId, request.model)
+    };
+  },
   resumeSessionTrusted: request => sessionsController.resumeSessionTrusted(request),
   resetSession: request => controller(request)
 });

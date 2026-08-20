@@ -6,6 +6,7 @@ import {
   TELEGRAM_SEND_TIMEOUT_MS,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
+import { MODEL_ALIASES, type ModelAlias } from "./control-command.js";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 export type CommandRunner = (argv: string[]) => Promise<{ exitCode: number; stderr: string; stdout?: string }>;
@@ -14,8 +15,8 @@ const DEFAULT_HELPER = "/usr/local/sbin/claude-code-session-reset";
 const DEFAULT_CONFIG = "/etc/claude-code-telegram-kit/reset.json";
 const DEFAULT_UNIT_PREFIX = "claude-session-reset";
 /** Wire protocol between this MCP and the root helper. Both sides must agree exactly. */
-export const HELPER_PROTOCOL_VERSION = 3;
-export const REQUIRED_HELPER_ACTIONS = ["reset", "resume"] as const;
+export const HELPER_PROTOCOL_VERSION = 4;
+export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model"] as const;
 const MAX_CAPABILITIES_BYTES = 64 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -167,11 +168,12 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
   const resolved = resolveScheduler(options);
 
   async function submit(
-    action: "reset" | "resume",
+    action: "reset" | "resume" | "model",
     chatId: string,
     messageId: string,
     currentSessionId?: string,
-    sessionId?: string
+    sessionId?: string,
+    model?: ModelAlias
   ): Promise<string> {
     if (!/^\d+$/.test(chatId)) throw new Error("invalid chat ID");
     if (!/^\d+$/.test(messageId)) throw new Error("invalid message ID");
@@ -181,12 +183,17 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
     if (action === "resume" && (currentSessionId === undefined || !SESSION_UUID.test(currentSessionId))) {
       throw new Error("invalid current session UUID");
     }
+    if (action === "model" && !MODEL_ALIASES.includes((model ?? "") as ModelAlias)) {
+      throw new Error("invalid model alias");
+    }
     resolved.verifyHelper();
 
     // Reset and resume for the same inbound message stay separately idempotent at the root.
     const seed = action === "reset"
       ? `${chatId}:${messageId}`
-      : `${action}:${chatId}:${messageId}:${currentSessionId!}`;
+      : action === "resume"
+        ? `${action}:${chatId}:${messageId}:${currentSessionId!}`
+        : `${action}:${chatId}:${messageId}:${model!}`;
     const id = createHash("sha256").update(seed).digest("hex").slice(0, 24);
     const unit = action === "reset"
       ? `${resolved.unitPrefix}-${id}`
@@ -207,6 +214,7 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
       action,
       ...(action === "resume" ? ["--current-session-id", currentSessionId!] : []),
       ...(action === "resume" ? ["--session-id", sessionId!] : []),
+      ...(action === "model" ? ["--model", model!] : []),
       "--chat-id",
       chatId,
       "--request-id",
@@ -220,7 +228,9 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
   return {
     scheduleReset: (chatId: string, messageId: string) => submit("reset", chatId, messageId),
     scheduleResume: (chatId: string, messageId: string, currentSessionId: string, sessionId: string) =>
-      submit("resume", chatId, messageId, currentSessionId, sessionId)
+      submit("resume", chatId, messageId, currentSessionId, sessionId),
+    scheduleModel: (chatId: string, messageId: string, model: ModelAlias) =>
+      submit("model", chatId, messageId, undefined, undefined, model)
   };
 }
 
@@ -232,6 +242,7 @@ export function createResetScheduler(options: SchedulerOptions = {}) {
 export interface HelperCapabilities {
   protocol: number;
   actions: string[];
+  models: string[];
 }
 
 /**
@@ -250,7 +261,7 @@ export async function probeHelperCapabilities(options: SchedulerOptions = {}): P
     throw new Error("reset helper capability output is unusable");
   }
 
-  const parsed = JSON.parse(stdout) as { protocol?: unknown; actions?: unknown };
+  const parsed = JSON.parse(stdout) as { protocol?: unknown; actions?: unknown; models?: unknown };
   if (parsed.protocol !== HELPER_PROTOCOL_VERSION) {
     throw new Error("reset helper protocol mismatch");
   }
@@ -261,5 +272,12 @@ export async function probeHelperCapabilities(options: SchedulerOptions = {}): P
   ) {
     throw new Error("reset helper does not support the required actions");
   }
-  return { protocol: HELPER_PROTOCOL_VERSION, actions };
+  const models: unknown[] = Array.isArray(parsed.models) ? parsed.models : [];
+  if (
+    !models.every((model): model is string => typeof model === "string")
+    || !MODEL_ALIASES.every(model => models.includes(model))
+  ) {
+    throw new Error("reset helper does not support the required models");
+  }
+  return { protocol: HELPER_PROTOCOL_VERSION, actions, models };
 }

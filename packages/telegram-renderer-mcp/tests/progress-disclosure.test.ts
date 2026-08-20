@@ -500,6 +500,11 @@ describe("turn disclosure lifecycle", () => {
     for (const body of [
       "/sessions",
       "/usage",
+      "/model",
+      "/model opus",
+      "/model@ExampleAssistant sonnet",
+      "/model fable",
+      "/reset extra",
       "/resume 1",
       "/resume@ExampleAssistant 10",
       "/resume confirm ABC234",

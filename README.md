@@ -18,7 +18,7 @@ The same Markdown document, both paths. The official `reply` tool defaults to `f
 Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control sidecars beside it, without a second `getUpdates` consumer:
 
 - **Telegram Renderer MCP** — internal Stop-hook final delivery plus silent, edit-in-place tool disclosure. Rendering, quote targets, fallback, reactions, and disclosure redaction are deterministic; the model selects neither tool nor transport.
-- **Session Control MCP** — `/reset`, bounded `/sessions`, and approval-gated `/resume N`; privileged execution goes through a versioned, root-owned, fail-closed helper that PID 1 executes.
+- **Session Control MCP** — `/usage`, deterministic `/model`, `/reset`, bounded `/sessions`, and approval-gated `/resume N`; privileged restart/session execution goes through a versioned, root-owned, fail-closed helper that PID 1 executes.
 
 Both gaps are open upstream. This kit is the interim answer:
 
@@ -41,7 +41,7 @@ python3 scripts/deploy_local.py install --repo . --ref "$sha" --bun "$(command -
 
 Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and `PROJECT` with your own fixed paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the final table should use Rich Message, and the inbound reaction should become `👍` without a model-facing reply tool call.
 
-The renderer package remains self-contained, but automatic final delivery requires the supplied Hook configuration. `/reset` and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
+The renderer package remains self-contained, but automatic final delivery requires the supplied Hook configuration. `/model`, `/reset`, and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
 
 For production deployment, rollback, and verification, follow the [operations runbook](docs/operations.md) rather than this section.
 
@@ -120,7 +120,7 @@ The local recovery authority is:
 sudo claude-code-session-reset --config /etc/claude-code-telegram-kit/reset.json
 ```
 
-The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/sessions` executes immediately; `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
+The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/sessions`, and `/model` status execute immediately; `/model <alias>` performs an allowlisted verified restart, while `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
 
 ## Development
 

@@ -40,6 +40,8 @@ Copy and adapt:
 
 Keep `examples/reset.json` root-owned when installed under `/etc/claude-code-telegram-kit/reset.json`.
 
+The system service must include `EnvironmentFile=-/etc/claude-code-telegram-kit/model.env`. Do not create that file manually: `/model <alias>` owns it through the root helper, and `inherit` removes it atomically.
+
 Set `CLAUDE_PROJECT_SESSIONS_DIR` in the `session-control` MCP environment to the one exact Claude project directory. Do not derive it from a model argument or inbound message.
 
 ## Install the root helper
@@ -50,7 +52,7 @@ Follow the exact-commit/digest procedure in `packages/session-control-mcp/README
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 
-The receipt must report protocol `3` with `reset` and `resume`.
+The receipt must report protocol `4` with `reset`, `resume`, and `model`, plus `opus`, `sonnet`, `haiku`, and `inherit`.
 
 A fresh reset also requires the SessionStart receipt writer, installed from the same merged SHA:
 
@@ -93,9 +95,10 @@ Verify from the real destination:
 7. with either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`, an exact runtime `authentication_failed` event stops sustained typing/progress and sends one quoted auth explanation;
 8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot as bold percentages and compact micro-bars without an extra Claude process or model turn;
 9. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
-10. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
-11. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
-12. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
+10. `/model` reports the latest actual model and bot override; `/model sonnet` persists a root-owned override, restarts the same `--continue` session, verifies the process environment, and rolls back on failed health;
+11. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
+12. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
+13. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
 
 ## Rollback
 

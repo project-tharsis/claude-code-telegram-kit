@@ -1,6 +1,6 @@
 # Session Control MCP
 
-An MCP front end for resetting, listing, and resuming sessions for one Telegram-connected Claude Code workspace.
+An MCP front end for model switching, resetting, listing, and resuming sessions for one Telegram-connected Claude Code workspace.
 
 ## Hook tool
 
@@ -8,7 +8,7 @@ An MCP front end for resetting, listing, and resuming sessions for one Telegram-
 dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmit")
 ```
 
-`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/sessions`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
+`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/sessions`, `/model`, `/model opus|sonnet|haiku|inherit`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
 
 An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
 
@@ -38,9 +38,9 @@ CLAUDE_SESSION_RESET_UNIT_PREFIX
 CLAUDE_PROJECT_SESSIONS_DIR
 ```
 
-Defaults are documented in `src/runtime.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
+Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. Model status always reads the fixed root-owned, mode-`0644`, single-line `/etc/claude-code-telegram-kit/model.env` that the service loads through an optional `EnvironmentFile=` directive. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
 
-At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v3 with both `reset` and `resume`. Version skew disables privileged actions while leaving listing and rendering available. Protocol v3 binds every resume to both the current session and the selected target, binds root-owned receipts to the action payload, and verifies a fresh reset by a secure SessionStart receipt plus exact process and worker health instead of any transcript content or LLM response.
+At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v4 with `reset`, `resume`, and `model` plus the fixed model allowlist. Version skew disables privileged actions while leaving read-only status/listing and rendering available. Protocol v4 adds atomic root-owned `model.env` updates, service restart, process-environment verification, and rollback; resume/reset retain their exact-session and secure-receipt contracts.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
 
