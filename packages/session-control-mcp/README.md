@@ -47,6 +47,8 @@ By default, the shared authority requires exactly one allowlisted chat. Multi-ch
 
 Set `TELEGRAM_COMMAND_MENU_ENABLED=true` to install and read back a chat-specific Telegram Bot Menu for each positive allowlisted private-chat ID. The scope contains `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`. It outranks the official Channel's `all_private_chats` menu without modifying that plugin. Menu sync is outbound-only and fail-soft; command authorization remains the live allowlist plus deterministic parser. `/resume` is omitted because a menu click cannot carry its required index. Before removing a chat from the allowlist or disabling the feature, set the value to `delete`, restart once, and require an empty `getMyCommands` readback for that chat scope; then remove the chat or env key.
 
+`/model` sends a one-time reply keyboard with four vertical choices. Telegram sends the selected label back as an ordinary `message:text`, so the official Channel remains the sole poller and the deterministic parser handles it without callback forwarding. The only accepted labels are `1 · Opus`, `2 · Sonnet`, `3 · Haiku`, and `4 · Inherit`; bare numbers and model names remain ordinary conversation. The switch acknowledgement explicitly removes the keyboard.
+
 The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`, keyed by a hash of the inbound chat and message IDs.
 
 ## Installing the root helper

@@ -8,6 +8,10 @@ import {
   RESET_CHALLENGE_PREFIX,
   RESUME_CHALLENGE_PREFIX
 } from "../src/command-dispatch.js";
+import {
+  MODEL_REPLY_KEYBOARD,
+  REMOVE_MODEL_REPLY_KEYBOARD
+} from "../src/model-reply-keyboard.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const OTHER_SESSION = "4fcbaf06-4378-4339-b026-8c2e026a65e7";
@@ -29,7 +33,13 @@ function harness(options: {
   modelFails?: boolean;
   config?: RuntimeConfig;
 } = {}) {
-  const sent: Array<{ chatId: string; text: string; replyTo?: string; parseMode?: "HTML" }> = [];
+  const sent: Array<{
+    chatId: string;
+    text: string;
+    replyTo?: string;
+    parseMode?: "HTML";
+    replyMarkup?: Record<string, unknown>;
+  }> = [];
   const reactions: Array<[string, string, string]> = [];
   const lists: unknown[] = [];
   const usageCalls: string[] = [];
@@ -44,13 +54,14 @@ function harness(options: {
   const dispatch = createControlCommandDispatcher({
     loadConfig: () => options.config ?? config,
     challenges,
-    sendMessage: async (_cfg, chatId, text, replyTo, parseMode) => {
+    sendMessage: async (_cfg, chatId, text, replyTo, parseMode, replyMarkup) => {
       if (options.sendFails) throw new Error("send failed");
       sent.push({
         chatId,
         text,
         ...(replyTo === undefined ? {} : { replyTo }),
-        ...(parseMode === undefined ? {} : { parseMode })
+        ...(parseMode === undefined ? {} : { parseMode }),
+        ...(replyMarkup === undefined ? {} : { replyMarkup })
       });
       return 100 + sent.length;
     },
@@ -123,10 +134,12 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(await h.dispatch(input("/model"))).toEqual({ handled: true });
     expect(h.modelStatusCalls).toEqual([SESSION]);
     expect(h.sent.at(-1)?.text).toContain("claude-opus-5");
+    expect(h.sent.at(-1)?.replyMarkup).toEqual(MODEL_REPLY_KEYBOARD);
 
-    expect(await h.dispatch(input("/model sonnet", "10"))).toEqual({ handled: true });
+    expect(await h.dispatch(input("2 · Sonnet", "10"))).toEqual({ handled: true });
     expect(h.modelSwitches).toEqual([{ chatId: "123", messageId: "10", model: "sonnet" }]);
     expect(h.sent.at(-1)).toMatchObject({ chatId: "123", replyTo: "10" });
+    expect(h.sent.at(-1)?.replyMarkup).toEqual(REMOVE_MODEL_REPLY_KEYBOARD);
     expect(h.reactions.at(-1)).toEqual(["123", "10", "success"]);
   });
 

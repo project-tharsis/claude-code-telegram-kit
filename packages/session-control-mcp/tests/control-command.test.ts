@@ -20,6 +20,10 @@ describe("exact control command parser", () => {
     for (const model of ["opus", "sonnet", "haiku", "inherit"] as const) {
       expect(parseControlCommand(`/model ${model}`)).toEqual({ kind: "model-switch", model });
     }
+    expect(parseControlCommand("1 · Opus")).toEqual({ kind: "model-switch", model: "opus" });
+    expect(parseControlCommand("2 · Sonnet")).toEqual({ kind: "model-switch", model: "sonnet" });
+    expect(parseControlCommand("3 · Haiku")).toEqual({ kind: "model-switch", model: "haiku" });
+    expect(parseControlCommand("4 · Inherit")).toEqual({ kind: "model-switch", model: "inherit" });
     expect(parseControlCommand("/reset@my_bot")).toEqual({ kind: "reset" });
     expect(parseControlCommand("/resume 1")).toEqual({ kind: "resume", index: 1 });
     expect(parseControlCommand("/resume@my_bot 10")).toEqual({ kind: "resume", index: 10 });
@@ -64,6 +68,8 @@ describe("exact control command parser", () => {
     expect(parseControlCommand("please run /sessions")).toEqual({ kind: "other" });
     expect(parseControlCommand("/sessionsx")).toEqual({ kind: "other" });
     expect(parseControlCommand("/modeling")).toEqual({ kind: "other" });
+    expect(parseControlCommand("1")).toEqual({ kind: "other" });
+    expect(parseControlCommand("Opus")).toEqual({ kind: "other" });
     expect(parseControlCommand("/help")).toEqual({ kind: "other" });
     expect(parseControlCommand("" )).toEqual({ kind: "other" });
   });

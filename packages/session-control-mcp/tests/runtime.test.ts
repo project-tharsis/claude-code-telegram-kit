@@ -90,6 +90,28 @@ describe("control runtime boundaries", () => {
     }]);
   });
 
+  test("adds a reply keyboard only when explicitly requested", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl: FetchLike = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 74 } }), { status: 200 });
+    };
+    const replyMarkup = {
+      keyboard: [[{ text: "1 · Opus" }]],
+      resize_keyboard: true,
+      one_time_keyboard: true
+    };
+    await sendTelegramMessage(
+      config, "123456789", "Choose", fetchImpl, "51", undefined, replyMarkup
+    );
+    expect(bodies).toEqual([{
+      chat_id: "123456789",
+      text: "Choose",
+      reply_parameters: { message_id: 51 },
+      reply_markup: replyMarkup
+    }]);
+  });
+
   test("keeps injected fetch as the fourth argument", async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchImpl: FetchLike = async (_input, init) => {
