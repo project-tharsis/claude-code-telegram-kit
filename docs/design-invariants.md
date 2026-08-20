@@ -31,7 +31,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 
 - Claude Code hooks, not the model, emit disclosure events.
 - Disclosure accepts turn/tool/agent IDs plus an explicit allowlist of bounded preview strings (`command`, `file_path`, `path`, `pattern`, `query`, `url`, `description`). It never accepts the raw `tool_input` object or any tool output.
-- `verbose` may expose ordinary VM commands, paths, queries, and URLs by user choice. Credential-shaped values are always replaced with fixed redaction markers before Telegram delivery; previews are then bounded to 48 characters (`verbose`) or 32 (`all`) and HTML-escaped before bold/code rendering.
+- `verbose` may expose ordinary VM commands, paths, queries, and URLs by user choice. Credential-shaped values are always replaced with fixed redaction markers before Telegram delivery; previews are then bounded to 40 characters (`verbose`) or 28 (`all`) and HTML-escaped before bold/code rendering.
 - PostToolUse and PostToolUseFailure mark each tool ID as running, completed, or failed; one turn still owns one bounded bubble.
 - The official Channel owns the initial typing action. The renderer owns sustained two-second refresh and cancels before final delivery, turn closure, supersession, rejection, or a ten-minute dead-man cutoff.
 - Each ordinary direct turn may watch only its exact, secure transcript append for at most five seconds. An exact runtime `authentication_failed` row retires the progress turn and sends one quoted explanation, independent of whether Claude used persisted login or `CLAUDE_CODE_OAUTH_TOKEN`. Normal Stop/supersession cancels the watcher. No credential preflight, background auth polling, or token policy belongs to the harness.

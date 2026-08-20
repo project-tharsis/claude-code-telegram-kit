@@ -30,21 +30,22 @@ describe("internal sidecar tool filtering", () => {
 
 describe("safe step labels", () => {
   test("maps known tools to fixed labels", () => {
-    expect(safeStepLabel("Read")).toBe("Reading files");
-    expect(safeStepLabel("Grep")).toBe("Reading files");
-    expect(safeStepLabel("Edit")).toBe("Editing files");
-    expect(safeStepLabel("Write")).toBe("Editing files");
-    expect(safeStepLabel("Bash")).toBe("Running commands");
-    expect(safeStepLabel("WebSearch")).toBe("Searching the web");
-    expect(safeStepLabel("WebFetch")).toBe("Searching the web");
-    expect(safeStepLabel("TodoWrite")).toBe("Planning");
-    expect(safeStepLabel("Skill")).toBe("Running a skill");
+    expect(safeStepLabel("Read")).toBe("Read file");
+    expect(safeStepLabel("Grep")).toBe("Search code");
+    expect(safeStepLabel("Edit")).toBe("Edit file");
+    expect(safeStepLabel("Write")).toBe("Write file");
+    expect(safeStepLabel("Bash")).toBe("Run command");
+    expect(safeStepLabel("WebSearch")).toBe("Search web");
+    expect(safeStepLabel("WebFetch")).toBe("Read web page");
+    expect(safeStepLabel("TodoWrite")).toBe("Update plan");
+    expect(safeStepLabel("Skill")).toBe("Run skill");
+    expect(safeStepLabel("ToolSearch")).toBe("Find tool");
     expect(safeStepLabel("Task")).toBe(DELEGATING_LABEL);
   });
 
   test("maps unrelated MCP tools to one integration label without leaking the server", () => {
-    expect(safeStepLabel("mcp__claude_ai_Notion__notion-search")).toBe("Using an integration");
-    expect(safeStepLabel("mcp__plugin_telegram_telegram__reply")).toBe("Using an integration");
+    expect(safeStepLabel("mcp__claude_ai_Notion__notion-search")).toBe("Use integration");
+    expect(safeStepLabel("mcp__plugin_telegram_telegram__reply")).toBe("Use integration");
   });
 
   test("maps unknown tools to a generic label instead of echoing the name", () => {

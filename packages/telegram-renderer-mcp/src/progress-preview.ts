@@ -1,4 +1,4 @@
-import { isInternalSidecarTool } from "./progress-labels.js";
+import { safeStepLabel } from "./progress-labels.js";
 import { sanitizeProgressPreview } from "./progress-preview-sanitizer.js";
 
 export type ToolDisclosureMode = "safe" | "all" | "verbose";
@@ -11,34 +11,6 @@ export interface ToolPreviewFields {
   query?: string | undefined;
   url?: string | undefined;
   description?: string | undefined;
-}
-
-const LABELS = new Map<string, string>([
-  ["Read", "Read file"],
-  ["NotebookRead", "Read notebook"],
-  ["Glob", "Find files"],
-  ["Grep", "Search code"],
-  ["Edit", "Edit file"],
-  ["Write", "Write file"],
-  ["MultiEdit", "Edit files"],
-  ["NotebookEdit", "Edit notebook"],
-  ["Bash", "Run command"],
-  ["BashOutput", "Read command output"],
-  ["KillShell", "Stop command"],
-  ["KillBash", "Stop command"],
-  ["WebFetch", "Read web page"],
-  ["WebSearch", "Search web"],
-  ["TodoWrite", "Update plan"],
-  ["ExitPlanMode", "Finish planning"],
-  ["Skill", "Run skill"],
-  ["Task", "Delegate work"],
-  ["Agent", "Delegate work"],
-  ["ToolSearch", "Find tool"]
-]);
-
-function integrationLabel(toolName: string): string {
-  const match = /^mcp__([A-Za-z0-9_.:-]{1,64})__([A-Za-z0-9_.:-]{1,64})$/.exec(toolName);
-  return match === null ? "Use integration" : `Use ${match[1]}.${match[2]}`;
 }
 
 function previewSource(toolName: string, fields: ToolPreviewFields): string {
@@ -58,11 +30,13 @@ function previewSource(toolName: string, fields: ToolPreviewFields): string {
     }
     case "WebSearch": return fields.query ?? "";
     case "WebFetch": return fields.url ?? "";
+    case "ToolSearch": return fields.query ?? "";
     case "Task":
     case "Agent":
     case "Skill": return fields.description ?? "";
-    default:
-      return fields.command ?? fields.file_path ?? fields.path ?? fields.query ?? fields.url ?? fields.description ?? "";
+    default: return toolName.startsWith("mcp__")
+      ? fields.query ?? fields.description ?? ""
+      : "";
   }
 }
 
@@ -76,13 +50,11 @@ export function buildProgressStep(
   mode: ToolDisclosureMode,
   agentId?: string
 ): string | null {
-  if (isInternalSidecarTool(toolName)) return null;
-  const label = agentId
-    ? "Delegate work"
-    : LABELS.get(toolName) ?? (toolName.startsWith("mcp__") ? integrationLabel(toolName) : toolName || "Work");
+  const label = safeStepLabel(toolName, agentId);
+  if (label === null) return null;
   if (mode === "safe") return label;
   const preview = sanitizeProgressPreview(previewSource(toolName, fields), {
-    maxLength: mode === "verbose" ? 48 : 32
+    maxLength: mode === "verbose" ? 40 : 28
   });
   return preview ? `${label} — ${preview}` : label;
 }

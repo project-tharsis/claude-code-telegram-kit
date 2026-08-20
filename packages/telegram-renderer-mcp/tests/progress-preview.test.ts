@@ -21,16 +21,23 @@ describe("progress preview modes", () => {
     const verbosePreview = verbose.split(" — ")[1]!;
     expect(allPreview.endsWith("…")).toBe(true);
     expect(verbosePreview.endsWith("…")).toBe(true);
-    expect(Array.from(allPreview)).toHaveLength(32);
-    expect(Array.from(verbosePreview)).toHaveLength(48);
+    expect(Array.from(allPreview)).toHaveLength(28);
+    expect(Array.from(verbosePreview)).toHaveLength(40);
   });
 
   test("shows integration and tool-search names without internal sidecar plumbing", () => {
-    expect(buildProgressStep("ToolSearch", { query: "select:mcp__telegram-renderer__send_reply" }, "verbose"))
-      .toBe("Find tool — select:mcp__telegram-renderer__send_reply");
+    const toolSearch = buildProgressStep(
+      "ToolSearch",
+      { query: "select:mcp__telegram-renderer__send_reply" },
+      "verbose"
+    )!;
+    expect(toolSearch.startsWith("Find tool — select:mcp__telegram-renderer__")).toBe(true);
+    expect(toolSearch.endsWith("…")).toBe(true);
     expect(buildProgressStep("mcp__github__search_issues", { query: "bug" }, "verbose"))
-      .toBe("Use github.search_issues — bug");
+      .toBe("Use integration — bug");
     expect(buildProgressStep("mcp__telegram-renderer__send_reply", {}, "verbose")).toBeNull();
+    expect(buildProgressStep("VendorControlledToolName", { command: "leak-me" }, "verbose"))
+      .toBe("Working");
   });
 
   test("subagent internals collapse to delegation with a bounded description", () => {
