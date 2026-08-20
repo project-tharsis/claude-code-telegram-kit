@@ -879,6 +879,18 @@ def _wait_active(config: ResetConfig, timeout: float = 45.0) -> None:
     raise TimeoutError("Claude Code service did not become active")
 
 
+def _wait_model_service(config: ResetConfig, model: str | None, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _service_model_health(config, model):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(1.0, remaining))
+    raise TimeoutError("model service did not become healthy")
+
+
 def _reload_and_restart(config: ResetConfig) -> None:
     _run(["systemctl", "daemon-reload"], timeout=20)
     _run(["systemctl", "restart", config.service_name], timeout=30)
@@ -1311,17 +1323,15 @@ def model_session(
             phase = "restart_service"
             _reload_and_restart(config)
             phase = "verify_model_service"
-            _wait_active(config, timeout)
-            if not _service_model_health(config, None if model == "inherit" else model):
-                raise RuntimeError("model service health verification failed")
+            _wait_model_service(config, None if model == "inherit" else model, timeout)
         except Exception as exc:
             recovered = not mutation_attempted
             if mutation_attempted:
                 try:
                     _restore_model_env(config, previous_present, previous_bytes)
                     _reload_and_restart(config)
-                    _wait_active(config, timeout)
-                    recovered = _service_model_health(config, previous_model)
+                    _wait_model_service(config, previous_model, timeout)
+                    recovered = True
                 except Exception:
                     recovered = False
             try:

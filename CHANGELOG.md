@@ -8,6 +8,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Model switching now waits for the Claude CLI, official poller, and both sidecars to become healthy after each restart instead of treating the earlier systemd `active` edge as readiness; rollback uses the same bounded health proof.
 - Native Rich delivery now canonicalizes GFM through mdast before `sendRichMessage`, preserving literal multiplication stars, intraword underscores, empty delimiter runs, and unmatched markers without breaking valid emphasis, code, links, tables, or Telegram underline.
 - Verbose Telegram tool disclosure no longer lets one command or path consume most of a mobile screen.
 - Progress labels now come from one fixed allowlist, and `/usage` names rolling quota windows as 5-hour / 7-day limits instead of conversation or calendar periods.
