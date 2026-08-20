@@ -4,6 +4,7 @@ import {
   FINAL_DRAIN_TIMEOUT_MS,
   PROGRESS_DEBOUNCE_MS
 } from "../src/progress-disclosure.js";
+import type { FinalDeliveryOutcome } from "../src/progress-disclosure.js";
 import type {
   ProgressEditOutcome,
   ProgressSendOutcome
@@ -20,6 +21,7 @@ interface Harness {
   disclosure: ReturnType<typeof createTurnDisclosure>;
   sends: Array<{ chatId: string; replyTo: string; text: string }>;
   edits: Array<{ messageId: number; text: string }>;
+  finalDeliveries: Array<{ chatId: string; messageId: string; content: string }>;
   typingStarts: string[];
   typingStops: { count: number };
   delays: number[];
@@ -30,10 +32,15 @@ interface Harness {
 function harness(options: {
   send?: (text: string, index: number) => ProgressSendOutcome | Promise<ProgressSendOutcome>;
   edit?: (text: string, index: number) => ProgressEditOutcome | Promise<ProgressEditOutcome>;
+  finalOutcome?: FinalDeliveryOutcome | ((
+    content: string,
+    index: number
+  ) => FinalDeliveryOutcome | Promise<FinalDeliveryOutcome>);
   config?: RuntimeConfig;
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
+  const finalDeliveries: Harness["finalDeliveries"] = [];
   const typingStarts: string[] = [];
   const typingStops = { count: 0 };
   const delays: number[] = [];
@@ -45,6 +52,12 @@ function harness(options: {
     startTyping: chatId => {
       typingStarts.push(chatId);
       return () => { typingStops.count += 1; };
+    },
+    deliverFinal: async (_config, chatId, messageId, content) => {
+      finalDeliveries.push({ chatId, messageId, content });
+      return typeof options.finalOutcome === "function"
+        ? options.finalOutcome(content, finalDeliveries.length - 1)
+        : options.finalOutcome ?? "delivered";
     },
     send: async (_config, chatId, replyTo, text) => {
       sends.push({ chatId, replyTo, text });
@@ -67,6 +80,7 @@ function harness(options: {
     disclosure,
     sends,
     edits,
+    finalDeliveries,
     typingStarts,
     typingStops,
     delays,
@@ -99,15 +113,127 @@ function tool(h: Harness, toolUseId: string, toolName: string, agentId?: string)
   });
 }
 
-async function finish(h: Harness, event: "Stop" | "StopFailure" = "Stop"): Promise<void> {
-  await h.disclosure.finishTurn({
+async function finish(
+  h: Harness,
+  event: "Stop" | "StopFailure" = "Stop",
+  finalMessage = ""
+): Promise<"finished" | "retry"> {
+  return h.disclosure.finishTurn({
     session_id: SESSION,
     prompt_id: PROMPT,
+    last_assistant_message: finalMessage,
     hook_event_name: event
   });
 }
 
 describe("turn disclosure lifecycle", () => {
+  test("Stop auto-delivers the final assistant Markdown exactly once", async () => {
+    const h = harness();
+    bind(h);
+    expect(await finish(h, "Stop", "**hello**")).toBe("finished");
+    expect(h.finalDeliveries).toEqual([{
+      chatId: "123",
+      messageId: "9",
+      content: "**hello**"
+    }]);
+    expect(await finish(h, "Stop", "**hello**")).toBe("finished");
+    expect(h.finalDeliveries).toHaveLength(1);
+  });
+
+  test("concurrent replayed Stop hooks reserve one final delivery before network I/O", async () => {
+    let release!: (outcome: FinalDeliveryOutcome) => void;
+    let markStarted!: () => void;
+    const pending = new Promise<FinalDeliveryOutcome>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const h = harness({
+      finalOutcome: () => {
+        markStarted();
+        return pending;
+      }
+    });
+    bind(h);
+    const first = finish(h, "Stop", "hello");
+    await started;
+    const replay = finish(h, "Stop", "hello");
+    expect(h.finalDeliveries).toHaveLength(1);
+    release("delivered");
+    await expect(first).resolves.toBe("finished");
+    await expect(replay).resolves.toBe("finished");
+    expect(h.finalDeliveries).toHaveLength(1);
+  });
+
+  test("a Stop awaiting progress drain cannot deliver after a newer turn supersedes it", async () => {
+    let releaseSend!: (outcome: ProgressSendOutcome) => void;
+    const pendingSend = new Promise<ProgressSendOutcome>(resolve => { releaseSend = resolve; });
+    const h = harness({ send: () => pendingSend });
+    bind(h, ENVELOPE, "p-old");
+    h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: "p-old",
+      tool_use_id: "t-old",
+      tool_name: "Read",
+      hook_event_name: "PreToolUse"
+    });
+    const firstFlush = h.tick();
+    await Promise.resolve();
+    const stopping = h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: "p-old",
+      last_assistant_message: "stale final",
+      hook_event_name: "Stop"
+    });
+    bind(h, '<channel source="telegram" chat_id="123" message_id="10">new turn', "p-new");
+    releaseSend({ kind: "sent", messageId: 101 });
+    await Promise.all([firstFlush, stopping]);
+    expect(h.finalDeliveries).toEqual([]);
+  });
+
+  test("a legacy send_reply reservation suppresses Stop auto-delivery", async () => {
+    const h = harness();
+    bind(h);
+    await h.disclosure.finalizeChat("123");
+    expect(await finish(h, "Stop", "must not duplicate")).toBe("finished");
+    expect(h.finalDeliveries).toEqual([]);
+  });
+
+  test("StopFailure never delivers assistant text", async () => {
+    const h = harness();
+    bind(h);
+    expect(await finish(h, "StopFailure", "must not send")).toBe("finished");
+    expect(h.finalDeliveries).toEqual([]);
+  });
+
+  test("a local oversized final asks Claude to shorten once, then delivers the replacement", async () => {
+    const h = harness({
+      finalOutcome: (_content, index) => index === 0 ? "too_large" : "delivered"
+    });
+    bind(h);
+    expect(await finish(h, "Stop", "x".repeat(5_000))).toBe("retry");
+    expect(h.typingStarts).toEqual(["123", "123"]);
+    expect(await finish(h, "Stop", "shorter")).toBe("finished");
+    expect(h.finalDeliveries.map(item => item.content)).toEqual(["x".repeat(5_000), "shorter"]);
+  });
+
+  test("a second oversized final ends the retry loop with one fixed short fallback", async () => {
+    const outcomes: FinalDeliveryOutcome[] = ["too_large", "too_large", "delivered"];
+    const h = harness({ finalOutcome: (_content, index) => outcomes[index]! });
+    bind(h);
+    expect(await finish(h, "Stop", "x".repeat(5_000))).toBe("retry");
+    expect(await finish(h, "Stop", "y".repeat(5_000))).toBe("finished");
+    expect(h.finalDeliveries).toHaveLength(3);
+    expect(h.finalDeliveries[2]!.content).toBe(
+      "The response was too long to deliver. Ask for a shorter answer."
+    );
+  });
+
+  test("an uncertain final delivery is never replayed", async () => {
+    const h = harness({ finalOutcome: "uncertain" });
+    bind(h);
+    expect(await finish(h, "Stop", "hello")).toBe("finished");
+    expect(await finish(h, "Stop", "hello")).toBe("finished");
+    expect(h.finalDeliveries).toHaveLength(1);
+  });
+
   test("runtime auth failure retires the turn, stops typing, and sends one quoted explanation", async () => {
     let fireAuthFailure: (() => Promise<void>) | null = null;
     let watchCancels = 0;
@@ -627,7 +753,7 @@ describe("turn disclosure failure handling", () => {
     expect(h.edits.length).toBe(1);
     tool(h, "t3", "Write");
     expect(h.pending()).toBe(false);
-    await expect(finish(h)).resolves.toBeUndefined();
+    await expect(finish(h)).resolves.toBe("finished");
     expect(h.edits.length).toBe(1);
   });
 
@@ -699,7 +825,7 @@ describe("turn disclosure failure handling", () => {
       session_id: SESSION,
       prompt_id: PROMPT,
       hook_event_name: "Stop"
-    })).resolves.toBeUndefined();
+    })).resolves.toBe("finished");
     expect(h.sends).toEqual([]);
   });
 

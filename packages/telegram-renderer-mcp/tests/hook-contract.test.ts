@@ -125,12 +125,21 @@ describe("internal hook tool schemas", () => {
     expect(() => RecordToolFailureInputSchema.parse({ ...base, error: "ENOENT /srv/secret" })).toThrow();
   });
 
-  test("finish_turn accepts only Stop and StopFailure", () => {
-    const base = { session_id: SESSION, prompt_id: PROMPT, hook_event_name: "Stop" };
-    expect(FinishTurnInputSchema.parse(base).hook_event_name).toBe("Stop");
-    expect(FinishTurnInputSchema.parse({ ...base, hook_event_name: "StopFailure" }).hook_event_name).toBe("StopFailure");
+  test("finish_turn accepts bounded final text only for Stop lifecycle payloads", () => {
+    const base = {
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      last_assistant_message: "**done**",
+      hook_event_name: "Stop"
+    };
+    expect(FinishTurnInputSchema.parse(base).last_assistant_message).toBe("**done**");
+    expect(FinishTurnInputSchema.parse({
+      ...base,
+      last_assistant_message: "",
+      hook_event_name: "StopFailure"
+    }).hook_event_name).toBe("StopFailure");
     expect(() => FinishTurnInputSchema.parse({ ...base, hook_event_name: "SubagentStop" })).toThrow();
-    expect(() => FinishTurnInputSchema.parse({ ...base, last_assistant_message: "secret" })).toThrow();
+    expect(() => FinishTurnInputSchema.parse({ ...base, last_assistant_message: "x".repeat(100_001) })).toThrow();
   });
 
   test("identifier fields are bounded and character-restricted", () => {

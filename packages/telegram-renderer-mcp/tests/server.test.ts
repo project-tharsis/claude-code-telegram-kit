@@ -10,7 +10,7 @@ afterEach(async () => {
 });
 
 describe("stdio MCP server", () => {
-  test("handshakes and exposes send_reply plus the internal hook tools", async () => {
+  test("handshakes and exposes only the internal hook tools", async () => {
     const transport = new StdioClientTransport({
       command: execPath,
       args: ["run", resolve(import.meta.dir, "../src/server.ts")]
@@ -22,15 +22,13 @@ describe("stdio MCP server", () => {
     const result = await client.listTools();
 
     expect(result.tools.map(tool => tool.name)).toEqual([
-      "send_reply",
       "bind_turn",
       "record_tool",
       "record_tool_success",
       "record_tool_failure",
       "finish_turn"
     ]);
-    expect(result.tools[0]!.inputSchema.properties).toHaveProperty("content");
-    for (const tool of result.tools.slice(1)) {
+    for (const tool of result.tools) {
       expect(tool.description).toContain("Internal Claude Code hook tool");
       expect(tool.inputSchema.properties).not.toHaveProperty("tool_input");
       expect(tool.inputSchema.properties).toHaveProperty("hook_event_name");

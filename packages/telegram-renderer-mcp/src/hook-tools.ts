@@ -11,10 +11,11 @@ import {
   type RecordToolInput,
   type RecordToolSuccessInput
 } from "./hook-contract.js";
+import type { FinishTurnDisposition } from "./progress-disclosure.js";
 
 /**
  * These five tools exist for Claude Code `mcp_tool` hooks, not for the model. They are named
- * and described so a reader can tell them apart from the public `send_reply` tool at a glance,
+ * and described so a reader can tell them apart from the hidden legacy `send_reply` handler,
  * and the example settings deny model access to all of them. Denying access is a UX guarantee,
  * not a security boundary: every handler below independently rejects a payload whose
  * `hook_event_name` does not match the exact event that tool serves.
@@ -122,14 +123,15 @@ export const RECORD_TOOL_FAILURE_TOOL = {
 export const FINISH_TURN_TOOL = {
   name: "finish_turn",
   description:
-    `${INTERNAL_PREFIX} Wired to Stop and StopFailure. Closes the turn and performs one bounded final drain of the progress bubble.`,
-  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    `${INTERNAL_PREFIX} Wired to Stop and StopFailure. Closes progress and auto-delivers the final assistant Markdown for a bound Telegram turn.`,
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["session_id", "prompt_id", "hook_event_name"],
+    required: ["session_id", "prompt_id", "last_assistant_message", "hook_event_name"],
     properties: {
       ...turnKeyProperties,
+      last_assistant_message: { type: "string", maxLength: 100000 },
       hook_event_name: { type: "string", enum: ["Stop", "StopFailure"] }
     }
   }
@@ -151,15 +153,25 @@ export interface HookDisclosure {
   recordTool: (input: RecordToolInput) => void;
   recordSuccess: (input: RecordToolSuccessInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
-  finishTurn: (input: FinishTurnInput) => Promise<void>;
+  finishTurn: (input: FinishTurnInput) => Promise<FinishTurnDisposition>;
 }
 
 /**
- * Hooks are presentation-only, so every outcome is a non-blocking success with an empty body.
- * An empty body also keeps hook output out of the transcript: Claude Code only injects hook
- * output as additional context when it is non-empty.
+ * Normal outcomes use an empty receipt so no hook context enters the transcript. The sole
+ * exception is a proven local size rejection at Stop, which blocks once with bounded feedback
+ * so Claude can return a shorter final response.
  */
 const RECEIPT: CallToolResult = { content: [{ type: "text", text: "" }] };
+const STOP_RETRY_RECEIPT: CallToolResult = {
+  content: [{
+    type: "text",
+    text: JSON.stringify({
+      decision: "block",
+      reason: "Final Telegram reply is too long. Return a shorter final response.",
+      hookSpecificOutput: { hookEventName: "Stop" }
+    })
+  }]
+};
 export function createHookToolHandler(disclosure: HookDisclosure) {
   return async (name: string, arguments_: unknown): Promise<CallToolResult | null> => {
     if (!HOOK_TOOL_NAMES.includes(name)) return null;
@@ -178,7 +190,9 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
           disclosure.recordFailure(RecordToolFailureInputSchema.parse(arguments_));
           break;
         case FINISH_TURN_TOOL.name:
-          await disclosure.finishTurn(FinishTurnInputSchema.parse(arguments_));
+          if (await disclosure.finishTurn(FinishTurnInputSchema.parse(arguments_)) === "retry") {
+            return STOP_RETRY_RECEIPT;
+          }
           break;
         default:
           break;

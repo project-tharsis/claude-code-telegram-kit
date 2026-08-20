@@ -4,11 +4,11 @@
     "command": "/usr/local/sbin/claude-usage-snapshot --output /home/USER/.local/state/claude-code-telegram-kit/subscription-usage.json"
   },
   "permissions": {
-    "allow": [
-      "mcp__telegram-renderer__send_reply"
-    ],
+    "allow": [],
     "ask": [],
     "deny": [
+      "mcp__telegram-renderer__send_reply",
+      "mcp__plugin_telegram_telegram__reply",
       "mcp__telegram-renderer__bind_turn",
       "mcp__telegram-renderer__record_tool",
       "mcp__telegram-renderer__record_tool_success",
@@ -142,6 +142,7 @@
             "input": {
               "session_id": "${session_id}",
               "prompt_id": "${prompt_id}",
+              "last_assistant_message": "${last_assistant_message}",
               "hook_event_name": "Stop"
             }
           }
@@ -158,6 +159,7 @@
             "input": {
               "session_id": "${session_id}",
               "prompt_id": "${prompt_id}",
+              "last_assistant_message": "${last_assistant_message}",
               "hook_event_name": "StopFailure"
             }
           }

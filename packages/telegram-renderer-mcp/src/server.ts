@@ -16,7 +16,11 @@ import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
 import { editProgressBubble, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
 import { createTypingHeartbeatManager } from "./typing-heartbeat.js";
-import { createUnifiedDeliverer } from "./unified-delivery.js";
+import {
+  createUnifiedDeliverer,
+  TelegramContentTooLargeError,
+  TelegramUncertainOutcomeError
+} from "./unified-delivery.js";
 import { createUnifiedToolHandler, SEND_REPLY_TOOL } from "./unified-tool.js";
 
 const configRoot = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
@@ -60,6 +64,26 @@ const disclosure = createTurnDisclosure({
       disable_notification: false
     }, config);
   },
+  deliverFinal: async (config, chatId, messageId, content) => {
+    try {
+      await deliver({
+        chat_id: chatId,
+        message_id: messageId,
+        content,
+        disable_notification: false
+      }, config);
+      return "delivered";
+    } catch (error) {
+      if (error instanceof TelegramContentTooLargeError) return "too_large";
+      if (error instanceof TelegramUncertainOutcomeError) return "uncertain";
+      try {
+        await finalizeTelegramReaction(config, chatId, messageId, "failure");
+      } catch {
+        // Reaction UX never changes the proven final-delivery result.
+      }
+      return "rejected";
+    }
+  },
   send: (config, chatId, replyToMessageId, text) =>
     sendProgressBubble(config, chatId, replyToMessageId, text),
   edit: (config, chatId, messageId, text) =>
@@ -80,7 +104,7 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [SEND_REPLY_TOOL, ...INTERNAL_HOOK_TOOLS]
+  tools: [...INTERNAL_HOOK_TOOLS]
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async request => {

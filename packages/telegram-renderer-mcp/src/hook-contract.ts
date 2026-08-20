@@ -72,6 +72,7 @@ export const RecordToolFailureInputSchema = z.object({
 
 export const FinishTurnInputSchema = z.object({
   ...turnKey,
+  last_assistant_message: optionalText(100_000),
   hook_event_name: z.union([z.literal("Stop"), z.literal("StopFailure")])
 }).strict();
 

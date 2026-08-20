@@ -1,10 +1,8 @@
 # Telegram delivery and reset routing
 
-For every user-facing Telegram response, call `mcp__telegram-renderer__send_reply` exactly once with the inbound `chat_id`, inbound `message_id`, and one unescaped CommonMark/GFM document in `content`. Replies quote the inbound message by default. Only pass `reply_to` when intentionally quoting a different message.
+For a Telegram request, return one ordinary final assistant response as canonical, unescaped CommonMark/GFM. Do not call `mcp__telegram-renderer__send_reply` or the official Telegram reply tool. A deterministic Stop hook receives `last_assistant_message`, quotes the inbound message, and routes the final document through Rich Message, MarkdownV2, or plain-text fallback.
 
-Do not select a Telegram transport or pre-escape MarkdownV2. The renderer routes rich-only constructs to `sendRichMessage`, ordinary content to MarkdownV2, and only falls back after clearly permanent parser or capability failures. Never retry after a timeout, rate limit, server error, or unknown outcome.
-
-After any renderer receipt, stop. Do not call the official Telegram reply tool as a second delivery path.
+Do not select a Telegram transport or pre-escape MarkdownV2. Keep the final response within one Telegram message; if it is too long, the Stop hook asks for a shorter replacement.
 
 ## Session control
 

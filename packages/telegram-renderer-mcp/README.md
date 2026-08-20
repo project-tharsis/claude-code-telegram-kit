@@ -2,13 +2,15 @@
 
 A project-scoped MCP server that accepts one raw CommonMark/GFM document and deterministically renders it for Telegram.
 
-## Tool
+## Final delivery
 
 ```text
-send_reply(chat_id, message_id, content, reply_to?, disable_notification?)
+Stop.last_assistant_message
+→ finish_turn internal hook tool
+→ unified renderer
 ```
 
-The renderer quotes `message_id` by default. Set `reply_to` only to intentionally quote a different message; reactions still target `message_id`.
+Claude returns canonical CommonMark/GFM as its ordinary final response. The bound turn supplies the exact chat/message identity; `finish_turn` quotes the inbound message and deterministically selects Rich Message, MarkdownV2, or plain fallback. The legacy `send_reply` handler remains direct-call compatible but is omitted from MCP discovery and denied to the model.
 
 ## Hook-driven tool disclosure
 
@@ -24,7 +26,7 @@ The renderer also owns sustained Telegram typing after the official Channel's in
 
 - GFM pipe tables, task lists, `<details>`, and block math use `sendRichMessage` when within the Rich Message limit.
 - Ordinary Markdown uses Telegram MarkdownV2.
-- Ordinary replies whose rendered MarkdownV2 exceeds 4,096 characters fail before any network call; the caller must shorten the answer.
+- Ordinary replies whose rendered MarkdownV2 exceeds 4,096 characters fail before any network call; the Stop hook asks Claude for one shorter replacement.
 - CJK downgrade is a deployment policy; this package keeps CJK rich structures eligible by default.
 
 ## Failure semantics
