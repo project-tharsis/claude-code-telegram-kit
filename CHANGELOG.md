@@ -19,6 +19,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Allowlisted private chats can opt into a Telegram command menu through chat-specific `setMyCommands` scopes, with an explicit `delete` mode for verified offboarding. The menu advertises only official commands and deterministic Harness controls; it never polls, grants authority, or exposes parameterized `/resume N`.
 - Deterministic Telegram `/model`: exact UserPromptSubmit routing, a fixed `opus|sonnet|haiku|inherit` allowlist, Protocol v4 root-helper restart/rollback, root-owned `ANTHROPIC_MODEL` persistence, and process-environment health readback without model invocation or TUI key injection.
 - Deterministic Stop-hook final delivery: Claude returns canonical Markdown as `last_assistant_message`; the bound `finish_turn` hook invokes the internal renderer exactly once, while model-facing renderer/official reply tools are hidden or denied. Proven oversized local replies block Stop once for a shorter replacement; unknown outcomes are never retried.
 - Telegram-native progress and usage emphasis: progress headers/tool labels render in bold HTML, argument previews render as escaped monospace code and truncate to 40 characters in `verbose` / 28 in `all`, while `/usage` renders bold percentages with ten-cell micro-bars.

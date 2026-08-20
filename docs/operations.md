@@ -99,6 +99,9 @@ Verify from the real destination:
 11. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
 12. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
 13. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
+14. when command-menu sync is enabled, `getMyCommands` for the allowlisted chat-specific scope returns exactly `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`; the official `all_private_chats` scope remains untouched.
+
+Before removing an allowlisted private chat or disabling menu sync, set `TELEGRAM_COMMAND_MENU_ENABLED=delete`, restart once, verify the chat-specific `getMyCommands` result is empty, then remove the chat or env key. A stale menu never grants authority, but verified cleanup keeps Telegram UI aligned with the live allowlist.
 
 ## Rollback
 

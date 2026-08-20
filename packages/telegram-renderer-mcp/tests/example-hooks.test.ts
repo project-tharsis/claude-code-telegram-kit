@@ -28,7 +28,10 @@ const settings = JSON.parse(readFileSync(
 const mcp = JSON.parse(readFileSync(
   resolve(import.meta.dir, "../../../examples/.mcp.json"),
   "utf8"
-)) as { mcpServers: { "telegram-renderer": { env?: Record<string, string> } } };
+)) as { mcpServers: {
+  "telegram-renderer": { env?: Record<string, string> };
+  "session-control": { env?: Record<string, string> };
+} };
 
 function toolsFor(event: string): Array<{ server: string; tool: string; input: Record<string, string> }> {
   return (settings.hooks[event] ?? []).flatMap(entry =>
@@ -46,6 +49,10 @@ describe("supported Claude Code hook configuration", () => {
     expect(env.CLAUDE_PROJECT_SESSIONS_DIR).toMatch(/^\/home\/USER\/\.claude\/projects\//);
     expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
     expect(env).not.toHaveProperty("CLAUDE_CODE_AUTH_PREFLIGHT");
+  });
+
+  test("opts the control sidecar into per-chat command-menu sync", () => {
+    expect(mcp.mcpServers["session-control"].env?.TELEGRAM_COMMAND_MENU_ENABLED).toBe("true");
   });
 
   test("wires a private statusLine rate-limit snapshot writer", () => {
