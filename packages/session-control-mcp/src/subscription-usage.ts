@@ -85,8 +85,8 @@ function usageBar(value: number): string {
 export function formatUsageSnapshot(snapshot: UsageSnapshot, nowMs = Date.now()): string {
   const lines = ["<b>Claude Code subscription usage</b>"];
   const labels: Array<[WindowName, string]> = [
-    ["five_hour", "Current session"],
-    ["seven_day", "Current week (all models)"],
+    ["five_hour", "5-hour limit"],
+    ["seven_day", "7-day limit (all models)"],
   ];
   for (const [name, label] of labels) {
     const window = snapshot.windows[name];

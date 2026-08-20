@@ -24,9 +24,9 @@ describe("subscription usage cache", () => {
     const parsed = parseUsageSnapshot(JSON.stringify(snapshot()), 1_100_000);
     const html = formatUsageSnapshot(parsed, 1_100_000);
     expect(html).toContain("<b>Claude Code subscription usage</b>");
-    expect(html).toContain("<b>Current session</b>");
+    expect(html).toContain("<b>5-hour limit</b>");
     expect(html).toContain("<code>█░░░░░░░░░</code> <b>1%</b>");
-    expect(html).toContain("<b>Current week (all models)</b>");
+    expect(html).toContain("<b>7-day limit (all models)</b>");
     expect(html).toContain("<b>11.5%</b>");
   });
 

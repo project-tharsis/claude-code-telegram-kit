@@ -9,6 +9,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Verbose Telegram tool disclosure no longer lets one command or path consume most of a mobile screen.
+- Progress labels now come from one fixed allowlist, and `/usage` names rolling quota windows as 5-hour / 7-day limits instead of conversation or calendar periods.
 - The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.
 - Control slash commands (`/usage`, `/sessions`, `/resume N`, `/reset`) no longer create tool-progress bubbles, which resume/reset could never close before restarting Claude.
 - Root reset configuration may use either secure root-owned mode `0600` or `0644`; the unprivileged scheduler and privileged helper now enforce the same exact mode set.
@@ -16,7 +17,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Telegram-native progress and usage emphasis: progress headers/tool labels render in bold HTML, argument previews render as escaped monospace code and truncate to 48 characters in `verbose` / 32 in `all`, while `/usage` renders bold percentages with ten-cell micro-bars.
+- Telegram-native progress and usage emphasis: progress headers/tool labels render in bold HTML, argument previews render as escaped monospace code and truncate to 40 characters in `verbose` / 28 in `all`, while `/usage` renders bold percentages with ten-cell micro-bars.
 - Auth-source-agnostic runtime failure delivery: each ordinary Telegram turn watches only its trusted transcript append for at most five seconds. An exact `authentication_failed` event stops sustained typing/progress and sends one quoted explanation for either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`; normal Stop cancels the watcher. No credential preflight, storage, background polling, or expiry-warning policy is added.
 - Hermes-style Telegram execution UX: configurable `safe`/`all`/`verbose` disclosure with bounded command/path/query previews, hard credential redaction, running/completed/failed tool state, and one silent edit-in-place bubble. Tool output never enters disclosure.
 - Sustained Telegram typing heartbeat: two-second refresh, bounded requests, throttle cooldown, dead-man cutoff, and deterministic cancellation before final delivery or turn closure.

@@ -1,20 +1,30 @@
 /**
- * The progress bubble may only ever show labels from this fixed set. Tool names, arguments,
- * paths, commands, URLs, and outputs never reach Telegram, so an unknown or attacker-chosen
- * tool name degrades to a generic label instead of becoming a disclosure channel.
+ * User-visible progress labels are a fixed allowlist. Unknown or vendor-controlled tool
+ * identifiers never become Telegram text; they degrade to `Working`.
  */
 
-export const DELEGATING_LABEL = "Delegating work";
+export const DELEGATING_LABEL = "Delegate work";
 
 export const SAFE_STEP_LABELS = [
-  "Reading files",
-  "Editing files",
-  "Running commands",
-  "Searching the web",
-  "Planning",
-  "Running a skill",
+  "Read file",
+  "Read notebook",
+  "Find files",
+  "Search code",
+  "Edit file",
+  "Write file",
+  "Edit files",
+  "Edit notebook",
+  "Run command",
+  "Read command output",
+  "Stop command",
+  "Read web page",
+  "Search web",
+  "Update plan",
+  "Finish planning",
+  "Run skill",
   DELEGATING_LABEL,
-  "Using an integration",
+  "Find tool",
+  "Use integration",
   "Working"
 ] as const;
 
@@ -24,41 +34,37 @@ export type SafeStepLabel = (typeof SAFE_STEP_LABELS)[number];
 const SIDECAR_SERVERS = ["telegram-renderer", "session-control"] as const;
 
 const TOOL_LABELS = new Map<string, SafeStepLabel>([
-  ["Read", "Reading files"],
-  ["Glob", "Reading files"],
-  ["Grep", "Reading files"],
-  ["NotebookRead", "Reading files"],
-  ["Edit", "Editing files"],
-  ["Write", "Editing files"],
-  ["MultiEdit", "Editing files"],
-  ["NotebookEdit", "Editing files"],
-  ["Bash", "Running commands"],
-  ["BashOutput", "Running commands"],
-  ["KillShell", "Running commands"],
-  ["KillBash", "Running commands"],
-  ["WebFetch", "Searching the web"],
-  ["WebSearch", "Searching the web"],
-  ["TodoWrite", "Planning"],
-  ["ExitPlanMode", "Planning"],
-  ["Skill", "Running a skill"],
+  ["Read", "Read file"],
+  ["NotebookRead", "Read notebook"],
+  ["Glob", "Find files"],
+  ["Grep", "Search code"],
+  ["Edit", "Edit file"],
+  ["Write", "Write file"],
+  ["MultiEdit", "Edit files"],
+  ["NotebookEdit", "Edit notebook"],
+  ["Bash", "Run command"],
+  ["BashOutput", "Read command output"],
+  ["KillShell", "Stop command"],
+  ["KillBash", "Stop command"],
+  ["WebFetch", "Read web page"],
+  ["WebSearch", "Search web"],
+  ["TodoWrite", "Update plan"],
+  ["ExitPlanMode", "Finish planning"],
+  ["Skill", "Run skill"],
   ["Task", DELEGATING_LABEL],
-  ["Agent", DELEGATING_LABEL]
+  ["Agent", DELEGATING_LABEL],
+  ["ToolSearch", "Find tool"]
 ]);
 
 export function isInternalSidecarTool(toolName: string): boolean {
   return SIDECAR_SERVERS.some(server => toolName.startsWith(`mcp__${server}__`));
 }
 
-/**
- * Returns the fixed label for a tool, or `null` when the step must not be shown at all.
- * Any tool invoked inside a subagent collapses to one delegating label so subagent
- * internals never fan out into the bubble.
- */
 export function safeStepLabel(toolName: string, agentId?: string): SafeStepLabel | null {
   if (isInternalSidecarTool(toolName)) return null;
   if (agentId !== undefined && agentId !== "") return DELEGATING_LABEL;
   const known = TOOL_LABELS.get(toolName);
   if (known !== undefined) return known;
-  if (toolName.startsWith("mcp__")) return "Using an integration";
+  if (toolName.startsWith("mcp__")) return "Use integration";
   return "Working";
 }
