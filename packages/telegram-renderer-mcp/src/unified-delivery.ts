@@ -107,23 +107,24 @@ export function createUnifiedDeliverer(
     if (input.disable_notification) common.disable_notification = true;
 
     if (now() >= richDisabledUntil && needsRichRendering(input.content)) {
-      const richAttempt = await attemptTelegram(
+      const richMarkdown = normalizeRichMarkdown(input.content);
+      const richAttempt = richMarkdown === null ? null : await attemptTelegram(
         "sendRichMessage",
         {
           ...common,
-          rich_message: { markdown: normalizeRichMarkdown(input.content) }
+          rich_message: { markdown: richMarkdown }
         },
         config,
         fetchImpl
       );
-      if (richAttempt.kind === "success") {
+      if (richAttempt?.kind === "success") {
         await finalizeSuccessReaction(config, input, fetchImpl);
         return { mode: "rich", messageIds: [richAttempt.messageId] };
       }
-      if (richAttempt.kind === "uncertain") {
+      if (richAttempt?.kind === "uncertain") {
         throw new TelegramUncertainOutcomeError("Telegram rich delivery outcome unknown; no fallback sent");
       }
-      if (richAttempt.disableCapability) richDisabledUntil = now() + RICH_CAPABILITY_COOLDOWN_MS;
+      if (richAttempt?.disableCapability) richDisabledUntil = now() + RICH_CAPABILITY_COOLDOWN_MS;
     }
 
     const rendered = toMarkdownV2(input.content);

@@ -106,8 +106,37 @@ describe("unified deterministic delivery", () => {
     expect(calls[0]!.body).toEqual({
       chat_id: "123456789",
       reply_parameters: { message_id: 51 },
-      rich_message: { markdown: content }
+      rich_message: {
+        markdown: "## 持仓\n\n| 项目 | 状态 |\n| --- | --- |\n| 早盘 | 正常 |"
+      }
     });
+  });
+
+  test("canonicalizes literal delimiters before a Rich wire send", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const deliver = createUnifiedDeliverer(withReactionSupport(async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 89 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }));
+    const content = [
+      "| A | B |",
+      "|---|---|",
+      "| 1 | 2 |",
+      "",
+      "数学：2 * 3，a_b_c，*这个*。",
+      "连续 **** 与 ____，未闭合 *星号。"
+    ].join("\n");
+    expect((await deliver(UnifiedReplyInputSchema.parse({
+      chat_id: "123456789", message_id: "51", content
+    }), config)).mode).toBe("rich");
+    const markdown = (bodies[0]!.rich_message as { markdown: string }).markdown;
+    expect(markdown).toContain("2 \\* 3，a\\_b\\_c，*这个*");
+    expect(markdown).toContain("\\*\\*\\*\\*");
+    expect(markdown).toContain("\\_\\_\\_\\_");
+    expect(markdown).toContain("未闭合 \\*星号");
   });
 
   test("falls back to plain text only after a permanent MarkdownV2 rejection", async () => {
@@ -162,7 +191,7 @@ describe("unified deterministic delivery", () => {
     const input = UnifiedReplyInputSchema.parse({
       chat_id: "123456789",
       message_id: "51",
-      content: "| A | B |\n|---|---|\n| 1 | 2 |"
+      content: "| A | B |\n| --- | --- |\n| 1 | 2 |"
     });
 
     expect((await deliver(input, config)).mode).toBe("markdownv2");
@@ -196,7 +225,7 @@ describe("unified deterministic delivery", () => {
     const input = UnifiedReplyInputSchema.parse({
       chat_id: "123456789",
       message_id: "51",
-      content: "| A | B |\n|---|---|\n| 1 | 2 |"
+      content: "| A | B |\n| --- | --- |\n| 1 | 2 |"
     });
 
     await expect(deliver(input, config)).rejects.toThrow("outcome unknown");
@@ -361,7 +390,7 @@ describe("unified deterministic delivery", () => {
     const input = UnifiedReplyInputSchema.parse({
       chat_id: "123456789",
       message_id: "51",
-      content: "| A | B |\n|---|---|\n| 1 | 2 |"
+      content: "| A | B |\n| --- | --- |\n| 1 | 2 |"
     });
 
     expect((await deliver(input, config)).mode).toBe("markdownv2");
