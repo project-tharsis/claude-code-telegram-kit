@@ -12,7 +12,7 @@ import type { ControlDispatchResult } from "./command-dispatch.js";
 export const CONTROL_COMMAND_TOOL = {
   name: "dispatch_command",
   description:
-    "Internal Claude Code hook tool for UserPromptSubmit. Deterministically handles direct Telegram /usage, /sessions, /model, /reset, /resume N, and confirmation commands before the LLM. Not for model use.",
+    "Internal Claude Code hook tool for UserPromptSubmit. Deterministically handles direct Telegram /usage, /sessions, /model, /rename NAME, /reset, /resume N, and confirmation commands before the LLM. Not for model use.",
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,

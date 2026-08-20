@@ -34,6 +34,7 @@ import { createSessionsToolHandler, SESSIONS_TOOLS } from "./sessions-tool.js";
 import { createToolHandler, RESET_TOOL } from "./tool.js";
 import { DEFAULT_MODEL_ENV_FILE, readConfiguredModel } from "./model-status.js";
 import { readSubscriptionUsage } from "./subscription-usage.js";
+import { createSessionTitleService } from "./session-title-service.js";
 import {
   deleteTelegramCommandMenu,
   syncTelegramCommandMenu
@@ -48,6 +49,7 @@ const configRoot = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", "telegram");
 /** Fixed server configuration. No sessions path is ever accepted from the model. */
 const projectSessionsDir = process.env.CLAUDE_PROJECT_SESSIONS_DIR;
+const workspaceDir = process.env.CLAUDE_WORKSPACE_DIR;
 const selectionDir = defaultSelectionDirectory();
 const loadConfig = () => loadRuntimeConfig(stateDir);
 
@@ -73,6 +75,9 @@ try {
 const scheduler = createSessionScheduler();
 const capabilities = createCapabilityStore({ loadConfig });
 const challenges = createConfirmationChallengeStore();
+const titleService = projectSessionsDir !== undefined && workspaceDir !== undefined
+  ? createSessionTitleService({ projectSessionsDir, workspaceDir })
+  : null;
 
 const controller = createResetController({
   loadConfig,
@@ -141,6 +146,11 @@ const dispatchControlCommand = createControlCommandDispatcher({
       unit: await scheduler.scheduleModel(request.chatId, request.messageId, request.model)
     };
   },
+  renameSessionTitle: async request => {
+    if (titleService === null) throw new Error("session title service is unavailable");
+    await titleService.renameUserSession(request.sessionId, request.title);
+  },
+
   resumeSessionTrusted: request => sessionsController.resumeSessionTrusted(request),
   resetSession: request => controller(request)
 });

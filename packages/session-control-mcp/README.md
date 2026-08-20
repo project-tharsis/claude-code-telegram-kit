@@ -8,7 +8,7 @@ An MCP front end for model switching, resetting, listing, and resuming sessions 
 dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmit")
 ```
 
-`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/sessions`, `/model`, `/model opus|sonnet|haiku|inherit`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
+`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/sessions`, `/model`, `/model opus|sonnet|haiku|inherit`, `/rename NAME`, `/reset`, `/resume N`, and confirmation commands are handled and returned with `decision: block`.
 
 An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
 
@@ -36,6 +36,7 @@ CLAUDE_SESSION_RESET_HELPER
 CLAUDE_SESSION_RESET_CONFIG
 CLAUDE_SESSION_RESET_UNIT_PREFIX
 CLAUDE_PROJECT_SESSIONS_DIR
+CLAUDE_WORKSPACE_DIR
 TELEGRAM_COMMAND_MENU_ENABLED
 ```
 
@@ -50,6 +51,8 @@ Set `TELEGRAM_COMMAND_MENU_ENABLED=true` to install and read back a chat-specifi
 `/model` sends a one-time reply keyboard with four vertical choices. Telegram sends the selected label back as an ordinary `message:text`, so the official Channel remains the sole poller and the deterministic parser handles it without callback forwarding. The only accepted labels are `1 · Opus`, `2 · Sonnet`, `3 · Haiku`, and `4 · Inherit`; bare numbers and model names remain ordinary conversation. The switch acknowledgement explicitly removes the keyboard.
 
 Control replies use Telegram HTML sparingly for mobile hierarchy: bold headings, italic state/help text, and code-formatted commands or model values. `/sessions` escapes every native title and never displays UUIDs/paths. If Claude Code did not emit a native title, the catalog shows `Conversation with Claudio` for a real model-backed session or `Control-only session` otherwise; it never infers a title from prompt content.
+
+After the first meaningful Stop, an auth-inheriting command hook extracts only the first bounded Telegram prompt, first bounded assistant text, and tool names; raw tool inputs/outputs are excluded. It makes at most one isolated `haiku` call for that exact UUID, validates a 60-character title, then uses the official zero-turn `claude -p "/rename ..." --resume` local-command path and exact readback to persist `custom-title`. Private `0600` state and persistent kernel-`flock` files under `~/.local/state/claude-code-telegram-kit/session-titles/` enforce cross-process singleflight and provenance. `/rename NAME` is deterministic, private-chat only, uses zero model calls, and permanently locks the user title above native/automatic titles.
 
 The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`, keyed by a hash of the inbound chat and message IDs.
 

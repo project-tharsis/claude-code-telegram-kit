@@ -28,7 +28,7 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 /** Ephemeral state only. A long session must not accumulate turns without bound. */
 export const MAX_RETAINED_TURNS = 32;
 
-const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|reset|resume)(?=@|\s|$)/;
+const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)/;
 const MODEL_REPLY_CHOICE = /^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$/;
 
 export type CancelScheduled = () => void;

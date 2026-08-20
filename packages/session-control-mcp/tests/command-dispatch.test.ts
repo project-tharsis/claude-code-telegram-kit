@@ -47,6 +47,7 @@ function harness(options: {
   const usageCalls: string[] = [];
   const modelStatusCalls: string[] = [];
   const modelSwitches: unknown[] = [];
+  const renameCalls: unknown[] = [];
   const resumes: unknown[] = [];
   const resets: unknown[] = [];
   const challenges = createConfirmationChallengeStore({
@@ -89,6 +90,7 @@ function harness(options: {
       if (options.modelFails) throw new Error("systemd rejected");
       return { status: "scheduled", unit: "model-unit" };
     },
+    renameSessionTitle: async request => { renameCalls.push(request); },
     resumeSessionTrusted: async request => {
       resumes.push(request);
       return { status: "scheduled", ackMessageId: 102, unit: "resume-unit" };
@@ -100,7 +102,7 @@ function harness(options: {
   });
   return {
     dispatch, sent, reactions, lists, usageCalls,
-    modelStatusCalls, modelSwitches, resumes, resets
+    modelStatusCalls, modelSwitches, renameCalls, resumes, resets
   };
 }
 
@@ -145,6 +147,19 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.sent.at(-1)?.replyMarkup).toEqual(REMOVE_MODEL_REPLY_KEYBOARD);
     expect(h.sent.at(-1)?.parseMode).toBe("HTML");
     expect(h.reactions.at(-1)).toEqual(["123", "10", "success"]);
+  });
+
+  test("renames the exact current session without the LLM", async () => {
+    const h = harness();
+    expect(await h.dispatch(input("/rename Model routing controls", "12"))).toEqual({ handled: true });
+    expect(h.renameCalls).toEqual([{ sessionId: SESSION, title: "Model routing controls" }]);
+    expect(h.sent.at(-1)).toEqual({
+      chatId: "123",
+      replyTo: "12",
+      parseMode: "HTML",
+      text: "<b>Session renamed</b>\n<code>Model routing controls</code>"
+    });
+    expect(h.reactions.at(-1)).toEqual(["123", "12", "success"]);
   });
 
   test("reports a rejected model scheduler after a truthful pending acknowledgement", async () => {
@@ -234,6 +249,11 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
       prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="10">/model sonnet</channel>'
     })).toEqual({ handled: true });
     expect(h.modelSwitches).toEqual([]);
+    expect(await h.dispatch({
+      ...input("/rename Group title", "11"),
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="11">/rename Group title</channel>'
+    })).toEqual({ handled: true });
+    expect(h.renameCalls).toEqual([]);
     expect(h.sent.at(-1)!.text).toBe(PRIVATE_CONTROL_ONLY_TEXT);
   });
 

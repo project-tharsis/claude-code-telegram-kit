@@ -504,6 +504,8 @@ describe("turn disclosure lifecycle", () => {
       "/model opus",
       "/model@ExampleAssistant sonnet",
       "/model fable",
+      "/rename Auth flow",
+      "/rename",
       "1 · Opus",
       "2 · Sonnet",
       "3 · Haiku",

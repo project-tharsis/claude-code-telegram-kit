@@ -30,9 +30,9 @@ export const RESUME_CHALLENGE_PREFIX =
 export const CONTROL_CONFIRMATION_INVALID_TEXT =
   "<b>Confirmation expired</b>\n<i>Send the original command again.</i>";
 export const CONTROL_COMMAND_USAGE_TEXT =
-  "<b>Command not recognized</b>\nUse <code>/usage</code>, <code>/sessions</code>, <code>/model</code>, <code>/reset</code>, or <code>/resume N</code>.";
+  "<b>Command not recognized</b>\nUse <code>/usage</code>, <code>/sessions</code>, <code>/model</code>, <code>/rename NAME</code>, <code>/reset</code>, or <code>/resume N</code>.";
 export const PRIVATE_CONTROL_ONLY_TEXT =
-  "<b>Private chat only</b>\n<i>Model switch, reset, and resume are disabled in groups.</i>";
+  "<b>Private chat only</b>\n<i>Rename, model switch, reset, and resume are disabled in groups.</i>";
 export const SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT =
   "<b>Usage unavailable</b>\n<i>Try again shortly.</i>";
 export const CONTROL_OPERATION_FAILED_TEXT =
@@ -63,6 +63,7 @@ export interface ControlCommandDispatcherDeps {
     messageId: string;
     model: ModelAlias;
   }) => Promise<{ status: "scheduled"; unit: string }>;
+  renameSessionTitle: (request: { sessionId: string; title: string }) => Promise<void>;
   resumeSessionTrusted: (request: TrustedResumeSessionRequest) => Promise<ResumeSessionReceipt>;
   resetSession: (request: ResetRequest) => Promise<ResetReceipt>;
 }
@@ -72,7 +73,7 @@ export interface ControlDispatchResult {
 }
 
 function botSuffix(body: string): string {
-  return /^\/(?:sessions|usage|model|reset|resume)(@[A-Za-z0-9_]{1,32})?/.exec(body)?.[1] ?? "";
+  return /^\/(?:sessions|usage|model|rename|reset|resume)(@[A-Za-z0-9_]{1,32})?/.exec(body)?.[1] ?? "";
 }
 
 async function bestEffortReact(
@@ -88,6 +89,7 @@ async function bestEffortReact(
     // Reaction UX is never the authority for a control action.
   }
 }
+
 
 async function bestEffortFailure(
   deps: ControlCommandDispatcherDeps,
@@ -161,6 +163,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
           messageId: envelope.messageId,
           currentSessionId: input.session_id
         });
+
       } catch {
         await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
       }
@@ -224,6 +227,23 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
       return { handled: true };
     }
 
+    if (command.kind === "rename") {
+      try {
+        await deps.renameSessionTitle({ sessionId: input.session_id, title: command.title });
+        await deps.sendMessage(
+          config,
+          envelope.chatId,
+          `<b>Session renamed</b>\n<code>${escapeTelegramHtml(command.title)}</code>`,
+          envelope.messageId,
+          "HTML"
+        );
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      } catch {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+      return { handled: true };
+    }
+
     if (command.kind === "reset" || command.kind === "resume") {
       const action = command.kind;
       const challenge = deps.challenges.issue(
@@ -252,6 +272,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
         return { handled: true };
       }
       await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+
       return { handled: true };
     }
 

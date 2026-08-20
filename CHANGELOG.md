@@ -21,6 +21,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Automatic semantic session titles: the first successful Stop runs one bounded, isolated Haiku title call per session from an auth-inheriting command hook, validates the result, and persists it through the official zero-turn `/rename` local-command path with exact readback. `/sessions` and `/reset` are best-effort backstops, while `/rename NAME` creates a permanent user-owned override.
 - `/model` now returns a one-time Telegram reply keyboard with `1 · Opus`, `2 · Sonnet`, `3 · Haiku`, and `4 · Inherit`; each button sends an exact deterministic control payload, and the pending acknowledgement removes the keyboard before restart.
 - Allowlisted private chats can opt into a Telegram command menu through chat-specific `setMyCommands` scopes, with an explicit `delete` mode for verified offboarding. The menu advertises only official commands and deterministic Harness controls; it never polls, grants authority, or exposes parameterized `/resume N`.
 - Deterministic Telegram `/model`: exact UserPromptSubmit routing, a fixed `opus|sonnet|haiku|inherit` allowlist, Protocol v4 root-helper restart/rollback, root-owned `ANTHROPIC_MODEL` persistence, and process-environment health readback without model invocation or TUI key injection.

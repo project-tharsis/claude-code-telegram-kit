@@ -7,6 +7,7 @@ import {
   formatActivity,
   MAX_LISTED_SESSIONS,
   readLatestSessionModel,
+  readSessionTitleContext,
   scanResumableSessions
 } from "../src/session-catalog.js";
 
@@ -154,7 +155,8 @@ describe("bounded resumable session catalog", () => {
     const path = join(root, `${id}.jsonl`);
     writeFileSync(path, [
       JSON.stringify({ type: "ai-title", aiTitle: "AI guess", sessionId: id }),
-      JSON.stringify({ type: "custom-title", customTitle: "Renamed", sessionId: id })
+      JSON.stringify({ type: "custom-title", customTitle: "Renamed", sessionId: id }),
+      JSON.stringify({ type: "ai-title", aiTitle: "Late AI guess", sessionId: id })
     ].join("\n"));
 
     expect(scanResumableSessions({ directory: root })[0]!.title).toBe("Renamed");
@@ -269,6 +271,34 @@ describe("bounded activity formatting", () => {
 });
 
 describe("selected session revalidation", () => {
+  test("extracts only bounded semantic title context", () => {
+    const root = makeRoot();
+    const id = uuid(1);
+    writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "user", message: { content: "<local-command-output>agents</local-command-output>" } }),
+      JSON.stringify({ type: "user", message: { content: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="1">/usage</channel>' } }),
+      JSON.stringify({ type: "user", message: { content: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="2">Build the auth flow</channel>' } }),
+      JSON.stringify({ type: "assistant", message: { model: "claude-opus-5", content: [
+        { type: "tool_use", name: "Read", input: { password: "never-return-this" } },
+        { type: "text", text: "Implemented the authentication flow." }
+      ] } }),
+      JSON.stringify({ type: "tool_result", output: "never-return-this" }),
+      JSON.stringify({ type: "custom-title", customTitle: "Manual title", sessionId: id }),
+      JSON.stringify({ type: "ai-title", aiTitle: "Late AI title", sessionId: id })
+    ] });
+
+    const context = readSessionTitleContext({ directory: root, sessionId: id });
+    expect(context).toEqual({
+      customTitle: "Manual title",
+      aiTitle: "Late AI title",
+      chatId: "123",
+      userPrompt: "Build the auth flow",
+      assistantText: "Implemented the authentication flow.",
+      toolNames: ["Read"]
+    });
+    expect(JSON.stringify(context)).not.toContain("never-return-this");
+  });
+
   test("accepts a session that is still a valid owned transcript", () => {
     const root = makeRoot();
     writeSession(root, uuid(1), { title: "Real" });
