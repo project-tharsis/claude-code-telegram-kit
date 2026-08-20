@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 RECEIPT_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 MAX_STDIN_BYTES = 64 * 1024

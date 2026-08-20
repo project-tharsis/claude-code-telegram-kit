@@ -256,6 +256,22 @@ describe("session action scheduling", () => {
     expect(argvSeen[0]!.at(-1)).not.toBe(argvSeen[1]!.at(-1));
   });
 
+  test("schedules a model switch with one fixed allowlisted alias", async () => {
+    const argvSeen: string[][] = [];
+    const schedule = scheduler(async argv => {
+      argvSeen.push(argv);
+      return { exitCode: 0, stderr: "" };
+    });
+    const unit = await schedule.scheduleModel("123456789", "52", "sonnet");
+    expect(unit).toMatch(/^claude-session-reset-model-[a-f0-9]{24}$/);
+    expect(argvSeen[0]).toContain("model");
+    expect(argvSeen[0]!.slice(argvSeen[0]!.indexOf("--model"), argvSeen[0]!.indexOf("--model") + 2))
+      .toEqual(["--model", "sonnet"]);
+    expect(argvSeen[0]).not.toContain("--session-id");
+    await expect(schedule.scheduleModel("123456789", "53", "fable" as any))
+      .rejects.toThrow("invalid model alias");
+  });
+
   test("never accepts a path, service, or command in place of a session UUID", async () => {
     let calls = 0;
     const schedule = scheduler(async () => {
@@ -304,8 +320,8 @@ describe("session action scheduling", () => {
 });
 
 describe("root helper capability preflight", () => {
-  test("requires Session Control Protocol v3", () => {
-    expect(HELPER_PROTOCOL_VERSION).toBe(3);
+  test("requires Session Control Protocol v4", () => {
+    expect(HELPER_PROTOCOL_VERSION).toBe(4);
   });
 
   test("accepts a matching protocol and action set", async () => {
@@ -315,23 +331,32 @@ describe("root helper capability preflight", () => {
         argvSeen.push(argv);
         return {
           exitCode: 0,
-          stdout: JSON.stringify({ protocol: 3, actions: ["reset", "resume"] }),
+          stdout: JSON.stringify({
+            protocol: 4,
+            actions: ["reset", "resume", "model"],
+            models: ["opus", "sonnet", "haiku", "inherit"]
+          }),
           stderr: ""
         };
       },
       verifyHelper: () => undefined
     });
 
-    expect(capabilities).toEqual({ protocol: 3, actions: ["reset", "resume"] });
+    expect(capabilities).toEqual({
+      protocol: 4,
+      actions: ["reset", "resume", "model"],
+      models: ["opus", "sonnet", "haiku", "inherit"]
+    });
     expect(argvSeen).toEqual([["/usr/local/sbin/claude-code-session-reset", "--capabilities"]]);
   });
 
   test("fails closed on a protocol mismatch, a missing action, or unusable output", async () => {
     for (const output of [
       JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
-      JSON.stringify({ protocol: 3, actions: ["reset"] }),
+      JSON.stringify({ protocol: 4, actions: ["reset", "resume"] }),
+      JSON.stringify({ protocol: 4, actions: ["reset", "resume", "model"], models: ["opus"] }),
       JSON.stringify({ protocol: 1 }),
-      JSON.stringify({ actions: ["reset", "resume"] }),
+      JSON.stringify({ actions: ["reset", "resume", "model"] }),
       "not json",
       "x".repeat(70_000)
     ]) {

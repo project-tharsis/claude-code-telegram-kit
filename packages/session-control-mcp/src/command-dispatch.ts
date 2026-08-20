@@ -6,6 +6,7 @@ import {
 import { CONFIRMATION, type ResetReceipt, type ResetRequest } from "./control.js";
 import {
   parseControlCommand,
+  type ModelAlias,
   type ConfirmationChallengeStore
 } from "./control-command.js";
 import type {
@@ -21,8 +22,8 @@ export const RESUME_CHALLENGE_PREFIX = "Resume session {index} requested. Confir
 export const CONTROL_CONFIRMATION_INVALID_TEXT =
   "Confirmation is invalid or expired. Send the original command again.";
 export const CONTROL_COMMAND_USAGE_TEXT =
-  "Use /usage, /sessions, /reset, /resume N, /reset confirm CODE, or /resume confirm CODE.";
-export const PRIVATE_CONTROL_ONLY_TEXT = "Reset and resume are available only in a private Telegram chat.";
+  "Use /usage, /sessions, /model, /model opus|sonnet|haiku|inherit, /reset, /resume N, /reset confirm CODE, or /resume confirm CODE.";
+export const PRIVATE_CONTROL_ONLY_TEXT = "Model switch, reset, and resume are available only in a private Telegram chat.";
 export const SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT = "Claude subscription usage is temporarily unavailable.";
 export const CONTROL_OPERATION_FAILED_TEXT =
   "Session control could not complete that command. Try again.";
@@ -45,6 +46,12 @@ export interface ControlCommandDispatcherDeps {
   ) => Promise<boolean>;
   listSessionsTrusted: (request: TrustedListSessionsRequest) => Promise<ListSessionsReceipt>;
   getUsage: () => Promise<string>;
+  getModelStatus: (sessionId: string) => Promise<string>;
+  switchModel: (request: {
+    chatId: string;
+    messageId: string;
+    model: ModelAlias;
+  }) => Promise<{ status: "scheduled"; unit: string }>;
   resumeSessionTrusted: (request: TrustedResumeSessionRequest) => Promise<ResumeSessionReceipt>;
   resetSession: (request: ResetRequest) => Promise<ResetReceipt>;
 }
@@ -54,7 +61,7 @@ export interface ControlDispatchResult {
 }
 
 function botSuffix(body: string): string {
-  return /^\/(?:sessions|reset|resume)(@[A-Za-z0-9_]{1,32})?/.exec(body)?.[1] ?? "";
+  return /^\/(?:sessions|usage|model|reset|resume)(@[A-Za-z0-9_]{1,32})?/.exec(body)?.[1] ?? "";
 }
 
 async function bestEffortReact(
@@ -117,7 +124,8 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
 
     const readOnlyNamespace = command.kind === "sessions"
       || command.kind === "usage"
-      || (command.kind === "malformed" && (command.namespace === "sessions" || command.namespace === "usage"));
+      || command.kind === "model-status"
+      || (command.kind === "malformed" && ["sessions", "usage", "model"].includes(command.namespace));
     const destructiveNamespace = !readOnlyNamespace;
     if (destructiveNamespace && envelope.chatId.startsWith("-")) {
       await bestEffortFailure(
@@ -161,6 +169,41 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
           envelope.messageId,
           SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT
         );
+      }
+      return { handled: true };
+    }
+
+    if (command.kind === "model-status") {
+      try {
+        await deps.sendMessage(
+          config,
+          envelope.chatId,
+          await deps.getModelStatus(input.session_id),
+          envelope.messageId
+        );
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      } catch {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+      return { handled: true };
+    }
+
+    if (command.kind === "model-switch") {
+      try {
+        await deps.sendMessage(
+          config,
+          envelope.chatId,
+          `Model switch to ${command.model} requested. Waiting for the host to accept the restart.`,
+          envelope.messageId
+        );
+        await deps.switchModel({
+          chatId: envelope.chatId,
+          messageId: envelope.messageId,
+          model: command.model
+        });
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      } catch {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
       }
       return { handled: true };
     }

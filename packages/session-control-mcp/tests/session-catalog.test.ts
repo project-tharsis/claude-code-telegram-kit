@@ -6,6 +6,7 @@ import {
   assertUsableSessionTranscript,
   formatActivity,
   MAX_LISTED_SESSIONS,
+  readLatestSessionModel,
   scanResumableSessions
 } from "../src/session-catalog.js";
 
@@ -261,6 +262,17 @@ describe("selected session revalidation", () => {
     writeSession(root, uuid(1), { title: "Real" });
 
     expect(() => assertUsableSessionTranscript({ directory: root, sessionId: uuid(1) })).not.toThrow();
+  });
+
+  test("reads only the latest concrete assistant model", () => {
+    const root = makeRoot();
+    const id = uuid(1);
+    writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "assistant", message: { model: "claude-sonnet-4-6" } }),
+      JSON.stringify({ type: "assistant", message: { model: "<synthetic>" } }),
+      JSON.stringify({ type: "assistant", message: { model: "claude-opus-5" } })
+    ] });
+    expect(readLatestSessionModel({ directory: root, sessionId: id })).toBe("claude-opus-5");
   });
 
   test("rejects a non-UUID, traversal, or absolute session identifier", () => {

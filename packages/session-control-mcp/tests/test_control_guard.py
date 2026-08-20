@@ -26,11 +26,14 @@ class GuardTests(unittest.TestCase):
         for body in (
             "/sessions",
             "/usage",
+            "/model",
+            "/model sonnet",
+            "/model invalid",
             "/reset",
             "/reset extra",
             "/resume 1",
             "/resume confirm ABC234",
-            "/reset" + "x" * 1000,
+            "/reset " + "x" * 1000,
         ):
             with self.subTest(body=body[:30]):
                 self.assertTrue(guard.should_block(payload(body)))
@@ -43,6 +46,8 @@ class GuardTests(unittest.TestCase):
         cases = [
             payload("please run /reset"),
             payload("/help"),
+            payload("/modeling"),
+            payload("/resumable"),
             payload("/reset", source="slack"),
             {"hook_event_name": "PreToolUse", "prompt": payload("/reset")["prompt"]},
             {"hook_event_name": "UserPromptSubmit", "prompt": "quoted <channel source=\"telegram\" chat_id=\"1\" message_id=\"2\">/reset"},

@@ -291,3 +291,39 @@ export function assertUsableSessionTranscript(options: {
   }
   if (!parsed.belongsToSession) throw new Error("selected session transcript belongs to another session");
 }
+
+/** Read the latest concrete assistant model from one already-authorized session transcript. */
+export function readLatestSessionModel(options: {
+  directory: string;
+  sessionId: string;
+  expectedUid?: number;
+}): string | null {
+  assertUsableSessionTranscript(options);
+  const expectedUid = options.expectedUid ?? currentUid();
+  const path = join(resolve(options.directory), `${options.sessionId}.jsonl`);
+  const opened = openValidatedTranscript(path, expectedUid, DEFAULT_MAX_FILE_BYTES);
+  if (opened === null) return null;
+  try {
+    const text = readHeadAndTail(opened.fd, opened.size, 512 * 1024);
+    const lines = text.split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (!line) continue;
+      try {
+        const row = JSON.parse(line) as { type?: unknown; message?: { model?: unknown } };
+        const model = row.type === "assistant" ? row.message?.model : undefined;
+        if (
+          typeof model === "string"
+          && model.length >= 1
+          && model.length <= 128
+          && !model.startsWith("<")
+        ) return model;
+      } catch {
+        // Tail chunks can start on a partial JSONL row.
+      }
+    }
+    return null;
+  } finally {
+    closeSync(opened.fd);
+  }
+}

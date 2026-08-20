@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "claude_code_session_reset.py"
@@ -57,6 +58,7 @@ class ConfigTests(unittest.TestCase):
                 "workspace": "/srv/claude-bot",
                 "project_sessions": "/srv/claude-state/sessions",
                 "session_start_receipt_dir": "/srv/claude-state/receipts",
+                "model_env_file": "/etc/claude-code-telegram-kit/model.env",
                 "channel_state": "/srv/claude-state/telegram",
                 "lock_path": "/run/lock/my-claude-reset.lock",
                 "poller_process_marker": "bun server.ts",
@@ -70,6 +72,13 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.unit_path, Path("/etc/systemd/system/my-claude.service"))
             self.assertEqual(config.session_start_receipt_dir, Path("/srv/claude-state/receipts"))
             self.assertEqual(config.required_process_markers, tuple(data["required_process_markers"]))
+
+            data["model_env_file"] = "/etc/claude-code-telegram-kit/../shadow"
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "must be /etc/claude-code-telegram-kit/model.env"):
+                reset.load_config(path, expected_uid=os.getuid(), user_lookup=lambda _name: os.getuid())
+            data["model_env_file"] = "/etc/claude-code-telegram-kit/model.env"
+            path.write_text(json.dumps(data))
 
             os.chmod(path, 0o600)
             self.assertEqual(
@@ -115,6 +124,7 @@ class ConfigTests(unittest.TestCase):
                 "workspace": "/srv/claude-bot",
                 "project_sessions": "/srv/claude-state/sessions",
                 "session_start_receipt_dir": "relative/receipts",
+                "model_env_file": "/etc/claude-code-telegram-kit/model.env",
                 "channel_state": "/srv/claude-state/telegram",
                 "lock_path": "/run/lock/my-claude-reset.lock",
                 "poller_process_marker": "bun server.ts",
@@ -244,6 +254,7 @@ def _make_config(root: Path, **overrides):
         workspace=root / "workspace",
         project_sessions=root / "sessions",
         session_start_receipt_dir=root / "receipts",
+        model_env_file=Path("/etc/claude-code-telegram-kit/model.env"),
         channel_state=root / "state",
         lock_path=root / "lock",
         poller_process_marker="bun server.ts",
@@ -289,8 +300,9 @@ class ProtocolTests(unittest.TestCase):
     def test_capabilities_declare_protocol_three_and_both_actions(self):
         capabilities = reset.capabilities()
         self.assertEqual(capabilities["protocol"], reset.PROTOCOL_VERSION)
-        self.assertEqual(reset.PROTOCOL_VERSION, 3)
-        self.assertEqual(sorted(capabilities["actions"]), ["reset", "resume"])
+        self.assertEqual(reset.PROTOCOL_VERSION, 4)
+        self.assertEqual(sorted(capabilities["actions"]), ["model", "reset", "resume"])
+        self.assertEqual(capabilities["models"], ["opus", "sonnet", "haiku", "inherit"])
 
     def test_capabilities_flag_prints_json_and_exits_zero_without_config(self):
         import io
@@ -301,8 +313,8 @@ class ProtocolTests(unittest.TestCase):
             code = reset.main(["--capabilities"])
         self.assertEqual(code, 0)
         payload = json.loads(buffer.getvalue())
-        self.assertEqual(payload["protocol"], 3)
-        self.assertIn("resume", payload["actions"])
+        self.assertEqual(payload["protocol"], 4)
+        self.assertIn("model", payload["actions"])
 
     def test_capabilities_never_mutates_state(self):
         import io
@@ -319,7 +331,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_rejects_an_unknown_protocol_before_doing_anything(self):
         with mock.patch.object(reset, "load_config") as load:
-            self.assertEqual(reset.main(["--protocol", "4", "--action", "reset"]), 1)
+            self.assertEqual(reset.main(["--protocol", "3", "--action", "reset"]), 1)
         load.assert_not_called()
 
     def test_rejects_a_session_id_on_reset_and_requires_one_on_resume(self):
@@ -328,6 +340,17 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(reset.main(["--action", "reset", "--current-session-id", NEW_SESSION]), 1)
             self.assertEqual(reset.main(["--action", "resume"]), 1)
             self.assertEqual(reset.main(["--action", "resume", "--session-id", "not-a-uuid"]), 1)
+        load.assert_not_called()
+
+    def test_rejects_a_model_argument_on_non_model_actions(self):
+        with mock.patch.object(reset, "load_config") as load:
+            self.assertEqual(reset.main(["--action", "reset", "--model", "sonnet"]), 1)
+            self.assertEqual(reset.main([
+                "--action", "resume",
+                "--session-id", NEW_SESSION,
+                "--current-session-id", OLD_SESSION,
+                "--model", "sonnet",
+            ]), 1)
         load.assert_not_called()
 
     def test_resume_requires_and_validates_the_current_session_id(self):
@@ -932,6 +955,138 @@ class ResetOrchestrationTests(unittest.TestCase):
         recover.assert_called_once()
         self.assertEqual(recover.call_args.args[0], self.config)
         self.assertEqual(recover.call_args.args[2], OLD_SESSION)
+
+
+class ModelOrchestrationTests(unittest.TestCase):
+    def test_process_environment_is_split_on_nul_boundaries(self):
+        self.assertEqual(
+            reset._parse_process_environment(
+                b"HOME=/srv/claude\0ANTHROPIC_MODEL=sonnet\0EMPTY=\0"
+            ),
+            {"HOME": "/srv/claude", "ANTHROPIC_MODEL": "sonnet", "EMPTY": ""},
+        )
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        self.config = _make_config(
+            root,
+            lock_path=root / "locks" / "model.lock",
+            model_env_file=root / "model.env",
+        )
+        self.events: list[str] = []
+        patches = [
+            mock.patch.object(reset.os, "geteuid", return_value=0),
+            mock.patch.object(reset, "REQUEST_STATE_ROOT", root / "requests"),
+            mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN),
+            mock.patch.object(reset, "claim_request", return_value={"claimed": True, "receipt": {}}),
+            mock.patch.object(reset, "_read_model_env", return_value=(True, b"ANTHROPIC_MODEL=opus\n")),
+            mock.patch.object(reset, "_set_model_env", side_effect=lambda *_: self.events.append("set")),
+            mock.patch.object(reset, "_restore_model_env", side_effect=lambda *_: self.events.append("restore")),
+            mock.patch.object(reset, "_reload_and_restart", side_effect=lambda *_: self.events.append("restart")),
+            mock.patch.object(reset, "_wait_active", side_effect=lambda *_: self.events.append("wait")),
+            mock.patch.object(reset, "finish_request", return_value={}),
+            mock.patch.object(reset, "_notify", return_value=77),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_model_switch_persists_restarts_verifies_and_receipts(self):
+        with mock.patch.object(reset, "_service_model_health", return_value=True) as health:
+            result = reset.model_session(
+                self.config, model="sonnet", chat_id=TEST_CHAT_ID,
+                request_id="f" * 24, timeout=1,
+            )
+
+        self.assertEqual(result["status"], "model_complete")
+        self.assertEqual(result["old_model"], "opus")
+        self.assertEqual(result["new_model"], "sonnet")
+        self.assertEqual(self.events, ["set", "restart", "wait"])
+        health.assert_called_once_with(self.config, "sonnet")
+        self.assertEqual(reset.claim_request.call_args.kwargs["action"], "model")
+        self.assertEqual(reset.claim_request.call_args.kwargs["target_session"], "sonnet")
+        self.assertEqual(reset.finish_request.call_args.args[2], "complete")
+
+    def test_inherit_verifies_the_absence_of_a_bot_model_override(self):
+        with mock.patch.object(reset, "_service_model_health", return_value=True) as health:
+            result = reset.model_session(
+                self.config, model="inherit", chat_id=TEST_CHAT_ID,
+                request_id="d" * 24, timeout=1,
+            )
+        self.assertEqual(result["new_model"], "inherit")
+        health.assert_called_once_with(self.config, None)
+
+    def test_model_switch_rolls_back_the_previous_bytes_on_failed_health(self):
+        with mock.patch.object(reset, "_service_model_health", side_effect=[False, True]):
+            with self.assertRaisesRegex(RuntimeError, "verify_model_service"):
+                reset.model_session(
+                    self.config, model="haiku", chat_id=TEST_CHAT_ID,
+                    request_id="a" * 24, timeout=1,
+                )
+
+        self.assertEqual(
+            self.events,
+            ["set", "restart", "wait", "restore", "restart", "wait"],
+        )
+        self.assertEqual(reset.finish_request.call_args.args[2], "failed")
+        self.assertTrue(reset.finish_request.call_args.args[3]["recovered"])
+
+    def test_model_read_failure_closes_receipt_without_mutating_service(self):
+        reset._read_model_env.side_effect = OSError("unreadable")
+        with self.assertRaisesRegex(RuntimeError, "read_model_env"):
+            reset.model_session(
+                self.config, model="sonnet", chat_id=TEST_CHAT_ID,
+                request_id="c" * 24, timeout=1,
+            )
+        self.assertEqual(self.events, [])
+        self.assertEqual(reset.finish_request.call_args.args[2], "failed")
+        self.assertTrue(reset.finish_request.call_args.args[3]["recovered"])
+
+    def test_model_health_requires_the_actual_claude_cli_environment(self):
+        rows = {
+            101: (100, "/usr/bin/script -qefc /opt/claude/bin/claude --continue"),
+            102: (101, "/opt/claude/bin/claude --continue --channels plugin:telegram@claude-plugins-official"),
+            103: (102, "bun server.ts"),
+            104: (102, "bun renderer"),
+            105: (102, "bun control"),
+        }
+
+        def run(argv, **_kwargs):
+            return SimpleNamespace(stdout="100\n" if "show" in argv else "")
+
+        with mock.patch.object(reset, "_run", side_effect=run), \
+                mock.patch.object(reset, "_process_rows", return_value=rows), \
+                mock.patch.object(reset, "_process_uid", return_value=self.config.service_uid), \
+                mock.patch.object(
+                    reset,
+                    "_read_process_environment",
+                    side_effect=lambda pid: {"ANTHROPIC_MODEL": "sonnet"} if pid == 101 else {},
+                ):
+            self.assertFalse(reset._service_model_health(self.config, "sonnet"))
+
+        with mock.patch.object(reset, "_run", side_effect=run), \
+                mock.patch.object(reset, "_process_rows", return_value=rows), \
+                mock.patch.object(reset, "_process_uid", return_value=self.config.service_uid), \
+                mock.patch.object(
+                    reset,
+                    "_read_process_environment",
+                    side_effect=lambda pid: {"ANTHROPIC_MODEL": "sonnet"} if pid == 102 else {},
+                ):
+            self.assertTrue(reset._service_model_health(self.config, "sonnet"))
+
+    def test_model_replay_never_mutates_the_service(self):
+        reset.claim_request.return_value = {
+            "claimed": False,
+            "receipt": {"status": "complete", "new_model": "sonnet"},
+        }
+        result = reset.model_session(
+            self.config, model="sonnet", chat_id=TEST_CHAT_ID,
+            request_id="b" * 24, timeout=1,
+        )
+        self.assertEqual(result["status"], "duplicate_request")
+        self.assertEqual(self.events, [])
 
 
 if __name__ == "__main__":

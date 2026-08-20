@@ -22,11 +22,19 @@ function input(body: string, messageId = "9", sessionId = SESSION) {
   };
 }
 
-function harness(options: { now?: () => number; sendFails?: boolean; usageFails?: boolean; config?: RuntimeConfig } = {}) {
+function harness(options: {
+  now?: () => number;
+  sendFails?: boolean;
+  usageFails?: boolean;
+  modelFails?: boolean;
+  config?: RuntimeConfig;
+} = {}) {
   const sent: Array<{ chatId: string; text: string; replyTo?: string; parseMode?: "HTML" }> = [];
   const reactions: Array<[string, string, string]> = [];
   const lists: unknown[] = [];
   const usageCalls: string[] = [];
+  const modelStatusCalls: string[] = [];
+  const modelSwitches: unknown[] = [];
   const resumes: unknown[] = [];
   const resets: unknown[] = [];
   const challenges = createConfirmationChallengeStore({
@@ -59,6 +67,15 @@ function harness(options: { now?: () => number; sendFails?: boolean; usageFails?
       if (options.usageFails) throw new Error("usage unavailable");
       return "<b>Claude Code subscription usage</b>";
     },
+    getModelStatus: async sessionId => {
+      modelStatusCalls.push(sessionId);
+      return "Current actual: claude-opus-5\nBot override: inherit";
+    },
+    switchModel: async request => {
+      modelSwitches.push(request);
+      if (options.modelFails) throw new Error("systemd rejected");
+      return { status: "scheduled", unit: "model-unit" };
+    },
     resumeSessionTrusted: async request => {
       resumes.push(request);
       return { status: "scheduled", ackMessageId: 102, unit: "resume-unit" };
@@ -68,7 +85,10 @@ function harness(options: { now?: () => number; sendFails?: boolean; usageFails?
       return { status: "scheduled", ackMessageId: 103, unit: "reset-unit" };
     }
   });
-  return { dispatch, sent, reactions, lists, usageCalls, resumes, resets };
+  return {
+    dispatch, sent, reactions, lists, usageCalls,
+    modelStatusCalls, modelSwitches, resumes, resets
+  };
 }
 
 describe("deterministic UserPromptSubmit control dispatcher", () => {
@@ -96,6 +116,28 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
       parseMode: "HTML"
     }]);
     expect(h.reactions).toEqual([["123", "9", "success"]]);
+  });
+
+  test("lists current model state and schedules an allowlisted switch without the LLM", async () => {
+    const h = harness();
+    expect(await h.dispatch(input("/model"))).toEqual({ handled: true });
+    expect(h.modelStatusCalls).toEqual([SESSION]);
+    expect(h.sent.at(-1)?.text).toContain("claude-opus-5");
+
+    expect(await h.dispatch(input("/model sonnet", "10"))).toEqual({ handled: true });
+    expect(h.modelSwitches).toEqual([{ chatId: "123", messageId: "10", model: "sonnet" }]);
+    expect(h.sent.at(-1)).toMatchObject({ chatId: "123", replyTo: "10" });
+    expect(h.reactions.at(-1)).toEqual(["123", "10", "success"]);
+  });
+
+  test("reports a rejected model scheduler after a truthful pending acknowledgement", async () => {
+    const h = harness({ modelFails: true });
+    expect(await h.dispatch(input("/model haiku", "11"))).toEqual({ handled: true });
+    expect(h.modelSwitches).toHaveLength(1);
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[0]!.text).toContain("requested");
+    expect(h.sent[1]!.text).toContain("could not complete");
+    expect(h.reactions.at(-1)).toEqual(["123", "11", "failure"]);
   });
 
   test("issues and consumes a single-use reset challenge before scheduling", async () => {
@@ -163,6 +205,11 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
 
     expect(await h.dispatch(group)).toEqual({ handled: true });
     expect(h.resets).toEqual([]);
+    expect(await h.dispatch({
+      ...input("/model sonnet", "10"),
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="10">/model sonnet</channel>'
+    })).toEqual({ handled: true });
+    expect(h.modelSwitches).toEqual([]);
     expect(h.sent.at(-1)!.text).toContain("private Telegram chat");
   });
 
