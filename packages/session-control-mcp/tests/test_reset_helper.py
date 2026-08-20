@@ -1003,7 +1003,7 @@ class ModelOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "model_complete")
         self.assertEqual(result["old_model"], "opus")
         self.assertEqual(result["new_model"], "sonnet")
-        self.assertEqual(self.events, ["set", "restart", "wait"])
+        self.assertEqual(self.events, ["set", "restart"])
         health.assert_called_once_with(self.config, "sonnet")
         self.assertEqual(reset.claim_request.call_args.kwargs["action"], "model")
         self.assertEqual(reset.claim_request.call_args.kwargs["target_session"], "sonnet")
@@ -1019,7 +1019,16 @@ class ModelOrchestrationTests(unittest.TestCase):
         health.assert_called_once_with(self.config, None)
 
     def test_model_switch_rolls_back_the_previous_bytes_on_failed_health(self):
-        with mock.patch.object(reset, "_service_model_health", side_effect=[False, True]):
+        waits = 0
+
+        def wait_then_recover(*_args):
+            nonlocal waits
+            waits += 1
+            self.events.append("wait")
+            if waits == 1:
+                raise TimeoutError("not ready")
+
+        with mock.patch.object(reset, "_wait_model_service", side_effect=wait_then_recover):
             with self.assertRaisesRegex(RuntimeError, "verify_model_service"):
                 reset.model_session(
                     self.config, model="haiku", chat_id=TEST_CHAT_ID,
@@ -1043,6 +1052,22 @@ class ModelOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.events, [])
         self.assertEqual(reset.finish_request.call_args.args[2], "failed")
         self.assertTrue(reset.finish_request.call_args.args[3]["recovered"])
+
+    def test_model_health_wait_retries_until_workers_are_ready(self):
+        with mock.patch.object(reset, "_service_model_health", side_effect=[False, True]) as health, \
+                mock.patch.object(reset.time, "monotonic", side_effect=[0, 0, 0, 0.5]), \
+                mock.patch.object(reset.time, "sleep") as sleep:
+            reset._wait_model_service(self.config, "sonnet", timeout=1)
+        self.assertEqual(health.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_model_health_wait_times_out_when_workers_never_become_ready(self):
+        with mock.patch.object(reset, "_service_model_health", return_value=False), \
+                mock.patch.object(reset.time, "monotonic", side_effect=[0, 0, 0, 0.25]), \
+                mock.patch.object(reset.time, "sleep") as sleep:
+            with self.assertRaisesRegex(TimeoutError, "model service did not become healthy"):
+                reset._wait_model_service(self.config, "sonnet", timeout=0.25)
+        sleep.assert_called_once_with(0.25)
 
     def test_model_health_requires_the_actual_claude_cli_environment(self):
         rows = {
