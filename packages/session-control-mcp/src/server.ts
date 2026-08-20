@@ -7,10 +7,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCapabilityStore } from "./command-capability.js";
-import {
-  createConfirmationChallengeStore,
-  MODEL_REPLY_CHOICES
-} from "./control-command.js";
+import { createConfirmationChallengeStore } from "./control-command.js";
 import { createControlCommandDispatcher } from "./command-dispatch.js";
 import {
   CONTROL_COMMAND_TOOL,
@@ -41,6 +38,7 @@ import {
   deleteTelegramCommandMenu,
   syncTelegramCommandMenu
 } from "./telegram-menu.js";
+import { escapeTelegramHtml } from "./telegram-html.js";
 import {
   finalizeTelegramReaction,
   loadRuntimeConfig
@@ -78,8 +76,8 @@ const challenges = createConfirmationChallengeStore();
 
 const controller = createResetController({
   loadConfig,
-  sendMessage: (config, chatId, text, replyTo) =>
-    sendTelegramMessage(config, chatId, text, fetch, replyTo),
+  sendMessage: (config, chatId, text, replyTo, parseMode) =>
+    sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode),
   react: finalizeTelegramReaction,
   schedule: (chatId, messageId) => {
     if (!helperReady) throw new Error("session reset is unavailable on this host");
@@ -103,8 +101,8 @@ const sessionsController = createSessionsController({
     }
     assertUsableSessionTranscript({ directory: projectSessionsDir, sessionId });
   },
-  sendMessage: (config, chatId, text, replyTo) =>
-    sendTelegramMessage(config, chatId, text, fetch, replyTo),
+  sendMessage: (config, chatId, text, replyTo, parseMode) =>
+    sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode),
   react: finalizeTelegramReaction,
   scheduleResume: (chatId, messageId, currentSessionId, sessionId) =>
     scheduler.scheduleResume(chatId, messageId, currentSessionId, sessionId),
@@ -129,11 +127,11 @@ const dispatchControlCommand = createControlCommandDispatcher({
       : readLatestSessionModel({ directory: projectSessionsDir, sessionId });
     const configured = readConfiguredModel({ path: DEFAULT_MODEL_ENV_FILE });
     return [
-      `Current actual: ${actual ?? "unknown"}`,
-      `Bot override: ${configured}`,
+      "<b>Claude model</b>",
+      `Current · <code>${escapeTelegramHtml(actual ?? "unknown")}</code>`,
+      `Override · <code>${escapeTelegramHtml(configured)}</code>`,
       "",
-      "Choose a model:",
-      ...MODEL_REPLY_CHOICES.map(choice => choice.label)
+      "<i>Choose below.</i>"
     ].join("\n");
   },
   switchModel: async request => {

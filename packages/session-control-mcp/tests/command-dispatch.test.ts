@@ -4,7 +4,9 @@ import { CONFIRMATION } from "../src/control.js";
 import { createConfirmationChallengeStore } from "../src/control-command.js";
 import {
   CONTROL_CONFIRMATION_INVALID_TEXT,
+  CONTROL_OPERATION_FAILED_TEXT,
   createControlCommandDispatcher,
+  PRIVATE_CONTROL_ONLY_TEXT,
   RESET_CHALLENGE_PREFIX,
   RESUME_CHALLENGE_PREFIX
 } from "../src/command-dispatch.js";
@@ -80,7 +82,7 @@ function harness(options: {
     },
     getModelStatus: async sessionId => {
       modelStatusCalls.push(sessionId);
-      return "Current actual: claude-opus-5\nBot override: inherit";
+      return "<b>Claude model</b>\nCurrent · <code>claude-opus-5</code>";
     },
     switchModel: async request => {
       modelSwitches.push(request);
@@ -134,12 +136,14 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(await h.dispatch(input("/model"))).toEqual({ handled: true });
     expect(h.modelStatusCalls).toEqual([SESSION]);
     expect(h.sent.at(-1)?.text).toContain("claude-opus-5");
+    expect(h.sent.at(-1)?.parseMode).toBe("HTML");
     expect(h.sent.at(-1)?.replyMarkup).toEqual(MODEL_REPLY_KEYBOARD);
 
     expect(await h.dispatch(input("2 · Sonnet", "10"))).toEqual({ handled: true });
     expect(h.modelSwitches).toEqual([{ chatId: "123", messageId: "10", model: "sonnet" }]);
     expect(h.sent.at(-1)).toMatchObject({ chatId: "123", replyTo: "10" });
     expect(h.sent.at(-1)?.replyMarkup).toEqual(REMOVE_MODEL_REPLY_KEYBOARD);
+    expect(h.sent.at(-1)?.parseMode).toBe("HTML");
     expect(h.reactions.at(-1)).toEqual(["123", "10", "success"]);
   });
 
@@ -149,7 +153,7 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.modelSwitches).toHaveLength(1);
     expect(h.sent).toHaveLength(2);
     expect(h.sent[0]!.text).toContain("requested");
-    expect(h.sent[1]!.text).toContain("could not complete");
+    expect(h.sent[1]!.text).toBe(CONTROL_OPERATION_FAILED_TEXT);
     expect(h.reactions.at(-1)).toEqual(["123", "11", "failure"]);
   });
 
@@ -157,7 +161,12 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     const h = harness();
     expect(await h.dispatch(input("/reset", "9"))).toEqual({ handled: true });
     expect(h.resets).toEqual([]);
-    expect(h.sent).toEqual([{ chatId: "123", replyTo: "9", text: `${RESET_CHALLENGE_PREFIX}\n\n/reset confirm 222222` }]);
+    expect(h.sent).toEqual([{
+      chatId: "123",
+      replyTo: "9",
+      parseMode: "HTML",
+      text: `${RESET_CHALLENGE_PREFIX}\n\n<code>/reset confirm 222222</code>`
+    }]);
     expect(h.reactions).toEqual([["123", "9", "success"]]);
 
     expect(await h.dispatch(input("/reset confirm 222222", "10"))).toEqual({ handled: true });
@@ -175,7 +184,9 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.sent.at(-1)).toEqual({
       chatId: "123",
       replyTo: "20",
-      text: `${RESUME_CHALLENGE_PREFIX.replace("{index}", "7")}\n\n/resume@ExampleAssistant confirm 222222`
+      parseMode: "HTML",
+      text: `${RESUME_CHALLENGE_PREFIX.replace("{index}", "7")}\n\n`
+        + "<code>/resume@ExampleAssistant confirm 222222</code>"
     });
 
     await h.dispatch(input("/resume@ExampleAssistant confirm 222222", "21"));
@@ -223,7 +234,7 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
       prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="10">/model sonnet</channel>'
     })).toEqual({ handled: true });
     expect(h.modelSwitches).toEqual([]);
-    expect(h.sent.at(-1)!.text).toContain("private Telegram chat");
+    expect(h.sent.at(-1)!.text).toBe(PRIVATE_CONTROL_ONLY_TEXT);
   });
 
   test("malformed control namespace is handled with usage instead of reaching the LLM", async () => {

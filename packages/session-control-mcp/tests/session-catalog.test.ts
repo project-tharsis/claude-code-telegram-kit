@@ -181,11 +181,23 @@ describe("bounded resumable session catalog", () => {
     expect(scanResumableSessions({ directory: root }).map(entry => entry.sessionId)).toEqual([uuid(2)]);
   });
 
-  test("falls back to a fixed label when a session has no title", () => {
+  test("uses honest non-content fallbacks when native ai-title is absent", () => {
     const root = makeRoot();
-    writeSession(root, uuid(1));
+    writeSession(root, uuid(1), { mtimeSeconds: 1_000 });
+    writeSession(root, uuid(2), {
+      mtimeSeconds: 2_000,
+      extraLines: [JSON.stringify({ type: "assistant", message: { model: "claude-opus-5" } })]
+    });
+    writeSession(root, uuid(3), {
+      mtimeSeconds: 1_500,
+      extraLines: [JSON.stringify({ type: "assistant", message: { model: "<synthetic>" } })]
+    });
 
-    expect(scanResumableSessions({ directory: root })[0]!.title).toBe("Untitled session");
+    expect(scanResumableSessions({ directory: root }).map(entry => entry.title)).toEqual([
+      "Conversation with Claudio",
+      "Control-only session",
+      "Control-only session"
+    ]);
   });
 
   test("sanitizes and truncates titles instead of forwarding transcript text", () => {

@@ -187,11 +187,18 @@ class NotificationTransportTests(unittest.TestCase):
         response = self.FakeResponse(body)
         opener = self.FakeOpener(response)
         with mock.patch.object(reset.urllib.request, "build_opener", return_value=opener) as build:
-            self.assertEqual(reset._notify(TEST_TOKEN, TEST_CHAT_ID, "done"), 71)
+            self.assertEqual(reset._notify(
+                TEST_TOKEN, TEST_CHAT_ID, "<b>done</b>", parse_mode="HTML"
+            ), 71)
         handler = build.call_args.args[0]
         self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {}, "https://example.invalid"))
         self.assertEqual(response.read_sizes, [reset.MAX_TELEGRAM_RESPONSE_BYTES + 1])
         self.assertEqual(opener.calls[0][1], 20)
+        self.assertEqual(json.loads(opener.calls[0][0].data), {
+            "chat_id": TEST_CHAT_ID,
+            "text": "<b>done</b>",
+            "parse_mode": "HTML",
+        })
 
     def test_notify_rejects_oversized_response_before_json_parse(self):
         response = self.FakeResponse(b"x" * (reset.MAX_TELEGRAM_RESPONSE_BYTES + 1))
@@ -733,7 +740,8 @@ class ResumeOrchestrationTests(unittest.TestCase):
         reset.finish_request.assert_called_once()
         self.assertEqual(reset.finish_request.call_args.args[2], "failed")
         self.assertTrue(reset.finish_request.call_args.args[3]["recovered"])
-        self.assertIn("no service change was made", notify.call_args.args[2])
+        self.assertIn("No service change was made.", notify.call_args.args[2])
+        self.assertEqual(notify.call_args.kwargs["parse_mode"], "HTML")
 
     def test_resume_rolls_back_to_the_old_session_when_the_target_never_becomes_healthy(self):
         with mock.patch.object(reset, "_service_health", return_value=False), \
@@ -862,6 +870,10 @@ class ResumeOrchestrationTests(unittest.TestCase):
         self.assertIn("disk full", result["receipt_error"])
         self.assertEqual(self.writes[-1], BASE_UNIT)
         self.assertEqual(notify.call_count, 2)
+        first = notify.call_args_list[0]
+        self.assertEqual(first.args[2], "<b>Session resumed</b>")
+        self.assertNotIn(OLD_SESSION[:8], first.args[2])
+        self.assertEqual(first.kwargs["parse_mode"], "HTML")
 
 
 class ResetOrchestrationTests(unittest.TestCase):
@@ -896,12 +908,15 @@ class ResetOrchestrationTests(unittest.TestCase):
 
     def test_reset_claims_an_action_bound_receipt_and_persists_on_success(self):
         with mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \
-                mock.patch.object(reset, "_notify", return_value=77):
+                mock.patch.object(reset, "_notify", return_value=77) as notify:
             result = reset.reset_session(
                 self.config, chat_id=TEST_CHAT_ID, request_id="e" * 24, timeout=1,
             )
 
         self.assertEqual(result["status"], "reset_complete")
+        self.assertEqual(notify.call_args.args[2], "<b>Fresh session ready</b>")
+        self.assertNotIn(result["new_session"][:8], notify.call_args.args[2])
+        self.assertEqual(notify.call_args.kwargs["parse_mode"], "HTML")
         self.assertTrue(result["receipt_persisted"])
         self.assertEqual(result["old_session"], OLD_SESSION)
         self.assertEqual(reset.claim_request.call_args.kwargs["action"], "reset")
@@ -1003,6 +1018,8 @@ class ModelOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "model_complete")
         self.assertEqual(result["old_model"], "opus")
         self.assertEqual(result["new_model"], "sonnet")
+        self.assertEqual(reset._notify.call_args.args[2], "<b>Model switched</b>\n<code>sonnet</code>")
+        self.assertEqual(reset._notify.call_args.kwargs["parse_mode"], "HTML")
         self.assertEqual(self.events, ["set", "restart"])
         health.assert_called_once_with(self.config, "sonnet")
         self.assertEqual(reset.claim_request.call_args.kwargs["action"], "model")

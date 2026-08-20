@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { escapeTelegramHtml } from "./telegram-html.js";
 
 export const DEFAULT_SUBSCRIPTION_USAGE_CACHE = join(
   homedir(), ".local", "state", "claude-code-telegram-kit", "subscription-usage.json"
@@ -73,9 +74,6 @@ function percent(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 function usageBar(value: number): string {
   const filled = value <= 0 ? 0 : Math.max(1, Math.min(10, Math.round(value / 10)));
@@ -93,13 +91,13 @@ export function formatUsageSnapshot(snapshot: UsageSnapshot, nowMs = Date.now())
     if (window === undefined) continue;
     lines.push(
       "",
-      `<b>${escapeHtml(label)}</b>`,
+      `<b>${escapeTelegramHtml(label)}</b>`,
       `<code>${usageBar(window.used_percentage)}</code> <b>${percent(window.used_percentage)}%</b>`,
-      `<i>${escapeHtml(resetText(window.resets_at))}</i>`
+      `<i>${escapeTelegramHtml(resetText(window.resets_at))}</i>`
     );
   }
   if (nowMs - snapshot.captured_at * 1_000 > FRESH_CACHE_AGE_MS) {
-    lines.push("", `<i>Last known · as of ${escapeHtml(new Date(snapshot.captured_at * 1_000).toLocaleString())}</i>`);
+    lines.push("", `<i>Last known · as of ${escapeTelegramHtml(new Date(snapshot.captured_at * 1_000).toLocaleString())}</i>`);
   }
   return lines.join("\n");
 }

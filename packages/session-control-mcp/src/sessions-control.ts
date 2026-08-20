@@ -5,15 +5,16 @@ import {
 } from "@project-tharsis/claude-code-telegram-shared";
 import { MAX_SESSION_INDEX, type CommandCapability, type SessionCommandName } from "./command-capability.js";
 import { formatActivity, type SessionCatalogEntry } from "./session-catalog.js";
+import { escapeTelegramHtml } from "./telegram-html.js";
 import {
   resolveSelection,
   type SelectionEntry,
   type SelectionSnapshot
 } from "./session-selection.js";
 
-export const NO_SESSIONS_TEXT = "No other resumable sessions were found.";
+export const NO_SESSIONS_TEXT = "<b>Recent sessions</b>\n<i>No other resumable sessions.</i>";
 export const RESUME_SCHEDULER_FAILED_TEXT =
-  "Session resume scheduling failed. No resume was started.";
+  "<b>Resume failed</b>\n<i>No session switch was started.</i>";
 
 const telegramChatId = z.string().regex(/^-?\d+$/);
 const trustedMessageId = z.string().regex(/^\d+$/);
@@ -80,7 +81,8 @@ export interface SessionsControllerDeps {
     config: RuntimeConfig,
     chatId: string,
     text: string,
-    replyTo?: string
+    replyTo?: string,
+    parseMode?: "HTML"
   ) => Promise<number>;
   react: (
     config: RuntimeConfig,
@@ -100,9 +102,10 @@ export interface SessionsControllerDeps {
 
 function renderList(entries: readonly SessionCatalogEntry[], nowMs: number): string {
   const lines = entries.map(
-    (entry, offset) => `${offset + 1}. ${entry.title} — ${formatActivity(entry.lastActivityMs, nowMs)}`
+    (entry, offset) => `<b>${offset + 1}.</b> ${escapeTelegramHtml(entry.title)} `
+      + `<i>· ${escapeTelegramHtml(formatActivity(entry.lastActivityMs, nowMs))}</i>`
   );
-  return `Recent sessions (${entries.length}). Reply /resume N to continue one.\n\n${lines.join("\n")}`;
+  return `<b>Recent sessions</b>\n<i>${entries.length} available</i> · use <code>/resume N</code>\n\n${lines.join("\n")}`;
 }
 
 export function createSessionsController(deps: SessionsControllerDeps) {
@@ -122,7 +125,7 @@ export function createSessionsController(deps: SessionsControllerDeps) {
     const text = entries.length === 0 ? NO_SESSIONS_TEXT : renderList(entries, deps.now());
     let ackMessageId: number;
     try {
-      ackMessageId = await deps.sendMessage(config, request.chatId, text, request.messageId);
+      ackMessageId = await deps.sendMessage(config, request.chatId, text, request.messageId, "HTML");
     } catch {
       throw new Error("session list delivery failed");
     }
@@ -165,8 +168,9 @@ export function createSessionsController(deps: SessionsControllerDeps) {
       ackMessageId = await deps.sendMessage(
         config,
         request.chatId,
-        `Resuming session ${request.index}. Switching now…`,
-        request.messageId
+        `<b>Resuming session ${request.index}</b>\n<i>Switching now…</i>`,
+        request.messageId,
+        "HTML"
       );
     } catch {
       throw new Error("ACK delivery failed; resume was not scheduled");
@@ -187,7 +191,7 @@ export function createSessionsController(deps: SessionsControllerDeps) {
       );
     } catch {
       try {
-        await deps.sendMessage(config, request.chatId, RESUME_SCHEDULER_FAILED_TEXT);
+        await deps.sendMessage(config, request.chatId, RESUME_SCHEDULER_FAILED_TEXT, undefined, "HTML");
       } catch {
         // The primary failure is scheduler rejection; notification is best-effort.
       }

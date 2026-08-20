@@ -26,7 +26,8 @@ const DEFAULT_TAIL_BYTES = 256 * 1024;
 const DEFAULT_MAX_PARSED_FILES = 24;
 const DEFAULT_MAX_SCAN_MS = 2_000;
 const MAX_TITLE_CHARS = 60;
-const UNTITLED = "Untitled session";
+const CONVERSATION_FALLBACK = "Conversation with Claudio";
+const CONTROL_ONLY_FALLBACK = "Control-only session";
 
 const SESSION_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl$/;
 
@@ -53,13 +54,13 @@ function currentUid(): number | undefined {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 
-function sanitizeTitle(raw: string): string {
+function sanitizeTitle(raw: string, fallback: string): string {
   const collapsed = Array.from(raw)
     .map(character => (character.codePointAt(0)! < 0x20 || character.codePointAt(0) === 0x7f ? " " : character))
     .join("")
     .replace(/\s+/g, " ")
     .trim();
-  if (collapsed.length === 0) return UNTITLED;
+  if (collapsed.length === 0) return fallback;
   const characters = Array.from(collapsed);
   if (characters.length <= MAX_TITLE_CHARS) return collapsed;
   return `${characters.slice(0, MAX_TITLE_CHARS).join("")}…`;
@@ -108,6 +109,7 @@ interface ParsedTranscript {
 function parseTranscript(text: string, sessionId: string): ParsedTranscript {
   let title: string | null = null;
   let belongsToSession = false;
+  let hasConcreteAssistant = false;
   for (const line of text.split("\n")) {
     if (line.length === 0) continue;
     let record: unknown;
@@ -117,15 +119,26 @@ function parseTranscript(text: string, sessionId: string): ParsedTranscript {
       continue; // Malformed and truncated lines are expected and simply skipped.
     }
     if (typeof record !== "object" || record === null) continue;
-    const typed = record as { type?: unknown; aiTitle?: unknown; sessionId?: unknown };
+    const typed = record as {
+      type?: unknown;
+      aiTitle?: unknown;
+      sessionId?: unknown;
+      message?: { model?: unknown };
+    };
     if (typed.sessionId === sessionId) belongsToSession = true;
+    if (
+      typed.type === "assistant"
+      && typeof typed.message?.model === "string"
+      && !typed.message.model.startsWith("<")
+    ) hasConcreteAssistant = true;
     if (typed.type === "custom-title" && typeof (typed as { customTitle?: unknown }).customTitle === "string") {
       title = (typed as { customTitle: string }).customTitle;
     } else if (typed.type === "ai-title" && typeof typed.aiTitle === "string") {
       title = typed.aiTitle;
     }
   }
-  return { title: title === null ? UNTITLED : sanitizeTitle(title), belongsToSession };
+  const fallback = hasConcreteAssistant ? CONVERSATION_FALLBACK : CONTROL_ONLY_FALLBACK;
+  return { title: title === null ? fallback : sanitizeTitle(title, fallback), belongsToSession };
 }
 
 function openValidatedTranscript(
