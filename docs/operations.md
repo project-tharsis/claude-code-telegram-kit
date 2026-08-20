@@ -96,6 +96,7 @@ Verify from the real destination:
 8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot as bold percentages and compact micro-bars without an extra Claude process or model turn;
 9. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
 10. `/model` reports the latest actual model and bot override; `/model sonnet` persists a root-owned override, restarts the same `--continue` session, verifies the process environment, and rolls back on failed health;
+   `/model` also renders the four-choice one-time reply keyboard, and selecting `2 · Sonnet` follows the same deterministic switch path while removing the keyboard;
 11. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
 12. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
 13. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.

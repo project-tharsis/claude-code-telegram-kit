@@ -20,6 +20,12 @@ const SESSION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-
 type ControlAction = "reset" | "resume";
 export const MODEL_ALIASES = ["opus", "sonnet", "haiku", "inherit"] as const;
 export type ModelAlias = (typeof MODEL_ALIASES)[number];
+export const MODEL_REPLY_CHOICES: ReadonlyArray<{ label: string; model: ModelAlias }> = [
+  { label: "1 · Opus", model: "opus" },
+  { label: "2 · Sonnet", model: "sonnet" },
+  { label: "3 · Haiku", model: "haiku" },
+  { label: "4 · Inherit", model: "inherit" }
+];
 
 export type ParsedControlCommand =
   | { kind: "sessions" }
@@ -46,6 +52,9 @@ export function parseControlCommand(input: string): ParsedControlCommand {
       ? { kind: "other" }
       : { kind: "malformed", namespace: oversized[1] as ControlAction | "sessions" | "usage" | "model" };
   }
+
+  const replyChoice = MODEL_REPLY_CHOICES.find(choice => choice.label === input);
+  if (replyChoice !== undefined) return { kind: "model-switch", model: replyChoice.model };
 
   const confirmation = CONFIRM_PATTERN.exec(input);
   if (confirmation) {

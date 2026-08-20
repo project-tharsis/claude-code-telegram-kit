@@ -29,6 +29,7 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 export const MAX_RETAINED_TURNS = 32;
 
 const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|reset|resume)(?=@|\s|$)/;
+const MODEL_REPLY_CHOICE = /^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$/;
 
 export type CancelScheduled = () => void;
 export type FinalDeliveryOutcome = "delivered" | "uncertain" | "too_large" | "rejected";
@@ -248,7 +249,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         // Session-control commands already have their own ACK/list/permission/completion UX.
         // A progress bubble is redundant, and resume/reset kill the current process before
         // Stop can close it, leaving a permanent stale "Working…" bubble.
-        if (CONTROL_NAMESPACE.test(envelope.body)) return;
+        if (CONTROL_NAMESPACE.test(envelope.body) || MODEL_REPLY_CHOICE.test(envelope.body)) return;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 
         // A newer prompt in the same chat retires the previous bubble; a stale turn must

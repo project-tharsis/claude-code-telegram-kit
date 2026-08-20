@@ -16,6 +16,11 @@ import type {
   TrustedResumeSessionRequest
 } from "./sessions-control.js";
 import type { BindCommandInput } from "./command-capability.js";
+import {
+  MODEL_REPLY_KEYBOARD,
+  REMOVE_MODEL_REPLY_KEYBOARD
+} from "./model-reply-keyboard.js";
+import type { TelegramReplyMarkup } from "./runtime.js";
 
 export const RESET_CHALLENGE_PREFIX = "Reset requested. Confirm within 60 seconds:";
 export const RESUME_CHALLENGE_PREFIX = "Resume session {index} requested. Confirm within 60 seconds:";
@@ -36,7 +41,8 @@ export interface ControlCommandDispatcherDeps {
     chatId: string,
     text: string,
     replyTo?: string,
-    parseMode?: "HTML"
+    parseMode?: "HTML",
+    replyMarkup?: TelegramReplyMarkup
   ) => Promise<number>;
   react: (
     config: RuntimeConfig,
@@ -179,7 +185,9 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
           config,
           envelope.chatId,
           await deps.getModelStatus(input.session_id),
-          envelope.messageId
+          envelope.messageId,
+          undefined,
+          MODEL_REPLY_KEYBOARD
         );
         await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
       } catch {
@@ -194,7 +202,9 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
           config,
           envelope.chatId,
           `Model switch to ${command.model} requested. Waiting for the host to accept the restart.`,
-          envelope.messageId
+          envelope.messageId,
+          undefined,
+          REMOVE_MODEL_REPLY_KEYBOARD
         );
         await deps.switchModel({
           chatId: envelope.chatId,

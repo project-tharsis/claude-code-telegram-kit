@@ -7,7 +7,10 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCapabilityStore } from "./command-capability.js";
-import { createConfirmationChallengeStore } from "./control-command.js";
+import {
+  createConfirmationChallengeStore,
+  MODEL_REPLY_CHOICES
+} from "./control-command.js";
 import { createControlCommandDispatcher } from "./command-dispatch.js";
 import {
   CONTROL_COMMAND_TOOL,
@@ -115,8 +118,8 @@ const handleSessionsTool = createSessionsToolHandler({
 const dispatchControlCommand = createControlCommandDispatcher({
   loadConfig,
   challenges,
-  sendMessage: (config, chatId, text, replyTo, parseMode) =>
-    sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode),
+  sendMessage: (config, chatId, text, replyTo, parseMode, replyMarkup) =>
+    sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode, replyMarkup),
   react: finalizeTelegramReaction,
   listSessionsTrusted: request => sessionsController.listSessionsTrusted(request),
   getUsage: () => readSubscriptionUsage(),
@@ -129,7 +132,8 @@ const dispatchControlCommand = createControlCommandDispatcher({
       `Current actual: ${actual ?? "unknown"}`,
       `Bot override: ${configured}`,
       "",
-      "/model opus | sonnet | haiku | inherit"
+      "Choose a model:",
+      ...MODEL_REPLY_CHOICES.map(choice => choice.label)
     ].join("\n");
   },
   switchModel: async request => {
