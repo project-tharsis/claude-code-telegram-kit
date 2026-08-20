@@ -185,6 +185,59 @@ describe("turn disclosure lifecycle", () => {
     expect(events).toEqual(["bubble-failed", "auth-explanation"]);
   });
 
+  test("runtime auth failure serializes a Failed edit behind an in-flight first send", async () => {
+    let fireAuthFailure: (() => Promise<void>) | null = null;
+    let releaseSend!: (outcome: ProgressSendOutcome) => void;
+    const pendingSend = new Promise<ProgressSendOutcome>(resolve => { releaseSend = resolve; });
+    const events: string[] = [];
+    let queued: (() => Promise<void>) | null = null;
+    const disclosure = createTurnDisclosure({
+      loadConfig: () => config,
+      mode: "safe",
+      startTyping: () => () => undefined,
+      startAuthFailureWatch: (_input, onFailure) => {
+        fireAuthFailure = onFailure;
+        return () => undefined;
+      },
+      sendAuthFailure: async () => { events.push("auth-explanation"); },
+      send: async () => {
+        events.push("send-start");
+        return pendingSend;
+      },
+      edit: async (_config, _chatId, _messageId, text) => {
+        events.push(text.startsWith("Failed") ? "bubble-failed" : "bubble-other");
+        return { kind: "edited" };
+      },
+      schedule: (run) => {
+        queued = run;
+        return () => { queued = null; };
+      }
+    });
+    disclosure.bindTurn({
+      session_id: SESSION,
+      prompt_id: "p-auth-race",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">hello</channel>',
+      transcript_path: `/tmp/${SESSION}.jsonl`,
+      hook_event_name: "UserPromptSubmit"
+    });
+    disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: "p-auth-race",
+      tool_use_id: "t1",
+      tool_name: "Read",
+      hook_event_name: "PreToolUse"
+    });
+    const firstFlush = queued!();
+    await Promise.resolve();
+    expect(events).toEqual(["send-start"]);
+    const recovery = fireAuthFailure!();
+    await Promise.resolve();
+    expect(events).toEqual(["send-start"]);
+    releaseSend({ kind: "sent", messageId: 101 });
+    await Promise.all([firstFlush, recovery]);
+    expect(events).toEqual(["send-start", "bubble-failed", "auth-explanation"]);
+  });
+
   test("normal Stop cancels the bounded auth watcher without sending an auth explanation", async () => {
     let watchCancels = 0;
     let alerts = 0;
