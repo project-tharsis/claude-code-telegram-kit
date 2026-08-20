@@ -43,6 +43,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 
 ## Session continuity
 
+- Telegram Bot Menu registration uses only per-chat `setMyCommands`/`getMyCommands` for positive allowlisted private chats. It never calls `getUpdates`, never acts as authorization, and advertises only commands with deterministic handlers.
 - Exact session-control commands are parsed and handled by a UserPromptSubmit hook before the LLM; ordinary messages alone reach the model.
 - Model switching accepts only fixed aliases, persists only `ANTHROPIC_MODEL` in a root-owned environment file, restarts the existing `--continue` service through the root helper, and verifies the live process environment before reporting completion. It never injects `/model` into the TUI or mutates global Claude settings.
 - A side-effect-free command hook blocks control namespaces even if the MCP dispatcher is unavailable. Every session-control MCP tool is denied to the model; permissions are the provenance boundary for the mutating dispatcher.

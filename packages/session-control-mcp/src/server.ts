@@ -35,6 +35,10 @@ import { createToolHandler, RESET_TOOL } from "./tool.js";
 import { DEFAULT_MODEL_ENV_FILE, readConfiguredModel } from "./model-status.js";
 import { readSubscriptionUsage } from "./subscription-usage.js";
 import {
+  deleteTelegramCommandMenu,
+  syncTelegramCommandMenu
+} from "./telegram-menu.js";
+import {
   finalizeTelegramReaction,
   loadRuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
@@ -155,3 +159,19 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
   return handleTool(request.params.name, request.params.arguments);
 });
 await server.connect(new StdioServerTransport());
+
+const commandMenuMode = process.env.TELEGRAM_COMMAND_MENU_ENABLED;
+if (commandMenuMode === "true" || commandMenuMode === "delete") {
+  void (async () => {
+    try {
+      const count = commandMenuMode === "true"
+        ? await syncTelegramCommandMenu(loadConfig())
+        : await deleteTelegramCommandMenu(loadConfig());
+      const action = commandMenuMode === "true" ? "synced" : "deleted";
+      process.stderr.write(`telegram command menu: ${action} ${count} private chat scope(s)\n`);
+    } catch {
+      // Menu state is an optional UI affordance. Command authority and the MCP stay available.
+      process.stderr.write("telegram command menu: sync failed\n");
+    }
+  })();
+}

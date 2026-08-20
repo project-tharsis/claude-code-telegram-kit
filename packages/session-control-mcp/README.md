@@ -36,6 +36,7 @@ CLAUDE_SESSION_RESET_HELPER
 CLAUDE_SESSION_RESET_CONFIG
 CLAUDE_SESSION_RESET_UNIT_PREFIX
 CLAUDE_PROJECT_SESSIONS_DIR
+TELEGRAM_COMMAND_MENU_ENABLED
 ```
 
 Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. Model status always reads the fixed root-owned, mode-`0644`, single-line `/etc/claude-code-telegram-kit/model.env` that the service loads through an optional `EnvironmentFile=` directive. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
@@ -43,6 +44,8 @@ Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_P
 At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v4 with `reset`, `resume`, and `model` plus the fixed model allowlist. Version skew disables privileged actions while leaving read-only status/listing and rendering available. Protocol v4 adds atomic root-owned `model.env` updates, service restart, process-environment verification, and rollback; resume/reset retain their exact-session and secure-receipt contracts.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
+
+Set `TELEGRAM_COMMAND_MENU_ENABLED=true` to install and read back a chat-specific Telegram Bot Menu for each positive allowlisted private-chat ID. The scope contains `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`. It outranks the official Channel's `all_private_chats` menu without modifying that plugin. Menu sync is outbound-only and fail-soft; command authorization remains the live allowlist plus deterministic parser. `/resume` is omitted because a menu click cannot carry its required index. Before removing a chat from the allowlist or disabling the feature, set the value to `delete`, restart once, and require an empty `getMyCommands` readback for that chat scope; then remove the chat or env key.
 
 The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`, keyed by a hash of the inbound chat and message IDs.
 
