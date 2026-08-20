@@ -29,10 +29,12 @@ export async function sendTelegramMessage(
   chatId: string,
   text: string,
   fetchImpl: FetchLike = fetch,
-  replyTo?: string
+  replyTo?: string,
+  parseMode?: "HTML"
 ): Promise<number> {
   assertAuthorizedChat(config, chatId);
   const body: Record<string, unknown> = { chat_id: chatId, text };
+  if (parseMode !== undefined) body.parse_mode = parseMode;
   if (replyTo !== undefined) {
     const replyMessageId = Number(replyTo);
     if (!/^\d+$/.test(replyTo) || !Number.isSafeInteger(replyMessageId) || replyMessageId < 1) {

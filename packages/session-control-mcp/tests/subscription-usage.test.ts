@@ -22,12 +22,31 @@ function snapshot(capturedAt = 1_000) {
 describe("subscription usage cache", () => {
   test("parses and formats bounded plan windows", () => {
     const parsed = parseUsageSnapshot(JSON.stringify(snapshot()), 1_100_000);
-    expect(formatUsageSnapshot(parsed, 1_100_000)).toContain("Current session: 1% used");
-    expect(formatUsageSnapshot(parsed, 1_100_000)).toContain("Current week (all models): 11.5% used");
+    const html = formatUsageSnapshot(parsed, 1_100_000);
+    expect(html).toContain("<b>Claude Code subscription usage</b>");
+    expect(html).toContain("<b>Current session</b>");
+    expect(html).toContain("<code>█░░░░░░░░░</code> <b>1%</b>");
+    expect(html).toContain("<b>Current week (all models)</b>");
+    expect(html).toContain("<b>11.5%</b>");
+  });
+
+  test("renders truthful zero and full micro-bar endpoints", () => {
+    const parsed = parseUsageSnapshot(JSON.stringify({
+      version: 1,
+      captured_at: 1_000,
+      windows: {
+        five_hour: { used_percentage: 0, resets_at: 2_000 },
+        seven_day: { used_percentage: 100, resets_at: 3_000 }
+      }
+    }), 1_100_000);
+    const html = formatUsageSnapshot(parsed, 1_100_000);
+    expect(html).toContain("<code>░░░░░░░░░░</code> <b>0%</b>");
+    expect(html).toContain("<code>██████████</code> <b>100%</b>");
   });
 
   test("marks last-known snapshots and rejects expired/future/bad shapes", () => {
-    expect(formatUsageSnapshot(parseUsageSnapshot(JSON.stringify(snapshot()), 4_700_000), 4_700_000)).toContain("last-known");
+    expect(formatUsageSnapshot(parseUsageSnapshot(JSON.stringify(snapshot()), 4_700_000), 4_700_000))
+      .toContain("<i>Last known · as of");
     expect(() => parseUsageSnapshot(JSON.stringify(snapshot()), 100_000_000)).toThrow("stale");
     expect(() => parseUsageSnapshot(JSON.stringify(snapshot(2_000)), 1_000_000)).toThrow("stale");
     for (const bad of [

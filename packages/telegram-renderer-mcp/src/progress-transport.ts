@@ -4,6 +4,7 @@ import {
   TELEGRAM_SEND_TIMEOUT_MS,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
+import { formatProgressHtml } from "./progress-html.js";
 
 export type ProgressFetchLike = (
   input: string | URL | Request,
@@ -119,7 +120,8 @@ export async function sendProgressBubble(
 
   const attempt = await call("sendMessage", {
     chat_id: chatId,
-    text,
+    text: formatProgressHtml(text),
+    parse_mode: "HTML",
     disable_notification: true,
     reply_parameters: { message_id: quoted }
   }, config, fetchImpl);
@@ -144,7 +146,8 @@ export async function editProgressBubble(
   const attempt = await call("editMessageText", {
     chat_id: chatId,
     message_id: messageId,
-    text
+    text: formatProgressHtml(text),
+    parse_mode: "HTML"
   }, config, fetchImpl);
   if (attempt === null) return { kind: "transient" };
 

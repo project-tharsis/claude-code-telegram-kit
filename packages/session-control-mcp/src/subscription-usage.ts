@@ -64,7 +64,7 @@ export function parseUsageSnapshot(text: string, nowMs = Date.now()): UsageSnaps
 
 function resetText(value: UsageWindow["resets_at"]): string {
   const date = new Date(value * 1_000);
-  return `resets ${new Intl.DateTimeFormat("en-US", {
+  return `Resets ${new Intl.DateTimeFormat("en-US", {
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short"
   }).format(date)}`;
 }
@@ -73,8 +73,17 @@ function percent(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function usageBar(value: number): string {
+  const filled = value <= 0 ? 0 : Math.max(1, Math.min(10, Math.round(value / 10)));
+  return `${"█".repeat(filled)}${"░".repeat(10 - filled)}`;
+}
+
 export function formatUsageSnapshot(snapshot: UsageSnapshot, nowMs = Date.now()): string {
-  const lines = ["Claude Code subscription usage"];
+  const lines = ["<b>Claude Code subscription usage</b>"];
   const labels: Array<[WindowName, string]> = [
     ["five_hour", "Current session"],
     ["seven_day", "Current week (all models)"],
@@ -82,10 +91,15 @@ export function formatUsageSnapshot(snapshot: UsageSnapshot, nowMs = Date.now())
   for (const [name, label] of labels) {
     const window = snapshot.windows[name];
     if (window === undefined) continue;
-    lines.push(`• ${label}: ${percent(window.used_percentage)}% used · ${resetText(window.resets_at)}`);
+    lines.push(
+      "",
+      `<b>${escapeHtml(label)}</b>`,
+      `<code>${usageBar(window.used_percentage)}</code> <b>${percent(window.used_percentage)}%</b>`,
+      `<i>${escapeHtml(resetText(window.resets_at))}</i>`
+    );
   }
   if (nowMs - snapshot.captured_at * 1_000 > FRESH_CACHE_AGE_MS) {
-    lines.push(`Showing last-known usage as of ${new Date(snapshot.captured_at * 1_000).toLocaleString()}.`);
+    lines.push("", `<i>Last known · as of ${escapeHtml(new Date(snapshot.captured_at * 1_000).toLocaleString())}</i>`);
   }
   return lines.join("\n");
 }

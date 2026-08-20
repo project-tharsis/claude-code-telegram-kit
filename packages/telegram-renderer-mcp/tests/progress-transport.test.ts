@@ -48,7 +48,7 @@ describe("typing heartbeat transport", () => {
 describe("progress bubble send", () => {
   test("sends silently, quotes the inbound message, and rejects redirects", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    const outcome = await sendProgressBubble(config, "123", "9", "Working…", async (url, init) => {
+    const outcome = await sendProgressBubble(config, "123", "9", "Working…\n• ✓ Run command — ls <x>", async (url, init) => {
       calls.push({ url: String(url), init: init! });
       return reply(200, { ok: true, result: { message_id: 55 } });
     });
@@ -59,7 +59,8 @@ describe("progress bubble send", () => {
     const body = JSON.parse(String(calls[0]!.init.body));
     expect(body).toEqual({
       chat_id: "123",
-      text: "Working…",
+      text: "<b>Working…</b>\n• ✓ <b>Run command</b> — <code>ls &lt;x&gt;</code>",
+      parse_mode: "HTML",
       disable_notification: true,
       reply_parameters: { message_id: 9 }
     });
@@ -105,12 +106,13 @@ describe("progress bubble send", () => {
 describe("progress bubble edit", () => {
   test("edits an existing bubble in place", async () => {
     const calls: string[] = [];
-    const outcome = await editProgressBubble(config, "123", 55, "Done", async (url, init) => {
+    const outcome = await editProgressBubble(config, "123", 55, "Done\n• ✓ Read file", async (url, init) => {
       calls.push(String(url));
       expect(JSON.parse(String(init!.body))).toEqual({
         chat_id: "123",
         message_id: 55,
-        text: "Done"
+        text: "<b>Done</b>\n• ✓ <b>Read file</b>",
+        parse_mode: "HTML"
       });
       return reply(200, { ok: true, result: { message_id: 55 } });
     });

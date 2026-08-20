@@ -32,7 +32,8 @@ const LABELS = new Map<string, string>([
   ["ExitPlanMode", "Finish planning"],
   ["Skill", "Run skill"],
   ["Task", "Delegate work"],
-  ["Agent", "Delegate work"]
+  ["Agent", "Delegate work"],
+  ["ToolSearch", "Find tool"]
 ]);
 
 function integrationLabel(toolName: string): string {
@@ -81,7 +82,7 @@ export function buildProgressStep(
     : LABELS.get(toolName) ?? (toolName.startsWith("mcp__") ? integrationLabel(toolName) : toolName || "Work");
   if (mode === "safe") return label;
   const preview = sanitizeProgressPreview(previewSource(toolName, fields), {
-    maxLength: mode === "verbose" ? 320 : 96
+    maxLength: mode === "verbose" ? 48 : 32
   });
   return preview ? `${label} — ${preview}` : label;
 }
