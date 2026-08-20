@@ -11,8 +11,7 @@ import {
   loadRuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
-import { AUTH_UNAVAILABLE_MESSAGE, createAuthExpiryGate } from "./auth-expiry-gate.js";
-import { createClaudeAuthProbe } from "./claude-auth-status.js";
+import { watchAuthFailureTranscript } from "./auth-failure-watcher.js";
 import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
 import { editProgressBubble, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
@@ -22,10 +21,12 @@ import { createUnifiedToolHandler, SEND_REPLY_TOOL } from "./unified-tool.js";
 
 const configRoot = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", "telegram");
+const projectSessionsDir = process.env.CLAUDE_PROJECT_SESSIONS_DIR;
 const loadConfig = () => loadRuntimeConfig(stateDir);
 const disclosureMode = parseToolDisclosureMode(process.env.TELEGRAM_TOOL_DISCLOSURE_MODE);
 const deliver = createUnifiedDeliverer();
-const checkAuth = createClaudeAuthProbe();
+const AUTH_FAILURE_MESSAGE =
+  "Claude Code authentication failed.\n\nRe-authenticate Claude Code on the host, then resend this message.";
 const handleTool = createUnifiedToolHandler({
   loadConfig,
   deliver,
@@ -41,6 +42,24 @@ const disclosure = createTurnDisclosure({
   loadConfig,
   mode: disclosureMode,
   startTyping: chatId => typing.start(chatId),
+  startAuthFailureWatch: (input, onFailure) => {
+    if (projectSessionsDir === undefined || input.transcript_path === undefined) return () => undefined;
+    return watchAuthFailureTranscript({
+      session_id: input.session_id,
+      transcript_path: input.transcript_path
+    }, {
+      expectedRoot: projectSessionsDir,
+      onAuthFailure: () => { void onFailure().catch(() => undefined); }
+    });
+  },
+  sendAuthFailure: async (config, chatId, messageId) => {
+    await deliver({
+      chat_id: chatId,
+      message_id: messageId,
+      content: AUTH_FAILURE_MESSAGE,
+      disable_notification: false
+    }, config);
+  },
   send: (config, chatId, replyToMessageId, text) =>
     sendProgressBubble(config, chatId, replyToMessageId, text),
   edit: (config, chatId, messageId, text) =>
@@ -53,19 +72,7 @@ const disclosure = createTurnDisclosure({
     return () => clearTimeout(timer);
   }
 });
-const authGate = createAuthExpiryGate({
-  loadConfig,
-  checkAuth,
-  sendAuthUnavailable: async (config, chatId, messageId) => {
-    await deliver({
-      chat_id: chatId,
-      message_id: messageId,
-      content: AUTH_UNAVAILABLE_MESSAGE,
-      disable_notification: false
-    }, config);
-  }
-});
-const handleHookTool = createHookToolHandler(disclosure, authGate);
+const handleHookTool = createHookToolHandler(disclosure);
 
 const server = new Server(
   { name: "telegram-renderer", version: "0.2.0" },

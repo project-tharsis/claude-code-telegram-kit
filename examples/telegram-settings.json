@@ -50,6 +50,7 @@
               "session_id": "${session_id}",
               "prompt_id": "${prompt_id}",
               "prompt": "${prompt}",
+              "transcript_path": "${transcript_path}",
               "hook_event_name": "UserPromptSubmit"
             }
           },
