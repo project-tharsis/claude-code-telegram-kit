@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { AuthExpiryGate } from "./auth-expiry-gate.js";
 import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
@@ -160,14 +161,31 @@ export interface HookDisclosure {
  * output as additional context when it is non-empty.
  */
 const RECEIPT: CallToolResult = { content: [{ type: "text", text: "" }] };
+const AUTH_BLOCK_RECEIPT: CallToolResult = {
+  content: [{
+    type: "text",
+    text: JSON.stringify({
+      decision: "block",
+      reason: "Claude Code authentication has expired.",
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        suppressOriginalPrompt: true
+      }
+    })
+  }]
+};
 
-export function createHookToolHandler(disclosure: HookDisclosure) {
+export function createHookToolHandler(disclosure: HookDisclosure, authGate?: AuthExpiryGate) {
   return async (name: string, arguments_: unknown): Promise<CallToolResult | null> => {
     if (!HOOK_TOOL_NAMES.includes(name)) return null;
     try {
       switch (name) {
         case BIND_TURN_TOOL.name:
-          disclosure.bindTurn(BindTurnInputSchema.parse(arguments_));
+          {
+            const input = BindTurnInputSchema.parse(arguments_);
+            if (authGate !== undefined && await authGate(input)) return AUTH_BLOCK_RECEIPT;
+            disclosure.bindTurn(input);
+          }
           break;
         case RECORD_TOOL_TOOL.name:
           disclosure.recordTool(RecordToolInputSchema.parse(arguments_));

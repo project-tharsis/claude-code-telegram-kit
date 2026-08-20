@@ -69,6 +69,32 @@ describe("internal hook tool declarations", () => {
 });
 
 describe("internal hook tool handler", () => {
+  test("returns an official block receipt when bind_turn handles unavailable auth", async () => {
+    const handle = createHookToolHandler({
+      bindTurn: () => undefined,
+      recordTool: () => undefined,
+      recordSuccess: () => undefined,
+      recordFailure: () => undefined,
+      finishTurn: async () => undefined
+    }, async () => true);
+    const result = await handle("bind_turn", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">hello</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    const first = result!.content[0]!;
+    if (first.type !== "text") throw new Error("expected text");
+    expect(JSON.parse(first.text)).toEqual({
+      decision: "block",
+      reason: "Claude Code authentication has expired.",
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        suppressOriginalPrompt: true
+      }
+    });
+  });
+
   test("routes each hook event to its disclosure entry point", async () => {
     const { calls, handle } = recorder();
     await handle("bind_turn", {

@@ -11,6 +11,7 @@ import {
   type RecordToolSuccessInput
 } from "./hook-contract.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
+import { isDeterministicControlCommand } from "./auth-expiry-gate.js";
 import { TurnProgress } from "./progress-state.js";
 import type {
   ProgressEditOutcome,
@@ -28,7 +29,6 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 /** Ephemeral state only. A long session must not accumulate turns without bound. */
 export const MAX_RETAINED_TURNS = 32;
 
-const CONTROL_COMMAND = /^(?:\/(?:usage|sessions)(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/(?:reset|resume)(?:@[A-Za-z0-9_]{1,32})? confirm [23456789A-HJ-NP-Z]{6}|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
 
 export type CancelScheduled = () => void;
 
@@ -222,7 +222,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         // Session-control commands already have their own ACK/list/permission/completion UX.
         // A progress bubble is redundant, and resume/reset kill the current process before
         // Stop can close it, leaving a permanent stale "Working…" bubble.
-        if (CONTROL_COMMAND.test(envelope.body)) return;
+        if (isDeterministicControlCommand(envelope.body)) return;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 
         // A newer prompt in the same chat retires the previous bubble; a stale turn must
