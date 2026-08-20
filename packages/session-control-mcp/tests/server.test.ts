@@ -30,7 +30,8 @@ describe("control stdio MCP server", () => {
     ]);
     const router = result.tools[0]!;
     expect(router.description).toContain("before the LLM");
-    expect(result.tools[1]!.inputSchema.properties).toHaveProperty("confirmation");
+    const reset = result.tools.find(tool => tool.name === "schedule_session_reset")!;
+    expect(reset.inputSchema.properties).toHaveProperty("confirmation");
 
     const resume = result.tools.find(tool => tool.name === "resume_session")!;
     expect(Object.keys(resume.inputSchema.properties!).sort()).toEqual(["chat_id", "index"]);

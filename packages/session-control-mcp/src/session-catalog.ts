@@ -9,6 +9,8 @@ import {
   realpathSync
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { parseDirectTelegramEnvelope } from "@project-tharsis/claude-code-telegram-shared";
+import { parseControlCommand } from "./control-command.js";
 
 /**
  * Reads the configured Claude Code project sessions directory and nothing else. The directory
@@ -107,7 +109,8 @@ interface ParsedTranscript {
 }
 
 function parseTranscript(text: string, sessionId: string): ParsedTranscript {
-  let title: string | null = null;
+  let customTitle: string | null = null;
+  let aiTitle: string | null = null;
   let belongsToSession = false;
   let hasConcreteAssistant = false;
   for (const line of text.split("\n")) {
@@ -132,12 +135,13 @@ function parseTranscript(text: string, sessionId: string): ParsedTranscript {
       && !typed.message.model.startsWith("<")
     ) hasConcreteAssistant = true;
     if (typed.type === "custom-title" && typeof (typed as { customTitle?: unknown }).customTitle === "string") {
-      title = (typed as { customTitle: string }).customTitle;
+      customTitle = (typed as { customTitle: string }).customTitle;
     } else if (typed.type === "ai-title" && typeof typed.aiTitle === "string") {
-      title = typed.aiTitle;
+      aiTitle = typed.aiTitle;
     }
   }
   const fallback = hasConcreteAssistant ? CONVERSATION_FALLBACK : CONTROL_ONLY_FALLBACK;
+  const title = customTitle ?? aiTitle;
   return { title: title === null ? fallback : sanitizeTitle(title, fallback), belongsToSession };
 }
 
@@ -263,24 +267,20 @@ export function formatActivity(lastActivityMs: number, nowMs: number): string {
 
 const UUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-/**
- * Revalidates a selected session immediately before a resume is scheduled. The snapshot proved
- * the user chose this UUID; this proves the file behind it is still a plain, owned transcript
- * belonging to this workspace, and not something swapped in since the list was rendered.
- */
-export function assertUsableSessionTranscript(options: {
+interface UsableTranscriptOptions {
   directory: string;
   sessionId: string;
   expectedUid?: number;
   maxFileBytes?: number;
   tailBytes?: number;
-}): void {
+}
+
+function readUsableSessionTranscript(options: UsableTranscriptOptions): string {
   if (typeof options.sessionId !== "string" || !UUID_ONLY.test(options.sessionId)) {
     throw new Error("invalid session UUID");
   }
   const expectedUid = options.expectedUid ?? currentUid();
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
-
   const directory = resolve(options.directory);
   const directoryInfo = lstatSync(directory);
   if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
@@ -289,20 +289,27 @@ export function assertUsableSessionTranscript(options: {
   if (realpathSync(directory) !== directory) {
     throw new Error("configured sessions directory must not traverse symlinks");
   }
-
   const path = join(directory, `${options.sessionId}.jsonl`);
   const opened = openValidatedTranscript(path, expectedUid, maxFileBytes);
   if (opened === null) throw new Error("selected session transcript is not usable");
-  let parsed: ParsedTranscript;
   try {
-    parsed = parseTranscript(
-      readHeadAndTail(opened.fd, opened.size, options.tailBytes ?? DEFAULT_TAIL_BYTES),
-      options.sessionId
-    );
+    const text = readHeadAndTail(opened.fd, opened.size, options.tailBytes ?? DEFAULT_TAIL_BYTES);
+    if (!parseTranscript(text, options.sessionId).belongsToSession) {
+      throw new Error("selected session transcript belongs to another session");
+    }
+    return text;
   } finally {
     closeSync(opened.fd);
   }
-  if (!parsed.belongsToSession) throw new Error("selected session transcript belongs to another session");
+}
+
+/**
+ * Revalidates a selected session immediately before a resume is scheduled. The snapshot proved
+ * the user chose this UUID; this proves the file behind it is still a plain, owned transcript
+ * belonging to this workspace, and not something swapped in since the list was rendered.
+ */
+export function assertUsableSessionTranscript(options: UsableTranscriptOptions): void {
+  readUsableSessionTranscript(options);
 }
 
 /** Read the latest concrete assistant model from one already-authorized session transcript. */
@@ -311,32 +318,130 @@ export function readLatestSessionModel(options: {
   sessionId: string;
   expectedUid?: number;
 }): string | null {
-  assertUsableSessionTranscript(options);
-  const expectedUid = options.expectedUid ?? currentUid();
-  const path = join(resolve(options.directory), `${options.sessionId}.jsonl`);
-  const opened = openValidatedTranscript(path, expectedUid, DEFAULT_MAX_FILE_BYTES);
-  if (opened === null) return null;
-  try {
-    const text = readHeadAndTail(opened.fd, opened.size, 512 * 1024);
-    const lines = text.split("\n");
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const line = lines[index];
-      if (!line) continue;
-      try {
-        const row = JSON.parse(line) as { type?: unknown; message?: { model?: unknown } };
-        const model = row.type === "assistant" ? row.message?.model : undefined;
-        if (
-          typeof model === "string"
-          && model.length >= 1
-          && model.length <= 128
-          && !model.startsWith("<")
-        ) return model;
-      } catch {
-        // Tail chunks can start on a partial JSONL row.
+  const text = readUsableSessionTranscript({ ...options, tailBytes: 512 * 1024 });
+  const lines = text.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line) continue;
+    try {
+      const row = JSON.parse(line) as { type?: unknown; message?: { model?: unknown } };
+      const model = row.type === "assistant" ? row.message?.model : undefined;
+      if (
+        typeof model === "string"
+        && model.length >= 1
+        && model.length <= 128
+        && !model.startsWith("<")
+      ) return model;
+    } catch {
+      // Tail chunks can start on a partial JSONL row.
+    }
+  }
+  return null;
+}
+
+export interface SessionTitleContext {
+  customTitle: string | null;
+  aiTitle: string | null;
+  chatId: string | null;
+  userPrompt: string | null;
+  assistantText: string;
+  toolNames: string[];
+}
+
+function contentBlocks(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> =>
+    typeof item === "object" && item !== null
+  );
+}
+
+function boundedText(value: string, maxChars: number): string {
+  return Array.from(value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim())
+    .slice(0, maxChars)
+    .join("");
+}
+
+/**
+ * Reads only bounded semantic context needed for one session-title suggestion. Never returns
+ * tool inputs, tool outputs, transcript paths, or session identifiers.
+ */
+export function readSessionTitleContext(options: {
+  directory: string;
+  sessionId: string;
+  expectedUid?: number;
+}): SessionTitleContext {
+  const text = readUsableSessionTranscript({ ...options, tailBytes: 512 * 1024 });
+  let customTitle: string | null = null;
+  let aiTitle: string | null = null;
+  let chatId: string | null = null;
+  let userPrompt: string | null = null;
+  let assistantText = "";
+  const toolNames: string[] = [];
+
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let row: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (typeof parsed !== "object" || parsed === null) continue;
+      row = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (row.type === "custom-title" && typeof row.customTitle === "string") {
+      customTitle = row.customTitle.trim() || null;
+      continue;
+    }
+    if (row.type === "ai-title" && typeof row.aiTitle === "string") {
+      aiTitle = row.aiTitle.trim() || null;
+      continue;
+    }
+
+    const message = typeof row.message === "object" && row.message !== null
+      ? row.message as Record<string, unknown>
+      : null;
+    if (message === null) continue;
+
+    if (row.type === "user" && userPrompt === null) {
+      const candidates = typeof message.content === "string"
+        ? [message.content]
+        : contentBlocks(message.content)
+          .filter(block => block.type === "text" && typeof block.text === "string")
+          .map(block => block.text as string);
+      for (const candidate of candidates) {
+        const envelope = parseDirectTelegramEnvelope(candidate);
+        if (envelope === null || parseControlCommand(envelope.body).kind !== "other") continue;
+        const prompt = boundedText(envelope.body, 1_200);
+        if (prompt) {
+          chatId = envelope.chatId;
+          userPrompt = prompt;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (
+      row.type === "assistant"
+      && userPrompt !== null
+      && typeof message.model === "string"
+      && !message.model.startsWith("<")
+    ) {
+      for (const block of contentBlocks(message.content)) {
+        if (block.type === "text" && typeof block.text === "string" && assistantText.length < 1_200) {
+          assistantText = boundedText(`${assistantText} ${block.text}`, 1_200);
+        } else if (
+          block.type === "tool_use"
+          && typeof block.name === "string"
+          && toolNames.length < 5
+          && !toolNames.includes(block.name)
+        ) {
+          toolNames.push(boundedText(block.name, 40));
+        }
       }
     }
-    return null;
-  } finally {
-    closeSync(opened.fd);
   }
+
+  return { customTitle, aiTitle, chatId, userPrompt, assistantText, toolNames };
 }

@@ -40,9 +40,9 @@ Copy and adapt:
 
 Keep `examples/reset.json` root-owned when installed under `/etc/claude-code-telegram-kit/reset.json`.
 
-The system service must include `EnvironmentFile=-/etc/claude-code-telegram-kit/model.env`. Do not create that file manually: `/model <alias>` owns it through the root helper, and `inherit` removes it atomically.
+The system service must include `EnvironmentFile=-/etc/claude-code-telegram-kit/model.env` and a fixed `CLAUDE_TITLE_CLI` path to the same reviewed Claude executable used by `ExecStart`. Do not create the model file manually: `/model <alias>` owns it through the root helper, and `inherit` removes it atomically.
 
-Set `CLAUDE_PROJECT_SESSIONS_DIR` in the `session-control` MCP environment to the one exact Claude project directory. Do not derive it from a model argument or inbound message.
+Set both `CLAUDE_PROJECT_SESSIONS_DIR` and `CLAUDE_WORKSPACE_DIR` in the `session-control` MCP environment to the one exact Claude project/session directory pair. Do not derive either path from a model argument or inbound message.
 
 ## Install the root helper
 
@@ -101,6 +101,8 @@ Verify from the real destination:
 12. `/reset` uses a one-shot confirmation, sends typographic accepted/completion messages without any session identifier, and leaves no synthetic LLM seed;
 13. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
 14. when command-menu sync is enabled, `getMyCommands` for the allowlisted chat-specific scope returns exactly `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`; the official `all_private_chats` scope remains untouched.
+15. `/usr/bin/flock` is present and executable; the first meaningful Stop creates at most one `0600` per-session title-state record, makes one isolated Haiku call, appends a verified `custom-title` through the official zero-turn `/rename` local-command path and exact readback, and never exposes credentials, prompt bodies, UUIDs, paths, or tool inputs in Telegram;
+16. `/rename NAME` writes the exact current session, returns escaped HTML, marks `USER_LOCKED`, and survives later Stops, `/sessions`, `/reset`, and resume without automatic overwrite.
 
 Before removing an allowlisted private chat or disabling menu sync, set `TELEGRAM_COMMAND_MENU_ENABLED=delete`, restart once, verify the chat-specific `getMyCommands` result is empty, then remove the chat or env key. A stale menu never grants authority, but verified cleanup keeps Telegram UI aligned with the live allowlist.
 

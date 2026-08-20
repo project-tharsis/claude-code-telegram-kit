@@ -53,6 +53,7 @@ describe("supported Claude Code hook configuration", () => {
 
   test("opts the control sidecar into per-chat command-menu sync", () => {
     expect(mcp.mcpServers["session-control"].env?.TELEGRAM_COMMAND_MENU_ENABLED).toBe("true");
+    expect(mcp.mcpServers["session-control"].env?.CLAUDE_WORKSPACE_DIR).toBe("/home/USER/claude-bot-workspace");
   });
 
   test("wires a private statusLine rate-limit snapshot writer", () => {
@@ -101,6 +102,16 @@ describe("supported Claude Code hook configuration", () => {
       .find(hook => hook.type === "command");
     expect(guard?.command).toBe("/usr/local/sbin/claude-control-command-guard");
     expect(guard?.timeout).toBe(5);
+  });
+
+  test("runs automatic title generation as an auth-inheriting command hook", () => {
+    for (const event of ["UserPromptSubmit", "Stop"] as const) {
+      const hook = settings.hooks[event]!
+        .flatMap(entry => entry.hooks)
+        .find(item => item.type === "command" && item.command?.includes("session-title-command.ts"));
+      expect(hook?.command).toMatch(/^\/home\/USER\/\.bun\/bin\/bun run .*session-title-command\.ts$/);
+      expect(hook?.timeout).toBe(30);
+    }
   });
 
   test("wires a deterministic SessionStart receipt hook for fresh resets", () => {

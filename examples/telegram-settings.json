@@ -43,6 +43,11 @@
             "timeout": 5
           },
           {
+            "type": "command",
+            "command": "/home/USER/.bun/bin/bun run /home/USER/.local/share/claude-code-telegram-kit/current/packages/session-control-mcp/src/session-title-command.ts",
+            "timeout": 30
+          },
+          {
             "type": "mcp_tool",
             "server": "telegram-renderer",
             "tool": "bind_turn",
@@ -145,6 +150,11 @@
               "last_assistant_message": "${last_assistant_message}",
               "hook_event_name": "Stop"
             }
+          },
+          {
+            "type": "command",
+            "command": "/home/USER/.bun/bin/bun run /home/USER/.local/share/claude-code-telegram-kit/current/packages/session-control-mcp/src/session-title-command.ts",
+            "timeout": 30
           }
         ]
       }

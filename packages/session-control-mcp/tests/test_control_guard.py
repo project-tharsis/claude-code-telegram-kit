@@ -29,6 +29,8 @@ class GuardTests(unittest.TestCase):
             "/model",
             "/model sonnet",
             "/model invalid",
+            "/rename Auth flow",
+            "/rename",
             "1 · Opus",
             "2 · Sonnet",
             "3 · Haiku",

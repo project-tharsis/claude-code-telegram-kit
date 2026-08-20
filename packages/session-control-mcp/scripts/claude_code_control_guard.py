@@ -2,7 +2,7 @@
 """Fail-closed UserPromptSubmit guard for Telegram session-control namespaces.
 
 This command hook has no side effects. It runs in parallel with the deterministic MCP dispatcher
-and blocks direct `/usage`, `/sessions`, `/model`, `/reset`, and `/resume` namespaces before the LLM. If the MCP is
+and blocks direct `/usage`, `/sessions`, `/model`, `/rename`, `/reset`, and `/resume` namespaces before the LLM. If the MCP is
 restarting or times out, commands stay blocked rather than falling through to Claude.
 """
 
@@ -16,7 +16,7 @@ from typing import Any
 MAX_STDIN_BYTES = 4_500_000
 MAX_ENVELOPE_TAG_CHARS = 1_024
 CHANNEL_OPEN = "<channel"
-CONTROL_NAMESPACE = re.compile(r"^/(?:usage|sessions|model|reset|resume)(?=@|\s|$)")
+CONTROL_NAMESPACE = re.compile(r"^/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)")
 MODEL_REPLY_CHOICE = re.compile(r"^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$")
 ATTRIBUTE = re.compile(r'([a-z_][a-z0-9_]{0,31})="([^"<>]{0,256})"', re.IGNORECASE)
 BLOCK = {

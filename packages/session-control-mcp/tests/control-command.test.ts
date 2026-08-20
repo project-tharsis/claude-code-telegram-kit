@@ -24,6 +24,12 @@ describe("exact control command parser", () => {
     expect(parseControlCommand("2 · Sonnet")).toEqual({ kind: "model-switch", model: "sonnet" });
     expect(parseControlCommand("3 · Haiku")).toEqual({ kind: "model-switch", model: "haiku" });
     expect(parseControlCommand("4 · Inherit")).toEqual({ kind: "model-switch", model: "inherit" });
+    expect(parseControlCommand("/rename Model routing controls")).toEqual({
+      kind: "rename", title: "Model routing controls"
+    });
+    expect(parseControlCommand("/rename@my_bot  Auth   flow ")).toEqual({
+      kind: "rename", title: "Auth flow"
+    });
     expect(parseControlCommand("/reset@my_bot")).toEqual({ kind: "reset" });
     expect(parseControlCommand("/resume 1")).toEqual({ kind: "resume", index: 1 });
     expect(parseControlCommand("/resume@my_bot 10")).toEqual({ kind: "resume", index: 10 });
@@ -48,6 +54,8 @@ describe("exact control command parser", () => {
       "/model claude-opus-5",
       "/model OPUS",
       "/model opus extra",
+      "/rename",
+      `/rename ${"x".repeat(61)}`,
       "/reset extra",
       "/resume",
       "/resume 0",
