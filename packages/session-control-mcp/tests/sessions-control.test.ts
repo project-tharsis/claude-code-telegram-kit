@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createSessionsController } from "../src/sessions-control.js";
+import {
+  createSessionsController,
+  NO_SESSIONS_TEXT,
+  RESUME_SCHEDULER_FAILED_TEXT
+} from "../src/sessions-control.js";
 import type { CommandCapability } from "../src/command-capability.js";
 import type { SessionCatalogEntry } from "../src/session-catalog.js";
 import type { SelectionSnapshot } from "../src/session-selection.js";
@@ -44,6 +48,7 @@ function harness(options: HarnessOptions = {}) {
   const written: unknown[] = [];
   const verified: string[] = [];
   const reactions: Array<[string, string, string]> = [];
+  const parseModes: Array<"HTML" | undefined> = [];
 
   const controller = createSessionsController({
     loadConfig: () => config,
@@ -64,7 +69,8 @@ function harness(options: HarnessOptions = {}) {
       verified.push(sessionId);
       options.verify?.(sessionId);
     },
-    sendMessage: async (_config, _chatId, text, replyTo) => {
+    sendMessage: async (_config, _chatId, text, replyTo, parseMode) => {
+      parseModes.push(parseMode);
       sent.push(replyTo === undefined ? { text } : { text, replyTo });
       return options.send ? options.send() : 900;
     },
@@ -80,13 +86,17 @@ function harness(options: HarnessOptions = {}) {
     now: () => 5_000
   });
 
-  return { controller, takes, sent, scheduled, written, verified, reactions };
+  return { controller, takes, sent, scheduled, written, verified, reactions, parseModes };
 }
 
 const ENTRIES: SessionCatalogEntry[] = [
   { sessionId: uuid(1), title: "Refactor the parser", lastActivityMs: 5_000 - 12 * 60_000 },
   { sessionId: uuid(2), title: "Draft the release notes", lastActivityMs: 5_000 - 3 * 3_600_000 }
 ];
+const SESSION_LIST_HTML = "<b>Recent sessions</b>\n<i>2 available</i> · use <code>/resume N</code>\n\n"
+  + "<b>1.</b> Refactor the parser <i>· 12m ago</i>\n"
+  + "<b>2.</b> Draft the release notes <i>· 3h ago</i>";
+const RESUME_ACK_HTML = (index: number) => `<b>Resuming session ${index}</b>\n<i>Switching now…</i>`;
 
 describe("/sessions listing", () => {
   test("sends a numbered list quoting the command and snapshots the mapping", async () => {
@@ -96,9 +106,7 @@ describe("/sessions listing", () => {
 
     expect(h.takes).toEqual([["123", "sessions", undefined]]);
     expect(h.sent).toEqual([{
-      text: "Recent sessions (2). Reply /resume N to continue one.\n\n"
-        + "1. Refactor the parser — 12m ago\n"
-        + "2. Draft the release notes — 3h ago",
+      text: SESSION_LIST_HTML,
       replyTo: "51"
     }]);
     expect(h.written).toEqual([{
@@ -113,6 +121,18 @@ describe("/sessions listing", () => {
     expect(receipt).toEqual({ status: "listed", count: 2, ackMessageId: 900 });
   });
 
+  test("escapes untrusted titles and uses Telegram HTML", async () => {
+    const h = harness({ entries: [{
+      sessionId: uuid(3),
+      title: "A < B & C",
+      lastActivityMs: 5_000
+    }] });
+    await h.controller.listSessions({ chat_id: "123" });
+    expect(h.sent[0]!.text).toContain("A &lt; B &amp; C");
+    expect(h.sent[0]!.text).not.toContain("A < B");
+    expect(h.parseModes).toEqual(["HTML"]);
+  });
+
   test("trusted entrypoint lists without consuming a capability", async () => {
     const h = harness({ entries: ENTRIES, capability: null });
 
@@ -124,9 +144,7 @@ describe("/sessions listing", () => {
 
     expect(h.takes).toEqual([]);
     expect(h.sent[0]).toEqual({
-      text: "Recent sessions (2). Reply /resume N to continue one.\n\n"
-        + "1. Refactor the parser — 12m ago\n"
-        + "2. Draft the release notes — 3h ago",
+      text: SESSION_LIST_HTML,
       replyTo: "51"
     });
     expect(h.written[0]).toMatchObject({ chatId: "123", sessionId: CURRENT });
@@ -194,7 +212,7 @@ describe("/sessions listing", () => {
     const receipt = await h.controller.listSessions({ chat_id: "123" });
 
     expect(h.written).toEqual([]);
-    expect(h.sent[0]!.text).toBe("No other resumable sessions were found.");
+    expect(h.sent[0]!.text).toBe(NO_SESSIONS_TEXT);
     expect(receipt).toEqual({ status: "listed", count: 0, ackMessageId: 900 });
   });
 
@@ -241,7 +259,7 @@ describe("/resume N", () => {
 
     expect(h.takes).toEqual([["123", "resume", 2]]);
     expect(h.verified).toEqual([uuid(2)]);
-    expect(h.sent).toEqual([{ text: "Resuming session 2. Switching now…", replyTo: "51" }]);
+    expect(h.sent).toEqual([{ text: RESUME_ACK_HTML(2), replyTo: "51" }]);
     expect(h.scheduled).toEqual([["123", "51", CURRENT, uuid(2)]]);
     expect(h.reactions).toEqual([["123", "51", "success"]]);
     expect(receipt).toEqual({
@@ -262,7 +280,7 @@ describe("/resume N", () => {
     });
 
     expect(h.takes).toEqual([]);
-    expect(h.sent).toEqual([{ text: "Resuming session 2. Switching now…", replyTo: "51" }]);
+    expect(h.sent).toEqual([{ text: RESUME_ACK_HTML(2), replyTo: "51" }]);
     expect(h.scheduled).toEqual([["123", "51", CURRENT, uuid(2)]]);
     expect(h.reactions).toEqual([["123", "51", "success"]]);
     expect(receipt).toEqual({
@@ -377,8 +395,8 @@ describe("/resume N", () => {
     });
     await expect(h.controller.resumeSession({ chat_id: "123", index: 1 })).rejects.toThrow("resume scheduler failed");
     expect(h.sent.map(message => message.text)).toEqual([
-      "Resuming session 1. Switching now…",
-      "Session resume scheduling failed. No resume was started."
+      RESUME_ACK_HTML(1),
+      RESUME_SCHEDULER_FAILED_TEXT
     ]);
     expect(h.reactions).toEqual([
       ["123", "51", "success"],

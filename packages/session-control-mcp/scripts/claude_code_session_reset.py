@@ -900,8 +900,19 @@ def _reload_only() -> None:
     _run(["systemctl", "daemon-reload"], timeout=20)
 
 
-def _notify(token: str, chat_id: str, text: str) -> int:
-    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+def _notify(
+    token: str,
+    chat_id: str,
+    text: str,
+    *,
+    parse_mode: str | None = None,
+) -> int:
+    if parse_mode not in {None, "HTML"}:
+        raise ValueError("unsupported Telegram parse mode")
+    body: dict[str, Any] = {"chat_id": chat_id, "text": text}
+    if parse_mode is not None:
+        body["parse_mode"] = parse_mode
+    payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=payload,
@@ -1028,9 +1039,14 @@ def reset_session(
                 pass
             recovered = _recover_old(config, original_unit, old_session)
             if token is not None and chat_id is not None:
-                status = "previous session restored" if recovered else "manual recovery required"
+                status = "Previous session restored." if recovered else "Manual recovery required."
                 try:
-                    _notify(token, chat_id, f"Session reset failed; {status}.")
+                    _notify(
+                        token,
+                        chat_id,
+                        f"<b>Session reset failed</b>\n<i>{status}</i>",
+                        parse_mode="HTML",
+                    )
                 except Exception:
                     pass
             if request_id is not None:
@@ -1056,7 +1072,8 @@ def reset_session(
                 completion_id = _notify(
                     token,
                     chat_id,
-                    f"Session reset complete. New session: {new_session[:8]}…",
+                    "<b>Fresh session ready</b>",
+                    parse_mode="HTML",
                 )
             except Exception:
                 completion_id = None
@@ -1089,7 +1106,8 @@ def reset_session(
                         _notify(
                             token,
                             chat_id,
-                            "Session reset complete, but the request receipt could not be persisted.",
+                            "<b>Fresh session ready</b>\n<i>Retry protection could not be saved.</i>",
+                            parse_mode="HTML",
                         )
                     except Exception:
                         pass
@@ -1194,13 +1212,18 @@ def resume_session(
                 recovered = _recover_old(config, original_unit, old_session)
             if token is not None and chat_id is not None:
                 status = (
-                    "no service change was made"
+                    "No service change was made."
                     if not mutation_started
-                    else "previous session restored" if recovered
-                    else "manual recovery required"
+                    else "Previous session restored." if recovered
+                    else "Manual recovery required."
                 )
                 try:
-                    _notify(token, chat_id, f"Session resume failed; {status}.")
+                    _notify(
+                        token,
+                        chat_id,
+                        f"<b>Session resume failed</b>\n<i>{status}</i>",
+                        parse_mode="HTML",
+                    )
                 except Exception:
                     pass
             if request_id is not None:
@@ -1222,7 +1245,8 @@ def resume_session(
                 completion_id = _notify(
                     token,
                     chat_id,
-                    f"Session resumed. Now on session: {session_id[:8]}\u2026",
+                    "<b>Session resumed</b>",
+                    parse_mode="HTML",
                 )
             except Exception:
                 completion_id = None
@@ -1256,7 +1280,8 @@ def resume_session(
                         _notify(
                             token,
                             chat_id,
-                            "Session resume complete, but the request receipt could not be persisted.",
+                            "<b>Session resumed</b>\n<i>Retry protection could not be saved.</i>",
+                            parse_mode="HTML",
                         )
                     except Exception:
                         pass
@@ -1335,11 +1360,12 @@ def model_session(
                 except Exception:
                     recovered = False
             try:
+                recovery_text = "Previous model preserved." if recovered else "Manual recovery required."
                 _notify(
                     token,
                     chat_id,
-                    "Model switch failed; "
-                    + ("previous model preserved." if recovered else "manual recovery required."),
+                    f"<b>Model switch failed</b>\n<i>{recovery_text}</i>",
+                    parse_mode="HTML",
                 )
             except Exception:
                 pass
@@ -1361,7 +1387,12 @@ def model_session(
             raise RuntimeError(f"model switch failed at {phase}") from exc
 
         try:
-            completion_id = _notify(token, chat_id, f"Claude model switched to {model}.")
+            completion_id = _notify(
+                token,
+                chat_id,
+                f"<b>Model switched</b>\n<code>{model}</code>",
+                parse_mode="HTML",
+            )
         except Exception:
             completion_id = None
         result = {
@@ -1392,7 +1423,9 @@ def model_session(
                 _notify(
                     token,
                     chat_id,
-                    "Model switch complete, but the request receipt could not be persisted.",
+                    f"<b>Model switched</b>\n<code>{model}</code>\n"
+                    "<i>Retry protection could not be saved.</i>",
+                    parse_mode="HTML",
                 )
             except Exception:
                 pass
@@ -1403,7 +1436,7 @@ def model_session(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Reset or resume a Telegram-connected Claude Code session"
+        description="Reset, resume, or switch the model for a Telegram-connected Claude Code session"
     )
     parser.add_argument(
         "--config",

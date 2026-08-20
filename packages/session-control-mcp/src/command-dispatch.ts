@@ -21,17 +21,22 @@ import {
   REMOVE_MODEL_REPLY_KEYBOARD
 } from "./model-reply-keyboard.js";
 import type { TelegramReplyMarkup } from "./runtime.js";
+import { escapeTelegramHtml } from "./telegram-html.js";
 
-export const RESET_CHALLENGE_PREFIX = "Reset requested. Confirm within 60 seconds:";
-export const RESUME_CHALLENGE_PREFIX = "Resume session {index} requested. Confirm within 60 seconds:";
+export const RESET_CHALLENGE_PREFIX =
+  "<b>Start a fresh session?</b>\n<i>Confirm within 60 seconds.</i>";
+export const RESUME_CHALLENGE_PREFIX =
+  "<b>Resume session {index}?</b>\n<i>Confirm within 60 seconds.</i>";
 export const CONTROL_CONFIRMATION_INVALID_TEXT =
-  "Confirmation is invalid or expired. Send the original command again.";
+  "<b>Confirmation expired</b>\n<i>Send the original command again.</i>";
 export const CONTROL_COMMAND_USAGE_TEXT =
-  "Use /usage, /sessions, /model, /model opus|sonnet|haiku|inherit, /reset, /resume N, /reset confirm CODE, or /resume confirm CODE.";
-export const PRIVATE_CONTROL_ONLY_TEXT = "Model switch, reset, and resume are available only in a private Telegram chat.";
-export const SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT = "Claude subscription usage is temporarily unavailable.";
+  "<b>Command not recognized</b>\nUse <code>/usage</code>, <code>/sessions</code>, <code>/model</code>, <code>/reset</code>, or <code>/resume N</code>.";
+export const PRIVATE_CONTROL_ONLY_TEXT =
+  "<b>Private chat only</b>\n<i>Model switch, reset, and resume are disabled in groups.</i>";
+export const SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT =
+  "<b>Usage unavailable</b>\n<i>Try again shortly.</i>";
 export const CONTROL_OPERATION_FAILED_TEXT =
-  "Session control could not complete that command. Try again.";
+  "<b>Command failed</b>\n<i>Try again.</i>";
 
 export interface ControlCommandDispatcherDeps {
   loadConfig: () => RuntimeConfig;
@@ -92,7 +97,7 @@ async function bestEffortFailure(
   text = CONTROL_OPERATION_FAILED_TEXT
 ): Promise<void> {
   try {
-    await deps.sendMessage(config, chatId, text, messageId);
+    await deps.sendMessage(config, chatId, text, messageId, "HTML");
   } catch {
     // A failed failure-notification must not route the command into the LLM.
   }
@@ -186,7 +191,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
           envelope.chatId,
           await deps.getModelStatus(input.session_id),
           envelope.messageId,
-          undefined,
+          "HTML",
           MODEL_REPLY_KEYBOARD
         );
         await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
@@ -201,9 +206,10 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
         await deps.sendMessage(
           config,
           envelope.chatId,
-          `Model switch to ${command.model} requested. Waiting for the host to accept the restart.`,
+          `<b>Model switch requested</b>\n<code>${escapeTelegramHtml(command.model)}</code>\n`
+            + "<i>Waiting for host restart…</i>",
           envelope.messageId,
-          undefined,
+          "HTML",
           REMOVE_MODEL_REPLY_KEYBOARD
         );
         await deps.switchModel({
@@ -235,8 +241,9 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
         await deps.sendMessage(
           config,
           envelope.chatId,
-          `${prefix}\n\n${confirmation}`,
-          envelope.messageId
+          `${prefix}\n\n<code>${escapeTelegramHtml(confirmation)}</code>`,
+          envelope.messageId,
+          "HTML"
         );
       } catch {
         // Revoke a code the user never received.

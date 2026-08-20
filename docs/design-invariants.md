@@ -49,6 +49,8 @@ The README lists the five invariants that define the project's blast radius. Thi
 - Model selection buttons use one-time `ReplyKeyboardMarkup`, not inline callbacks. Button labels are exact deterministic control payloads; bare numeric replies never switch models, and the pending acknowledgement removes the keyboard.
 - A side-effect-free command hook blocks control namespaces even if the MCP dispatcher is unavailable. Every session-control MCP tool is denied to the model; permissions are the provenance boundary for the mutating dispatcher.
 - A numbered list is an atomic, private, ten-minute snapshot. Later session activity never repoints a visible index.
+- Session titles prefer the latest native `custom-title` / `ai-title`. When native title generation is absent, the catalog uses only turn metadata to distinguish `Conversation with Claudio` from `Control-only session`; it never derives a title from prompt text.
+- Slash-control UI uses bounded Telegram HTML for hierarchy only—bold titles, italic metadata, and code values—without card-like blocks or unescaped transcript-derived text. Session UUIDs and paths never enter user-facing copy.
 - `/usage` is read-only and formats a private service-user-owned snapshot of Claude's documented `statusLine.rate_limits`. It starts no extra Claude process, performs no model/API call, and accepts only bounded 5-hour/7-day windows.
 - The model supplies neither control commands nor their arguments. It never receives a confirmation code, index, session UUID, transcript path, helper path, service, unit, or command.
 - Reset and resume require an action-bound, latest-per-chat, single-use 60-second confirmation challenge before any mutation.

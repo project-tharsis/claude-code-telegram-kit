@@ -2,8 +2,8 @@ import { z } from "zod";
 import { assertAuthorizedChat, type RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
 export const CONFIRMATION = "RESET SESSION";
-export const RESET_ACCEPTED_TEXT = "Session reset accepted. Starting a fresh session now…";
-export const RESET_SCHEDULER_FAILED_TEXT = "Session reset scheduling failed. No reset was started.";
+export const RESET_ACCEPTED_TEXT = "<b>Fresh session requested</b>\n<i>Starting now…</i>";
+export const RESET_SCHEDULER_FAILED_TEXT = "<b>Reset failed</b>\n<i>No fresh session was started.</i>";
 
 const telegramMessageId = z.string()
   .regex(/^\d+$/)
@@ -28,7 +28,13 @@ export interface ResetReceipt {
 
 export interface ResetControllerDeps {
   loadConfig: () => RuntimeConfig;
-  sendMessage: (config: RuntimeConfig, chatId: string, text: string, replyTo?: string) => Promise<number>;
+  sendMessage: (
+    config: RuntimeConfig,
+    chatId: string,
+    text: string,
+    replyTo?: string,
+    parseMode?: "HTML"
+  ) => Promise<number>;
   react: (
     config: RuntimeConfig,
     chatId: string,
@@ -46,7 +52,9 @@ export function createResetController(deps: ResetControllerDeps) {
 
     let ackMessageId: number;
     try {
-      ackMessageId = await deps.sendMessage(config, request.chat_id, RESET_ACCEPTED_TEXT, request.message_id);
+      ackMessageId = await deps.sendMessage(
+        config, request.chat_id, RESET_ACCEPTED_TEXT, request.message_id, "HTML"
+      );
     } catch {
       throw new Error("ACK delivery failed; reset was not scheduled");
     }
@@ -62,7 +70,7 @@ export function createResetController(deps: ResetControllerDeps) {
       unit = await deps.schedule(request.chat_id, request.message_id);
     } catch {
       try {
-        await deps.sendMessage(config, request.chat_id, RESET_SCHEDULER_FAILED_TEXT);
+        await deps.sendMessage(config, request.chat_id, RESET_SCHEDULER_FAILED_TEXT, undefined, "HTML");
       } catch {
         // The primary failure is scheduler rejection; notification is best-effort.
       }

@@ -8,6 +8,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Slash-control replies now share Telegram HTML typography: bold hierarchy, italic metadata, code-formatted commands/values, escaped session titles, and concise success/failure copy. Root completion messages no longer expose truncated session UUIDs.
+- Sessions without native `ai-title` records now use honest metadata-only fallbacks: `Conversation with Claudio` after a concrete assistant turn, otherwise `Control-only session`. Prompt text is never reused as a title.
 - Model switching now waits for the Claude CLI, official poller, and both sidecars to become healthy after each restart instead of treating the earlier systemd `active` edge as readiness; rollback uses the same bounded health proof.
 - Native Rich delivery now canonicalizes GFM through mdast before `sendRichMessage`, preserving literal multiplication stars, intraword underscores, empty delimiter runs, and unmatched markers without breaking valid emphasis, code, links, tables, or Telegram underline.
 - Verbose Telegram tool disclosure no longer lets one command or path consume most of a mobile screen.

@@ -49,6 +49,8 @@ Set `TELEGRAM_COMMAND_MENU_ENABLED=true` to install and read back a chat-specifi
 
 `/model` sends a one-time reply keyboard with four vertical choices. Telegram sends the selected label back as an ordinary `message:text`, so the official Channel remains the sole poller and the deterministic parser handles it without callback forwarding. The only accepted labels are `1 · Opus`, `2 · Sonnet`, `3 · Haiku`, and `4 · Inherit`; bare numbers and model names remain ordinary conversation. The switch acknowledgement explicitly removes the keyboard.
 
+Control replies use Telegram HTML sparingly for mobile hierarchy: bold headings, italic state/help text, and code-formatted commands or model values. `/sessions` escapes every native title and never displays UUIDs/paths. If Claude Code did not emit a native title, the catalog shows `Conversation with Claudio` for a real model-backed session or `Control-only session` otherwise; it never infers a title from prompt content.
+
 The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`, keyed by a hash of the inbound chat and message IDs.
 
 ## Installing the root helper
