@@ -7,7 +7,8 @@
         "/home/USER/.local/share/claude-code-telegram-kit/current/packages/telegram-renderer-mcp/src/server.ts"
       ],
       "env": {
-        "TELEGRAM_TOOL_DISCLOSURE_MODE": "verbose"
+        "TELEGRAM_TOOL_DISCLOSURE_MODE": "verbose",
+        "CLAUDE_CODE_AUTH_PREFLIGHT": "interactive-login"
       }
     },
     "session-control": {

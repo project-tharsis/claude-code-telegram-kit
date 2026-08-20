@@ -90,11 +90,12 @@ Verify from the real destination:
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
 5. a multi-tool turn creates one silent verbose progress bubble with redacted credentials and success/failure state;
 6. typing remains visible across a long turn and stops before the final reply;
-7. `/usage` returns the latest private statusLine `rate_limits` snapshot without an extra Claude process or model turn;
-8. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
-9. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
-10. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
-11. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
+7. with `CLAUDE_CODE_AUTH_PREFLIGHT=interactive-login` and Claude reporting exact `Login: Expired`, an ordinary inbound receives one quoted auth explanation, starts no sustained typing, and never reaches the model;
+8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot without an extra Claude process or model turn;
+9. `/sessions` returns at most ten UUID-free entries and stores a private snapshot;
+10. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
+11. `/reset` uses a one-shot confirmation, sends accepted/completion messages, and leaves no synthetic LLM seed;
+12. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
 
 ## Rollback
 

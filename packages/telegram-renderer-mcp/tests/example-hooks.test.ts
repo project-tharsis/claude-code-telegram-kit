@@ -25,6 +25,10 @@ const settings = JSON.parse(readFileSync(
   resolve(import.meta.dir, "../../../examples/telegram-settings.json"),
   "utf8"
 )) as Settings;
+const mcp = JSON.parse(readFileSync(
+  resolve(import.meta.dir, "../../../examples/.mcp.json"),
+  "utf8"
+)) as { mcpServers: { "telegram-renderer": { env?: Record<string, string> } } };
 
 function toolsFor(event: string): Array<{ server: string; tool: string; input: Record<string, string> }> {
   return (settings.hooks[event] ?? []).flatMap(entry =>
@@ -37,6 +41,11 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
+  test("explicitly scopes auth preflight to interactive-login deployments", () => {
+    expect(mcp.mcpServers["telegram-renderer"].env?.CLAUDE_CODE_AUTH_PREFLIGHT)
+      .toBe("interactive-login");
+  });
+
   test("wires a private statusLine rate-limit snapshot writer", () => {
     expect(settings.statusLine?.type).toBe("command");
     expect(settings.statusLine?.command).toMatch(/^\/usr\/local\/sbin\/claude-usage-snapshot --output \/home\/USER\//);

@@ -11,6 +11,8 @@ import {
   loadRuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
+import { AUTH_UNAVAILABLE_MESSAGE, createAuthExpiryGate } from "./auth-expiry-gate.js";
+import { createClaudeAuthProbe } from "./claude-auth-status.js";
 import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
 import { editProgressBubble, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
@@ -23,6 +25,7 @@ const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", 
 const loadConfig = () => loadRuntimeConfig(stateDir);
 const disclosureMode = parseToolDisclosureMode(process.env.TELEGRAM_TOOL_DISCLOSURE_MODE);
 const deliver = createUnifiedDeliverer();
+const checkAuth = createClaudeAuthProbe();
 const handleTool = createUnifiedToolHandler({
   loadConfig,
   deliver,
@@ -50,7 +53,19 @@ const disclosure = createTurnDisclosure({
     return () => clearTimeout(timer);
   }
 });
-const handleHookTool = createHookToolHandler(disclosure);
+const authGate = createAuthExpiryGate({
+  loadConfig,
+  checkAuth,
+  sendAuthUnavailable: async (config, chatId, messageId) => {
+    await deliver({
+      chat_id: chatId,
+      message_id: messageId,
+      content: AUTH_UNAVAILABLE_MESSAGE,
+      disable_notification: false
+    }, config);
+  }
+});
+const handleHookTool = createHookToolHandler(disclosure, authGate);
 
 const server = new Server(
   { name: "telegram-renderer", version: "0.2.0" },

@@ -16,6 +16,8 @@ The renderer quotes `message_id` by default. Set `reply_to` only to intentionall
 
 One direct Telegram turn owns at most one silent progress bubble. `TELEGRAM_TOOL_DISCLOSURE_MODE` selects `safe`, `all`, or `verbose`; verbose shows bounded commands, paths, queries, URLs, integration names, and delegation descriptions while hard-redacting credential values. Tool outputs never enter disclosure. PostToolUse events render running (`…`), completed (`✓`), and failed (`✕`) state. Updates debounce, deduplicate by `tool_use_id`, stop after a Telegram flood response, and never block the agent or final reply.
 
+When `CLAUDE_CODE_AUTH_PREFLIGHT=interactive-login` is explicitly configured, the same UserPromptSubmit hook runs one bounded, read-only `claude auth status --text` preflight before an ordinary model turn. Only Claude's exact `Login: Expired` status sends one replay-deduplicated, quoted Telegram explanation and blocks the prompt. Other auth modes, unknown probe outcomes, and deterministic controls fail open/bypass the probe. The harness neither issues nor stores credentials and has no auth polling, expiry warning, or token-lifetime policy.
+
 The renderer also owns sustained Telegram typing after the official Channel's initial one-shot action: refresh every two seconds, 1.5-second request timeout, 10-second 429 cooldown, 10-minute dead-man cutoff, and cancellation before final delivery, Stop/StopFailure, or a superseding turn.
 
 ## Routing

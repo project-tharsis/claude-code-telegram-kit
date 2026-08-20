@@ -15,6 +15,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Deterministic auth-expiry delivery for deployments explicitly configured with interactive-login auth: an ordinary Telegram inbound runs one bounded `claude auth status --text` preflight; the exact `Login: Expired` state receives one replay-deduplicated quoted explanation and is blocked before sustained typing/model execution. Control commands remain usable, other auth modes and unknown probes fail open, and no token issuance, storage, polling, or expiry-warning policy is added.
 - Hermes-style Telegram execution UX: configurable `safe`/`all`/`verbose` disclosure with bounded command/path/query previews, hard credential redaction, running/completed/failed tool state, and one silent edit-in-place bubble. Tool output never enters disclosure.
 - Sustained Telegram typing heartbeat: two-second refresh, bounded requests, throttle cooldown, dead-man cutoff, and deterministic cancellation before final delivery or turn closure.
 - Deterministic `/usage`: Claude's documented `statusLine.rate_limits` is atomically cached as a private service-user snapshot and returned pre-LLM; no extra Claude process, OAuth poll, model turn, or session history is created.

@@ -9,6 +9,8 @@ import type {
   ProgressSendOutcome
 } from "../src/progress-transport.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
+import { createAuthExpiryGate } from "../src/auth-expiry-gate.js";
+import { createHookToolHandler } from "../src/hook-tools.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const PROMPT = "p1";
@@ -107,6 +109,131 @@ async function finish(h: Harness, event: "Stop" | "StopFailure" = "Stop"): Promi
 }
 
 describe("turn disclosure lifecycle", () => {
+  test("unavailable auth sends one quoted error, blocks, and never starts typing", async () => {
+    const typingStarts: string[] = [];
+    const alerts: Array<{ chatId: string; messageId: string }> = [];
+    const disclosure = createTurnDisclosure({
+      loadConfig: () => config,
+      mode: "safe",
+      startTyping: chatId => {
+        typingStarts.push(chatId);
+        return () => undefined;
+      },
+      send: async () => ({ kind: "sent", messageId: 1 }),
+      edit: async () => ({ kind: "edited" }),
+      schedule: () => () => undefined
+    });
+    const handle = createHookToolHandler(disclosure, createAuthExpiryGate({
+      loadConfig: () => config,
+      checkAuth: async () => "unavailable",
+      sendAuthUnavailable: async (_config, chatId, messageId) => {
+        alerts.push({ chatId, messageId });
+      }
+    }));
+    const result = await handle("bind_turn", {
+      session_id: SESSION,
+      prompt_id: "p-auth",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">hello</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    const first = result!.content[0]!;
+    if (first.type !== "text") throw new Error("expected text");
+    expect(JSON.parse(first.text).decision).toBe("block");
+    expect(alerts).toEqual([{ chatId: "123", messageId: "9" }]);
+    expect(typingStarts).toEqual([]);
+    expect(disclosure.size).toBe(0);
+  });
+
+  test("deterministic control commands bypass the model-auth probe", async () => {
+    let checks = 0;
+    const disclosure = createTurnDisclosure({
+      loadConfig: () => config,
+      mode: "safe",
+      startTyping: () => () => undefined,
+      send: async () => ({ kind: "sent", messageId: 1 }),
+      edit: async () => ({ kind: "edited" }),
+      schedule: () => () => undefined
+    });
+    const handle = createHookToolHandler(disclosure, createAuthExpiryGate({
+      loadConfig: () => config,
+      checkAuth: async () => {
+        checks += 1;
+        return "unavailable";
+      },
+      sendAuthUnavailable: async () => undefined
+    }));
+    const result = await handle("bind_turn", {
+      session_id: SESSION,
+      prompt_id: "p-usage",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">/usage</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(result!.content).toEqual([{ type: "text", text: "" }]);
+    expect(checks).toBe(0);
+  });
+
+  test("an unknown probe fails open and binds the ordinary turn", async () => {
+    const h = harness();
+    const handle = createHookToolHandler(h.disclosure, createAuthExpiryGate({
+      loadConfig: () => config,
+      checkAuth: async () => "unknown",
+      sendAuthUnavailable: async () => { throw new Error("must not send"); }
+    }));
+    const result = await handle("bind_turn", {
+      session_id: SESSION,
+      prompt_id: "p-unknown",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">hello</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(result!.content).toEqual([{ type: "text", text: "" }]);
+    expect(h.typingStarts).toEqual(["123"]);
+    expect(h.disclosure.size).toBe(1);
+  });
+
+  test("a failed auth alert still blocks the already-doomed model prompt", async () => {
+    const h = harness();
+    const handle = createHookToolHandler(h.disclosure, createAuthExpiryGate({
+      loadConfig: () => config,
+      checkAuth: async () => "unavailable",
+      sendAuthUnavailable: async () => { throw new Error("Telegram unavailable"); }
+    }));
+    const result = await handle("bind_turn", {
+      session_id: SESSION,
+      prompt_id: "p-alert-failed",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">hello</channel>',
+      hook_event_name: "UserPromptSubmit"
+    });
+    const first = result!.content[0]!;
+    if (first.type !== "text") throw new Error("expected text");
+    expect(JSON.parse(first.text).decision).toBe("block");
+    expect(h.typingStarts).toEqual([]);
+    expect(h.disclosure.size).toBe(0);
+  });
+
+  test("a replayed bind blocks again without duplicating the quoted auth alert", async () => {
+    const h = harness();
+    let alerts = 0;
+    const handle = createHookToolHandler(h.disclosure, createAuthExpiryGate({
+      loadConfig: () => config,
+      checkAuth: async () => "unavailable",
+      sendAuthUnavailable: async () => { alerts += 1; }
+    }));
+    const input = {
+      session_id: SESSION,
+      prompt_id: "p-replay",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">hello</channel>',
+      hook_event_name: "UserPromptSubmit"
+    } as const;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await handle("bind_turn", input);
+      const first = result!.content[0]!;
+      if (first.type !== "text") throw new Error("expected text");
+      expect(JSON.parse(first.text).decision).toBe("block");
+    }
+    expect(alerts).toBe(1);
+    expect(h.typingStarts).toEqual([]);
+  });
+
   test("starts sustained typing on bind and stops it on final/send cleanup", async () => {
     const h = harness();
     bind(h);
