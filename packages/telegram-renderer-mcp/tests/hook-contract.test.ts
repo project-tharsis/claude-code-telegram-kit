@@ -76,9 +76,16 @@ describe("direct Telegram envelope parsing", () => {
 });
 
 describe("internal hook tool schemas", () => {
-  test("bind_turn requires the exact UserPromptSubmit event", () => {
-    const base = { session_id: SESSION, prompt_id: PROMPT, prompt: "hi", hook_event_name: "UserPromptSubmit" };
-    expect(BindTurnInputSchema.parse(base).prompt).toBe("hi");
+  test("bind_turn requires the exact UserPromptSubmit event and bounds the transcript path", () => {
+    const base = {
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      prompt: "hi",
+      transcript_path: "/home/user/.claude/projects/project/session.jsonl",
+      hook_event_name: "UserPromptSubmit"
+    };
+    expect(BindTurnInputSchema.parse(base).transcript_path).toBe(base.transcript_path);
+    expect(() => BindTurnInputSchema.parse({ ...base, transcript_path: "x".repeat(8_193) })).toThrow();
     expect(() => BindTurnInputSchema.parse({ ...base, hook_event_name: "PreToolUse" })).toThrow();
     expect(() => BindTurnInputSchema.parse({ ...base, hook_event_name: "" })).toThrow();
   });
@@ -86,6 +93,7 @@ describe("internal hook tool schemas", () => {
   test("bind_turn rejects unknown properties and empty template substitutions", () => {
     const base = { session_id: SESSION, prompt_id: PROMPT, prompt: "hi", hook_event_name: "UserPromptSubmit" };
     expect(() => BindTurnInputSchema.parse({ ...base, tool_input: { a: 1 } })).toThrow();
+    expect(BindTurnInputSchema.parse({ ...base, transcript_path: "" }).transcript_path).toBeUndefined();
     expect(() => BindTurnInputSchema.parse({ ...base, session_id: "" })).toThrow();
     expect(() => BindTurnInputSchema.parse({ ...base, prompt_id: "" })).toThrow();
   });

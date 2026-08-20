@@ -39,6 +39,7 @@ const turnKey = {
 export const BindTurnInputSchema = z.object({
   ...turnKey,
   prompt,
+  transcript_path: optionalText(8_192),
   hook_event_name: z.literal("UserPromptSubmit")
 }).strict();
 

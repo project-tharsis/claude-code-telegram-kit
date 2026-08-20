@@ -8,7 +8,7 @@
       ],
       "env": {
         "TELEGRAM_TOOL_DISCLOSURE_MODE": "verbose",
-        "CLAUDE_CODE_AUTH_PREFLIGHT": "interactive-login"
+        "CLAUDE_PROJECT_SESSIONS_DIR": "/home/USER/.claude/projects/-home-USER-claudio-workspace"
       }
     },
     "session-control": {

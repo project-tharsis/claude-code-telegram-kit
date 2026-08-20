@@ -11,7 +11,6 @@ import {
   type RecordToolSuccessInput
 } from "./hook-contract.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
-import { isDeterministicControlCommand } from "./auth-expiry-gate.js";
 import { TurnProgress } from "./progress-state.js";
 import type {
   ProgressEditOutcome,
@@ -29,6 +28,7 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 /** Ephemeral state only. A long session must not accumulate turns without bound. */
 export const MAX_RETAINED_TURNS = 32;
 
+const CONTROL_COMMAND = /^(?:\/(?:usage|sessions)(?:@[A-Za-z0-9_]{1,32})?|\/resume(?:@[A-Za-z0-9_]{1,32})? (?:[1-9]|10)|\/(?:reset|resume)(?:@[A-Za-z0-9_]{1,32})? confirm [23456789A-HJ-NP-Z]{6}|\/reset(?:@[A-Za-z0-9_]{1,32})?)$/;
 
 export type CancelScheduled = () => void;
 
@@ -36,6 +36,15 @@ export interface TurnDisclosureDeps {
   loadConfig: () => RuntimeConfig;
   mode: ToolDisclosureMode;
   startTyping: (chatId: string) => CancelScheduled;
+  startAuthFailureWatch?: (
+    input: BindTurnInput,
+    onFailure: () => Promise<void>
+  ) => CancelScheduled;
+  sendAuthFailure?: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string
+  ) => Promise<void>;
   send: (
     config: RuntimeConfig,
     chatId: string,
@@ -67,6 +76,7 @@ interface Turn {
   lastSentText: string | null;
   cancel: CancelScheduled | null;
   cancelTyping: CancelScheduled | null;
+  cancelAuthWatch: CancelScheduled | null;
   chain: Promise<void>;
 }
 
@@ -86,6 +96,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancel = null;
     turn.cancelTyping?.();
     turn.cancelTyping = null;
+    turn.cancelAuthWatch?.();
+    turn.cancelAuthWatch = null;
     turn.state = "abandoned";
   }
 
@@ -195,6 +207,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancelTyping = null;
     turn.cancel?.();
     turn.cancel = null;
+    if (outcome === "Stop") {
+      turn.cancelAuthWatch?.();
+      turn.cancelAuthWatch = null;
+    }
     turn.progress.close(outcome);
     let timeout: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -222,7 +238,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         // Session-control commands already have their own ACK/list/permission/completion UX.
         // A progress bubble is redundant, and resume/reset kill the current process before
         // Stop can close it, leaving a permanent stale "Working…" bubble.
-        if (isDeterministicControlCommand(envelope.body)) return;
+        if (CONTROL_COMMAND.test(envelope.body)) return;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 
         // A newer prompt in the same chat retires the previous bubble; a stale turn must
@@ -232,8 +248,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         }
 
         const key = turnKey(input.session_id, input.prompt_id);
+        const duplicate = turns.get(key);
+        if (duplicate !== undefined) drop(duplicate);
         turns.delete(key);
-        turns.set(key, {
+        const turn: Turn = {
           chatId: envelope.chatId,
           quoteMessageId: envelope.messageId,
           progress: new TurnProgress({
@@ -248,8 +266,35 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           lastSentText: null,
           cancel: null,
           cancelTyping: deps.startTyping(envelope.chatId),
+          cancelAuthWatch: null,
           chain: Promise.resolve()
-        });
+        };
+        turns.set(key, turn);
+        if (
+          input.transcript_path !== undefined
+          && deps.startAuthFailureWatch !== undefined
+          && deps.sendAuthFailure !== undefined
+        ) {
+          try {
+            turn.cancelAuthWatch = deps.startAuthFailureWatch(input, async () => {
+              if (turns.get(key) !== turn) return;
+              await finalize(turn, "StopFailure");
+              if (turns.get(key) !== turn) return;
+              turn.cancelAuthWatch?.();
+              turn.cancelAuthWatch = null;
+              turns.delete(key);
+              try {
+                const config = deps.loadConfig();
+                assertAuthorizedChat(config, turn.chatId);
+                await deps.sendAuthFailure!(config, turn.chatId, turn.quoteMessageId);
+              } catch {
+                // Auth recovery is user-facing UX only; delivery failure cannot revive the turn.
+              }
+            });
+          } catch {
+            turn.cancelAuthWatch = null;
+          }
+        }
         evict();
       } catch {
         // Presentation only: an unreadable channel state simply produces no bubble.

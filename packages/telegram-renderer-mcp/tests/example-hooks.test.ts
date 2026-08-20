@@ -41,9 +41,11 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
-  test("explicitly scopes auth preflight to interactive-login deployments", () => {
-    expect(mcp.mcpServers["telegram-renderer"].env?.CLAUDE_CODE_AUTH_PREFLIGHT)
-      .toBe("interactive-login");
+  test("gives the renderer only the fixed transcript root, never model credentials or auth mode", () => {
+    const env = mcp.mcpServers["telegram-renderer"].env ?? {};
+    expect(env.CLAUDE_PROJECT_SESSIONS_DIR).toMatch(/^\/home\/USER\/\.claude\/projects\//);
+    expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(env).not.toHaveProperty("CLAUDE_CODE_AUTH_PREFLIGHT");
   });
 
   test("wires a private statusLine rate-limit snapshot writer", () => {
@@ -74,6 +76,7 @@ describe("supported Claude Code hook configuration", () => {
       "telegram-renderer:bind_turn",
       "session-control:dispatch_command"
     ]);
+    expect(toolsFor("UserPromptSubmit")[0]!.input.transcript_path).toBe("${transcript_path}");
     expect(toolsFor("PreToolUse").map(hook => hook.tool)).toEqual(["record_tool"]);
     expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual(["record_tool_success"]);
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
