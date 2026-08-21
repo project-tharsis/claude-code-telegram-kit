@@ -4,7 +4,7 @@ import { formatProgressHtml } from "../src/progress-html.js";
 describe("Telegram progress HTML", () => {
   test("keeps friendly emoji steps inline and renders only terminal commands as shell blocks", () => {
     expect(formatProgressHtml([
-      "Working…",
+      "Tinkering…",
       "📖 Reading auth.ts L82-111",
       "💻 terminal",
       "```shell",
@@ -12,7 +12,7 @@ describe("Telegram progress HTML", () => {
       "```",
       "📚 Reading skill requesting-code-review"
     ].join("\n"))).toBe([
-      "<b>✦ Working…</b>",
+      "<b>✦ Tinkering…</b>",
       "",
       "📖 Reading auth.ts L82-111",
       "💻 terminal",
@@ -46,7 +46,7 @@ describe("Telegram progress HTML", () => {
   });
 
   test("treats a command that equals a closing fence as content", () => {
-    expect(formatProgressHtml("Working…\n💻 terminal\n```shell\n```\n```"))
+    expect(formatProgressHtml("Tinkering…\n💻 terminal\n```shell\n```\n```"))
       .toContain("<pre><code class=\"language-shell\">```</code></pre>");
   });
 });

@@ -8,10 +8,10 @@ import {
   TurnProgress
 } from "../src/progress-state.js";
 
-const WORKING = { active: "Working…", complete: "Worked" };
+const TINKERING = { active: "Tinkering…", complete: "Tinkered" };
 
 function newTurn(): TurnProgress {
-  return new TurnProgress({ chatId: "123", messageId: "9", sessionId: "s", promptId: "p" }, WORKING);
+  return new TurnProgress({ chatId: "123", messageId: "9", sessionId: "s", promptId: "p" }, TINKERING);
 }
 
 function inline(label: SafeStepLabel, preview?: string, emoji = "📖"): ProgressStep {
@@ -28,6 +28,9 @@ describe("turn progress state", () => {
     const first = selectTurnVerbPair(key);
     expect(selectTurnVerbPair(key)).toEqual(first);
     expect(TURN_VERB_PAIRS).toContainEqual(first);
+    expect(TURN_VERB_PAIRS).toHaveLength(8);
+    expect(TURN_VERB_PAIRS).toContainEqual({ active: "Tinkering…", complete: "Tinkered" });
+    expect(TURN_VERB_PAIRS).not.toContainEqual({ active: "Working…", complete: "Worked" });
     expect(first.active.endsWith("…")).toBe(true);
     expect(first.complete.endsWith("…")).toBe(false);
   });
@@ -41,7 +44,7 @@ describe("turn progress state", () => {
     const turn = newTurn();
     expect(turn.recordTool("t1", inline("Reading", "file.ts"))).toBe(true);
     expect(turn.hasSteps).toBe(true);
-    expect(turn.render()).toBe("Working…\n📖 Reading file.ts");
+    expect(turn.render()).toBe("Tinkering…\n📖 Reading file.ts");
   });
 
   test("dedupes a repeated tool_use_id", () => {
@@ -49,7 +52,7 @@ describe("turn progress state", () => {
     expect(turn.recordTool("t1", inline("Reading", "a.ts"))).toBe(true);
     expect(turn.recordTool("t1", inline("Reading", "a.ts"))).toBe(false);
     expect(turn.recordTool("t1", command("pwd"))).toBe(false);
-    expect(turn.render()).toBe("Working…\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Tinkering…\n📖 Reading a.ts");
   });
 
   test("merges consecutive identical steps with a count and preserves arrival order", () => {
@@ -59,7 +62,7 @@ describe("turn progress state", () => {
     turn.recordTool("c", command("pwd"));
     turn.recordTool("d", inline("Reading", "a.ts"));
     expect(turn.render()).toBe([
-      "Working…",
+      "Tinkering…",
       "📖 Reading a.ts ×2",
       "💻 terminal",
       "```shell",
@@ -75,7 +78,7 @@ describe("turn progress state", () => {
       turn.recordTool(`t${index}`, inline("Reading", `file-${index}.ts`));
     }
     const lines = turn.render().split("\n");
-    expect(lines[0]).toBe("Working…");
+    expect(lines[0]).toBe("Tinkering…");
     expect(lines).toHaveLength(13);
     expect(lines.at(-1)).toBe("📖 Reading file-11.ts");
     expect(lines.some(line => line.includes("more steps"))).toBe(false);
@@ -97,7 +100,7 @@ describe("turn progress state", () => {
     turn.recordTool("a", inline("Reading", "a.ts"));
     expect(turn.recordSuccess("a")).toBe(true);
     expect(turn.recordSuccess("a")).toBe(false);
-    expect(turn.render()).toBe("Working…\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Tinkering…\n📖 Reading a.ts");
   });
 
   test("marks only a failed step with a failure prefix", () => {
@@ -108,7 +111,7 @@ describe("turn progress state", () => {
     expect(turn.recordFailure("b")).toBe(false);
     expect(turn.recordFailure("unknown")).toBe(false);
     expect(turn.render()).toBe([
-      "Working…",
+      "Tinkering…",
       "📖 Reading a.ts",
       "❌ 💻 terminal",
       "```shell",
@@ -122,10 +125,10 @@ describe("turn progress state", () => {
     turn.recordTool("a", inline("Reading", "a.ts"));
     turn.close("Stop");
     expect(turn.closed).toBe(true);
-    expect(turn.render()).toBe("Worked\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Tinkered\n📖 Reading a.ts");
     expect(turn.recordTool("b", command("pwd"))).toBe(false);
     expect(turn.recordFailure("a")).toBe(false);
-    expect(turn.render()).toBe("Worked\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Tinkered\n📖 Reading a.ts");
   });
 
   test("a failed stop uses its own header and marks unfinished work", () => {
@@ -140,7 +143,7 @@ describe("turn progress state", () => {
     turn.recordTool("a", inline("Reading", "a.ts"));
     turn.close("Stop");
     turn.close("StopFailure");
-    expect(turn.render()).toBe("Worked\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Tinkered\n📖 Reading a.ts");
   });
 
   test("the generation advances on every accepted change and only then", () => {

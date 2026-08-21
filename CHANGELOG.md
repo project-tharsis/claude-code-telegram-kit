@@ -27,6 +27,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Slash-control replies use concise Telegram HTML hierarchy, escaped titles, code-formatted commands/values, honest metadata-only title fallbacks, and no exposed UUID/path internals.
 - Progress remains fully visible until Telegram's 4096-character wire limit instead of folding after eight steps; shell commands use a bounded one-line block and Skill calls name the loaded Skill.
 - Each progress bubble selects one stable Claude-style spinner/completion verb pair for the turn, such as `Brewing…` → `Brewed`; Telegram marks the header with `✦`/`✓` and separates it from the tool steps.
+- Spinner pairs use only Claude Code active verbs whose completion form reads unambiguously as finished work; `Tinkering…` → `Tinkered` replaces the generic `Working…` pair.
 - Long Bash previews remove a simple leading `cd <dir> &&` wrapper, then retain the command head and target tail with a middle ellipsis.
 - Monorepo packages and both MCP server identities advance to `0.3.0`.
 
