@@ -20,6 +20,6 @@ The initial project is source-only; workspace packages are not published to npm.
 7. Create a GitHub release from the tag with the changelog excerpt.
 8. Rehearse `scripts/deploy_local.py install` against the exact tagged SHA.
 9. Verify the installed `.installed.json`, `current` symlink, and rollback path.
-10. Install the root helper separately only after reviewing its exact tagged source and digest.
+10. Install the root-owned broker, helper, socket/template units, and service hardening with `scripts/install_root_assets.py` from the exact tagged checkout; verify its manifest, destination hashes, socket mode/owner, and Broker Protocol capability readback before restarting the Claude service.
 
 Never retag or replace release artifacts.

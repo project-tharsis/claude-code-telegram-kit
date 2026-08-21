@@ -12,7 +12,7 @@
     },
     "packages/session-control-mcp": {
       "name": "@project-tharsis/session-control-mcp",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "bin": {
         "session-control-mcp": "./src/server.ts",
       },
@@ -24,14 +24,14 @@
     },
     "packages/shared": {
       "name": "@project-tharsis/claude-code-telegram-shared",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "zod": "3.25.76",
       },
     },
     "packages/telegram-renderer-mcp": {
       "name": "@project-tharsis/telegram-renderer-mcp",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "bin": {
         "telegram-renderer-mcp": "./src/server.ts",
       },

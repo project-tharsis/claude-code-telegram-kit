@@ -6,48 +6,53 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-
-- Root-helper operation timeouts now reject non-finite or out-of-range values, every service-control call uses `/usr/bin/systemctl`, rollback proves the exact old session and workers, and the root receipt store has a 30-day/4096-entry bound.
-
-- The legacy model-facing `schedule_session_reset` MCP tool is removed; confirmed `/reset` remains exclusively on the deterministic pre-LLM control path. Privileged actions now run a fresh root-helper capability probe with a hard process timeout, so repaired helpers recover without an MCP restart and failed probes occur before acceptance delivery.
-
-- Slash-control replies now share Telegram HTML typography: bold hierarchy, italic metadata, code-formatted commands/values, escaped session titles, and concise success/failure copy. Root completion messages no longer expose truncated session UUIDs.
-- Sessions without native `ai-title` records now use honest metadata-only fallbacks: `Conversation with Claudio` after a concrete assistant turn, otherwise `Control-only session`. Prompt text is never reused as a title.
-- Model switching now waits for the Claude CLI, official poller, and both sidecars to become healthy after each restart instead of treating the earlier systemd `active` edge as readiness; rollback uses the same bounded health proof.
-- Native Rich delivery now canonicalizes GFM through mdast before `sendRichMessage`, preserving literal multiplication stars, intraword underscores, empty delimiter runs, and unmatched markers without breaking valid emphasis, code, links, tables, or Telegram underline.
-- Verbose Telegram tool disclosure no longer lets one command or path consume most of a mobile screen.
-- Progress disclosure no longer folds after eight lines: it keeps every normal parent and subagent tool step visible, uses fixed emoji plus friendly inline verbs for ordinary tools, reserves a one-line `shell` block for commands, names `Skill` calls explicitly, and folds only at Telegram's 4096-character wire limit.
-- Progress labels now come from one fixed allowlist, and `/usage` names rolling quota windows as 5-hour / 7-day limits instead of conversation or calendar periods.
-- The official Claude Code Telegram Channel emits `<channel source="plugin:telegram:telegram" …>` on inbound messages. The sidecar envelope parser now accepts that exact source in addition to the earlier `telegram` value, so hook turn binding and `/sessions`/`/resume` capabilities bind again. Prefix or suffix variants still fail closed.
-- Control slash commands (`/usage`, `/sessions`, `/resume N`, `/reset`) no longer create tool-progress bubbles, which resume/reset could never close before restarting Claude.
-- Root reset configuration may use either secure root-owned mode `0600` or `0644`; the unprivileged scheduler and privileged helper now enforce the same exact mode set.
-- The unprivileged SessionStart receipt writer no longer reads root-owned `reset.json`; its fixed user-owned receipt directory is passed by the supported command-hook configuration and independently revalidated by the root helper, so private `0600` root config works end to end.
+## [0.3.0] - 2026-08-21
 
 ### Added
 
-- Broker Protocol v1 moves `capabilities`, `reset`, `resume`, and `model` across a mode-`0600`, peer-UID-checked Unix socket. It rejects root service users, caps mutations at 12/minute and four concurrent helper jobs, and the unprivileged MCP no longer executes `sudo`, `systemd-run`, helper paths, config paths, unit names, or arbitrary privileged argv; example socket/template units, `NoNewPrivileges` service hardening, and an exact-commit self-verifying atomic root-asset installer with rollback are included.
-- Up to four successful Claude `Artifact` tool-use/result pairs from the exact bound transcript append receive deterministic Stop-owned Telegram `sendDocument` delivery after the canonical final text. No registration or file-send tool is exposed; exact project/session scratchpad layout, directory-FD-anchored inode/ownership/mode/size checks, silent quoted uploads, and no-retry unknown outcomes preserve the renderer's transport boundary.
-- Automatic semantic session titles: the first successful Stop runs one bounded, isolated Haiku title call per session from an auth-inheriting command hook, validates the result, and persists it through the official zero-turn `/rename` local-command path with exact readback. `/sessions` and `/reset` are best-effort backstops, while `/rename NAME` creates a permanent user-owned override.
-- `/model` now returns a one-time Telegram reply keyboard with `1 · Opus`, `2 · Sonnet`, `3 · Haiku`, and `4 · Inherit`; each button sends an exact deterministic control payload, and the pending acknowledgement removes the keyboard before restart.
-- Allowlisted private chats can opt into a Telegram command menu through chat-specific `setMyCommands` scopes, with an explicit `delete` mode for verified offboarding. The menu advertises only official commands and deterministic Harness controls; it never polls, grants authority, or exposes parameterized `/resume N`.
-- Deterministic Telegram `/model`: exact UserPromptSubmit routing, a fixed `opus|sonnet|haiku|inherit` allowlist, Protocol v4 root-helper restart/rollback, root-owned `ANTHROPIC_MODEL` persistence, and process-environment health readback without model invocation or TUI key injection.
-- Deterministic Stop-hook final delivery: Claude returns canonical Markdown as `last_assistant_message`; the bound `finish_turn` hook invokes the internal renderer exactly once, while model-facing renderer/official reply tools are hidden or denied. Proven oversized local replies block Stop once for a shorter replacement; unknown outcomes are never retried.
-- Telegram-native progress and usage emphasis: progress headers/tool labels render in bold HTML, argument previews render as escaped monospace code and truncate to 40 characters in `verbose` / 28 in `all`, while `/usage` renders bold percentages with ten-cell micro-bars.
-- Auth-source-agnostic runtime failure delivery: each ordinary Telegram turn watches only its trusted transcript append for at most five seconds. An exact `authentication_failed` event stops sustained typing/progress and sends one quoted explanation for either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`; normal Stop cancels the watcher. No credential preflight, storage, background polling, or expiry-warning policy is added.
-- Hermes-style Telegram execution UX: configurable `safe`/`all`/`verbose` disclosure with bounded command/path/query previews, hard credential redaction, running/completed/failed tool state, and one silent edit-in-place bubble. Tool output never enters disclosure.
-- Sustained Telegram typing heartbeat: two-second refresh, bounded requests, throttle cooldown, dead-man cutoff, and deterministic cancellation before final delivery or turn closure.
-- Deterministic `/usage`: Claude's documented `statusLine.rate_limits` is atomically cached as a private service-user snapshot and returned pre-LLM; no extra Claude process, OAuth poll, model turn, or session history is created.
-- Deterministic pre-LLM Telegram control routing: `/sessions` lists up to ten recent sessions directly, while `/reset` and `/resume N` use action-bound, session-bound, single-use 60-second confirmation challenges. The MCP dispatcher blocks handled commands before the model, a side-effect-free command hook keeps control namespaces blocked during MCP outages, destructive controls are private-chat only, and all session-control tools are denied to model use.
-- Session Control Protocol v3 between the unprivileged TypeScript MCP and the root-owned Python helper, including a read-only capability preflight, exact current/target session binding, durable action-bound receipts, exact worker health checks, and rollback.
-- Deterministic seedless session reset: a fresh `--session-id` start injects no prompt, a `SessionStart` command hook publishes a secure receipt under the service user, and the root helper accepts only the exact receipt plus process/poller/worker health as readiness. No LLM response and no transcript content prove readiness, and the first real Telegram message is the first user turn, so Claude's native `ai-title` is no longer anchored to a synthetic handshake.
+- Deterministic pre-LLM Telegram controls: `/usage`, `/sessions`, `/resume N`, `/reset`, `/rename NAME`, and `/model`. Destructive controls are private-chat only, confirmation challenges are action/session bound and single-use, and handled control commands never reach the model.
+- Session catalog and exact-session resume with bounded metadata-only titles. `/rename NAME` creates a permanent user-owned title, while the first meaningful Stop can generate one validated Haiku title through Claude's official zero-turn local `/rename --resume` path.
+- One-time `/model` reply keyboard, root-owned `ANTHROPIC_MODEL` persistence, exact process-environment readback, and optional per-chat Telegram command menus.
+- Hermes-style tool progress with configurable `safe`/`all`/`verbose` disclosure, full parent/subagent step visibility, bounded code/path/query previews, credential redaction, sustained typing, deterministic completion state, and no tool-output leakage.
+- Deterministic `/usage` from Claude's documented private `statusLine.rate_limits` snapshot, plus quoted runtime authentication-failure delivery from the exact trusted transcript append.
+- Successful Claude `Artifact` results can send up to four silent quoted Telegram documents after the canonical final text. Discovery is bound to the exact session transcript append and fixed session scratchpad; no model-facing registration or file-send tool exists.
+- Broker Protocol v1 and systemd socket activation for `capabilities`, `reset`, `resume`, and `model`, with example socket/template units, service hardening, and an exact-commit root-asset installer with atomic backup/readback/rollback.
+
+### Changed
+
+- Final Telegram delivery is now Stop-owned and deterministic: Claude returns canonical Markdown, the internal hook sends it exactly once, proven oversized local replies request one shorter replacement, and uncertain outcomes are never retried.
+- Fresh reset bootstrap is prompt-free and non-modal. A `SessionStart` command hook, exact UUID/process checks, the official Channel poller, renderer/control workers, and restored `--continue` unit state jointly prove readiness.
+- Rich delivery canonicalizes GFM through mdast before `sendRichMessage`, preserving literal markers while retaining valid emphasis, code, links, tables, and Telegram underline.
+- Slash-control replies use concise Telegram HTML hierarchy, escaped titles, code-formatted commands/values, honest metadata-only title fallbacks, and no exposed UUID/path internals.
+- Progress remains fully visible until Telegram's 4096-character wire limit instead of folding after eight steps; shell commands use a bounded one-line block and Skill calls name the loaded Skill.
+- Monorepo packages and both MCP server identities advance to `0.3.0`.
+
+### Security
+
+- The unprivileged control MCP no longer executes `sudo`, `systemd-run`, caller-selected helper/config paths, service names, unit names, or arbitrary privileged argv. It can only write bounded requests to a mode-`0600`, non-root-service-user-owned Unix socket.
+- The root broker verifies `SO_PEERCRED`, strict JSON types/keys, fixed paths and argv, socket deadlines, helper capabilities, 12 mutations per minute, and at most four concurrent helper jobs. UID `0` service identities are rejected.
+- Root helper operations use absolute `/usr/bin/systemctl`, finite bounded timeouts, exact old/new session and worker health proofs, and root-owned idempotency receipts with a 30-day/4096-entry bound.
+- Artifact delivery anchors every directory and file through trusted directory descriptors, requires same-UID private regular files, rejects links/writable/nested/oversized paths, bounds reads and aggregate memory, and never retries an unknown upload outcome.
+- The legacy model-facing `schedule_session_reset` surface is removed. Confirmed `/reset` remains exclusively on the deterministic pre-LLM path.
+- Telegram authority parsing accepts only exact direct Channel envelopes, rejects malformed or duplicate authority attributes, and keeps recipient allowlisting independent from transcript discovery.
 
 ### Fixed
 
-- User-facing Telegram sends wait 10 s instead of 3 s, so ordinary tail latency no longer reports a delivered reply as an unknown outcome. Reactions keep the 3 s bound.
-- A Rich capability 404 now holds Rich off for a 30-minute cooldown instead of the whole process lifetime, so a revoked token or an intermediary 404 can no longer silently downgrade rendering indefinitely.
-- Inputs rejected before delivery now finalize the processing reaction as `👎` instead of leaving `👀` in place. Delivery raises a typed `TelegramUncertainOutcomeError`, and only that error preserves `👀`.
-- Renderer replies now quote the inbound Telegram message by default across Rich, MarkdownV2, and plain-text fallback; explicit `reply_to` remains an override. `/reset` acceptance quotes the triggering command while later control notifications remain independent.
+- Runtime auth failures now stop typing/progress and produce one quoted recovery message without credential preflight, storage, background polling, or expiry-warning policy.
+- Model switching and rollback wait for the Claude CLI, official poller, renderer, and control workers instead of treating systemd `active` as readiness.
+- Renderer sends quote the inbound message by default across Rich, MarkdownV2, plain-text fallback, controls, and Artifact documents.
+- User-facing sends use a 10-second timeout; reactions retain the 3-second bound. Only typed uncertain outcomes preserve `👀`; proven local/permanent failures finalize `👎`.
+- Rich capability `404` responses use a 30-minute cooldown rather than permanently disabling Rich delivery for the process.
+- The official `plugin:telegram:telegram` Channel source binds correctly while prefix/suffix variants continue to fail closed.
+- Control commands no longer create progress bubbles that a reset/restart cannot close, and subagent disclosure no longer exposes underlying commands or private paths.
+- Root config mode, SessionStart receipt ownership, helper capability recovery, descriptor cleanup, duplicate Artifact IDs, and Unicode/Telegram progress length boundaries are covered by regression tests.
+
+### Upgrade notes
+
+- The `0.2.0` direct helper environment (`CLAUDE_SESSION_RESET_HELPER` and `CLAUDE_SESSION_RESET_CONFIG`) is no longer part of the unprivileged MCP configuration.
+- Deploy the exact `v0.3.0` user release, then run `scripts/install_root_assets.py` from that exact tagged checkout to install the root broker/helper, socket/template units, and Claude service hardening. Verify the root manifest and destination hashes before restart.
+- Enable `claude-code-control.socket`, reload systemd, restart the Claude service, and verify Broker Protocol capabilities plus `NoNewPrivileges=yes`, an empty effective capability set, one official poller, and both sidecars.
+- Roll back root assets before the user release when returning to `0.2.0`; otherwise its direct privileged control path is correctly blocked by `NoNewPrivileges`.
 
 ## [0.2.0] - 2026-08-18
 

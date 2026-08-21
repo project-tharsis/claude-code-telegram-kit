@@ -144,7 +144,7 @@ const dispatchControlCommand = createControlCommandDispatcher({
 const handleControlRouterTool = createControlRouterToolHandler(dispatchControlCommand);
 
 const server = new Server(
-  { name: "session-control", version: "0.2.0" },
+  { name: "session-control", version: "0.3.0" },
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

@@ -143,7 +143,7 @@ const disclosure = createTurnDisclosure({
 const handleHookTool = createHookToolHandler(disclosure);
 
 const server = new Server(
-  { name: "telegram-renderer", version: "0.2.0" },
+  { name: "telegram-renderer", version: "0.3.0" },
   { capabilities: { tools: {} } }
 );
 
