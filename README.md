@@ -13,12 +13,12 @@ This kit removes that trip. Anthropic's official [Telegram Channel](https://code
 
 ## What it does
 
-- `/reset`, `/resume N`, and `/model` act on the systemd-managed Claude Code process itself. Official pairing, attachments, and permission relay stay intact.
-- Every send resolves to confirmed, rejected, or unknown. An unknown outcome is never retried.
-- Markdown is canonicalized through mdast and the transport is chosen deterministically. Same input, same output.
+- Deterministic Telegram controls expose `/usage`, `/sessions`, `/model`, `/rename`, `/reset`, and `/resume N`. Privileged lifecycle changes act on the systemd-managed Claude Code process while official pairing, attachments, and permission relay stay intact.
+- Final delivery distinguishes confirmed, rejected, and unknown outcomes. An unknown outcome is never retried.
+- CommonMark/GFM canonicalization is deterministic; transport routing is explicit and capability-gated across Rich Message, MarkdownV2, and plain text.
 - No fork of the official plugin, and no second `getUpdates` consumer.
 
-Other projects reach the same commands by replacing the Channel with their own poller and their own session bookkeeping. That is a smaller problem: a session you started yourself is a session you can throw away. This kit does not own the process, so control has to cross a peer-UID-checked socket into a root helper that PID 1 executes.
+The difficult boundary is retaining official Channel ownership while controlling a process the sidecar did not start. Read-only status, listing, and title operations stay unprivileged; reset, resume, and model mutations cross a peer-UID-checked socket into a root broker that derives fixed helper and systemd arguments.
 
 ## Architecture
 
@@ -26,13 +26,12 @@ Other projects reach the same commands by replacing the Channel with their own p
 Telegram
   -> telegram@claude-plugins-official     # sole inbound poller
   -> Claude Code
-     -> Stop Hook(last_assistant_message)
-        -> telegram-renderer MCP            # internal final delivery
-        + lifecycle hooks                   # progress/typing/failure UX
-     -> session-control MCP                # reset + list/resume control
-       -> root socket broker               # peer UID + fixed protocol
-       -> systemd transient unit
-        -> root-owned session reset helper
+     -> lifecycle hooks
+        -> telegram-renderer MCP            # bind/progress/final/artifacts
+     -> UserPromptSubmit hook
+        -> session-control MCP              # user-space status/list/title
+           -> root socket broker            # capabilities/reset/resume/model only
+              -> fixed systemd/helper argv  # PID 1 owns reset execution
 ```
 
 The renderer and control MCPs reuse the official Channel's token and `access.json` authority. They require `dmPolicy: allowlist`, secure `0600` state files, and exact destination membership.
@@ -41,24 +40,24 @@ The renderer and control MCPs reuse the official Channel's token and `access.jso
 
 ![A progress bubble before and after the turn completes](docs/media/progress-bubble.png)
 
-Tool names map to a fixed allowlist of human labels, so a vendor-controlled tool name never reaches Telegram. Spinner and completion verbs are drawn as a pair from the turn key, so a turn that starts `Baking…` ends `Baked`. Command previews drop the leading `cd` and elide from the middle, keeping the part that identifies the command rather than the directory it ran in.
+Tool names map to a fixed allowlist of human labels, so a vendor-controlled tool name never reaches Telegram. Spinner and completion verbs are drawn as a pair from the turn key, so a turn that starts `Baking…` ends `Baked`. Command previews remove only a simple leading `cd <dir> &&` wrapper and elide from the middle, keeping the operation head and target tail.
 
-Disclosure is configurable as `safe`, `all`, or `verbose`. Credential-shaped values are replaced with fixed redaction markers at every level.
+Disclosure is configurable as `safe`, `all`, or `verbose`. Every accepted preview field is bounded; credential-shaped values are replaced with fixed markers before truncation or delivery.
 
 ## Rendering
 
 | Official Channel | With this kit |
 | --- | --- |
-| ![Markdown markup delivered literally](docs/media/render-before.png) | ![The same document routed to a Rich Message](docs/media/render-after.png) |
+| ![Markdown markup delivered literally](docs/media/render-before.svg) | ![The same document routed to a Rich Message](docs/media/render-after.svg) |
 
-The same Markdown document, both paths. The official `reply` tool defaults to `format: "text"`, so markup arrives literal; its `markdownv2` mode shifts escaping onto the model, so the same document renders correctly one turn and breaks the next. Here Claude returns ordinary CommonMark/GFM and a Stop hook passes `last_assistant_message` to the internal renderer, which picks the transport deterministically. (Figures are rendered from both paths, not device screenshots.)
+The same Markdown document, both paths. The official `reply` tool defaults to `format: "text"`, so markup arrives literal; its `markdownv2` mode requires the caller to produce Telegram-specific escaping. Here Claude returns ordinary CommonMark/GFM and the Stop hook passes `last_assistant_message` to the internal renderer, which picks the transport deterministically. (Figures are deterministic renderings, not device screenshots.)
 
 ## What it deliberately doesn't do
 
 - No progress bubble for control commands. `/reset` kills the process before `Stop` can close the bubble, and a bubble that can never close is worse than none.
 - No retry on an unknown delivery outcome.
 - No arbitrary Bot API method tool, and no arbitrary shell command tool.
-- Hook receipts are empty strings, so none of this machinery enters the transcript.
+- Normal hook receipts are empty. The sole exception is a proven oversized final, which blocks Stop once with a fixed bounded request for a shorter replacement.
 - The model never receives a confirmation code, session UUID, transcript path, helper path, service, or unit name.
 
 ## Quickstart
@@ -70,6 +69,7 @@ Set up Anthropic's official `telegram@claude-plugins-official` Channel first by 
 ```bash
 git clone https://github.com/project-tharsis/claude-code-telegram-kit
 cd claude-code-telegram-kit
+git checkout --detach v0.3.0
 bun install --frozen-lockfile
 bun run check
 
@@ -116,15 +116,15 @@ scripts/                   Versioned local install and rollback
 
 ## Why Telegram only
 
-No Discord, no Slack, no iMessage. That is a judgment rather than a roadmap gap: of the messaging platforms, Telegram is the one that treats a bot as a first-class client instead of a guest.
+This release supports Telegram only. That is a deliberate scope choice, not a claim that every other platform is incapable of the design.
 
 Three of its properties are load-bearing here, not conveniences:
 
-- `editMessageText` on any message the bot has sent. The single in-place progress bubble exists because of this. Without it, tool disclosure is either silence or a wall of new messages.
+- `editMessageText` on bot-authored messages. The single in-place progress bubble exists because of this. Without it, tool disclosure is either silence or a wall of new messages.
 - `setMessageReaction` on the user's own inbound message, which is how a turn acknowledges itself (`👀` to `👍`) without sending anything at all.
-- A plain HTTP Bot API with no gateway connection, no app review, and no verification queue. A token from BotFather and a systemd unit is the entire deployment.
+- A plain HTTP Bot API, including native Rich Messages, with no second gateway connection for the outbound sidecars. The official Channel still owns pairing and inbound updates.
 
-iMessage has no bot API. Discord's is gateway-first and guild-shaped, which suits a community rather than a private operator console. The sidecar boundary here is narrow enough to port if another platform grows the same three properties; until one does, adding a second target would mean lowering the delivery guarantees to whichever platform is weakest.
+iMessage has no general bot API; Discord and Slack expose different message and lifecycle primitives. The sidecar boundary is narrow enough to port, but a second target must implement the same edit, reaction, authority, and unknown-outcome contracts rather than weaken them behind a lowest-common-denominator abstraction.
 
 ## Installation model
 
@@ -173,7 +173,7 @@ Read [`SECURITY.md`](SECURITY.md) before deployment. Never commit bot tokens, ch
 
 ## Upstream
 
-Both gaps this kit fills are open upstream:
+The two original gaps that motivated this kit remain open upstream:
 
 - [anthropics/claude-code#39684](https://github.com/anthropics/claude-code/issues/39684) — no way to clear or reset context remotely
 - [anthropics/claude-code#36622](https://github.com/anthropics/claude-code/issues/36622) and [claude-plugins-official#774](https://github.com/anthropics/claude-plugins-official/issues/774) — requesting a MarkdownV2 `parse_mode`
@@ -182,7 +182,7 @@ Both gaps this kit fills are open upstream:
 
 The code is extracted from a live, verified deployment, then generalized into a clean-room public repository. APIs may change before `1.0.0`.
 
-The initial release is source-only. Workspace packages are marked `private` and are not published to npm; install from an exact Git commit with the versioned deploy script.
+This release is source-only. Workspace packages are marked `private` and are not published to npm; install from an exact Git commit with the versioned deploy script.
 
 ## License
 

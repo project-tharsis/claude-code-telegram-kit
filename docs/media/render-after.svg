@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="680" viewBox="0 0 900 680" role="img" aria-labelledby="title desc">
+  <title id="title">Stop-owned renderer routes CommonMark to a Telegram Rich Message</title>
+  <desc id="desc">A deterministic diagram showing the Stop hook passing the canonical final response to the internal renderer and the rendered Rich Message.</desc>
+  <rect width="900" height="680" fill="#08111d"/>
+  <circle cx="48" cy="52" r="6" fill="#65d69a"/>
+  <text x="64" y="61" fill="#e8eef7" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="700">Stop-owned Telegram Renderer</text>
+  <text x="64" y="88" fill="#8494aa" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15">Stop → finish_turn(last_assistant_message)</text>
+  <rect x="44" y="116" width="812" height="520" rx="18" fill="#15263a" stroke="#294159"/>
+  <rect x="68" y="142" width="240" height="40" rx="8" fill="#173b36" stroke="#327963"/>
+  <text x="86" y="168" fill="#82e3ae" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" letter-spacing="1">ROUTED TO RICH MESSAGE</text>
+  <text x="68" y="226" fill="#eef4fb" font-family="Inter,Arial,sans-serif" font-size="25" font-weight="700">Claudio Sidecar</text>
+  <text x="68" y="272" fill="#eef4fb" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">Native Rich Message is live.</text>
+  <g fill="#dbe5f0" font-family="Inter,Arial,sans-serif" font-size="17">
+    <circle cx="76" cy="320" r="3" fill="#88a5bf"/><text x="90" y="326">Official channel</text>
+    <circle cx="76" cy="356" r="3" fill="#88a5bf"/><text x="90" y="362">Rich sidecar</text>
+    <circle cx="76" cy="392" r="3" fill="#88a5bf"/><text x="90" y="398">Auto fallback</text>
+  </g>
+  <rect x="68" y="430" width="764" height="120" rx="8" fill="#1b3045" stroke="#3a566f"/>
+  <line x1="468" y1="430" x2="468" y2="550" stroke="#3a566f"/>
+  <line x1="68" y1="476" x2="832" y2="476" stroke="#3a566f"/>
+  <line x1="68" y1="513" x2="832" y2="513" stroke="#3a566f"/>
+  <g font-family="Inter,Arial,sans-serif" font-size="15">
+    <text x="84" y="459" fill="#a9bdd1" font-weight="700">Layer</text>
+    <text x="484" y="459" fill="#a9bdd1" font-weight="700">State</text>
+    <text x="84" y="505" fill="#e3ebf4">Claude</text>
+    <text x="484" y="505" fill="#e3ebf4">online</text>
+    <text x="84" y="540" fill="#e3ebf4">Bun</text>
+    <text x="484" y="540" fill="#e3ebf4">online</text>
+  </g>
+  <rect x="68" y="568" width="764" height="42" rx="8" fill="#0d1b29" stroke="#31485f"/>
+  <text x="86" y="594" fill="#f3c0bc" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16">systemctl status claude-telegram</text>
+  <text x="68" y="630" fill="#8293a8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13">CommonMark/GFM → deterministic transport → Rich Message</text>
+</svg>
