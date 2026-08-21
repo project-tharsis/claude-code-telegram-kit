@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="680" viewBox="0 0 900 680" role="img" aria-labelledby="title desc">
+  <title id="title">Official Telegram Channel sends Markdown as literal text</title>
+  <desc id="desc">A deterministic diagram showing CommonMark markup displayed literally when the official reply tool uses text format.</desc>
+  <rect width="900" height="680" fill="#08111d"/>
+  <circle cx="48" cy="52" r="6" fill="#ef7c83"/>
+  <text x="64" y="61" fill="#e8eef7" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="700">Official Telegram Channel</text>
+  <text x="64" y="88" fill="#8494aa" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15">reply(text, format: "text")</text>
+  <rect x="44" y="116" width="812" height="520" rx="18" fill="#15263a" stroke="#294159"/>
+  <rect x="68" y="142" width="278" height="40" rx="8" fill="#3a2d3a" stroke="#99545e"/>
+  <text x="86" y="168" fill="#f1abb0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" letter-spacing="1">MARKUP DELIVERED LITERALLY</text>
+  <g fill="#e1e8f2" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16">
+    <text x="68" y="222">## Claudio Sidecar</text>
+    <text x="68" y="270">**Native Rich Message is live.**</text>
+    <text x="68" y="324">- Official channel</text>
+    <text x="68" y="356">- Rich sidecar</text>
+    <text x="68" y="388">- Auto fallback</text>
+    <text x="68" y="438">| Layer  | State  |</text>
+    <text x="68" y="468">|--------|--------|</text>
+    <text x="68" y="498">| Claude | online |</text>
+    <text x="68" y="528">| Bun    | online |</text>
+    <text x="68" y="576">`systemctl status claude-telegram`</text>
+  </g>
+  <text x="68" y="614" fill="#8293a8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13">Telegram Bot API · plain text path</text>
+</svg>

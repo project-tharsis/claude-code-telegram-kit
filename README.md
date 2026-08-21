@@ -1,37 +1,75 @@
 # Claude Code Telegram Kit
 
-**Not another Telegram bridge.** Anthropic's official [Claude Code Channel](https://code.claude.com/docs/en/channels) keeps inbound. This kit fixes the two things it does not do: Markdown that survives Telegram's parser, and resetting context from your phone.
+Your context is full. You're on the subway. The Claude Code session is still running on your VPS.
+
+To clear it, you go home and open a laptop.
+
+This kit removes that trip. Anthropic's official [Telegram Channel](https://code.claude.com/docs/en/channels) keeps inbound, untouched. The kit takes the outbound and control half.
 
 [![CI](https://github.com/project-tharsis/claude-code-telegram-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/project-tharsis/claude-code-telegram-kit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 > Research-preview infrastructure. Review the security model before connecting it to a machine with valuable data.
 
+## What it does
+
+- Deterministic Telegram controls expose `/usage`, `/sessions`, `/model`, `/rename`, `/reset`, and `/resume N`. Privileged lifecycle changes act on the systemd-managed Claude Code process while official pairing, attachments, and permission relay stay intact.
+- Final delivery distinguishes confirmed, rejected, and unknown outcomes. An unknown outcome is never retried.
+- CommonMark/GFM canonicalization is deterministic; transport routing is explicit and capability-gated across Rich Message, MarkdownV2, and plain text.
+- No fork of the official plugin, and no second `getUpdates` consumer.
+
+The difficult boundary is retaining official Channel ownership while controlling a process the sidecar did not start. Read-only status, listing, and title operations stay unprivileged; reset, resume, and model mutations cross a peer-UID-checked socket into a root broker that derives fixed helper and systemd arguments.
+
+## Architecture
+
+```text
+Telegram
+  -> telegram@claude-plugins-official     # sole inbound poller
+  -> Claude Code
+     -> lifecycle hooks
+        -> telegram-renderer MCP            # bind/progress/final/artifacts
+     -> UserPromptSubmit hook
+        -> session-control MCP              # user-space status/list/title
+           -> root socket broker            # capabilities/reset/resume/model only
+              -> fixed systemd/helper argv  # PID 1 owns reset execution
+```
+
+The renderer and control MCPs reuse the official Channel's token and `access.json` authority. They require `dmPolicy: allowlist`, secure `0600` state files, and exact destination membership.
+
+## Progress disclosure
+
+![A progress bubble before and after the turn completes](docs/media/progress-bubble.png)
+
+Tool names map to a fixed allowlist of human labels, so a vendor-controlled tool name never reaches Telegram. Spinner and completion verbs are drawn as a pair from the turn key, so a turn that starts `Baking…` ends `Baked`. Command previews remove only a simple leading `cd <dir> &&` wrapper and elide from the middle, keeping the operation head and target tail.
+
+Disclosure is configurable as `safe`, `all`, or `verbose`. Every accepted preview field is bounded; credential-shaped values are replaced with fixed markers before truncation or delivery.
+
+## Rendering
+
 | Official Channel | With this kit |
 | --- | --- |
-| ![Markdown markup delivered literally](docs/media/render-before.png) | ![The same document routed to a Rich Message](docs/media/render-after.png) |
+| ![Markdown markup delivered literally](docs/media/render-before.svg) | ![The same document routed to a Rich Message](docs/media/render-after.svg) |
 
-The same Markdown document, both paths. The official `reply` tool defaults to `format: "text"`, so markup arrives literal; its `markdownv2` mode shifts escaping onto the model. With this kit, Claude returns ordinary CommonMark/GFM and a Stop hook passes `last_assistant_message` to the internal renderer, which picks the transport deterministically. (Figures are rendered from both paths, not device screenshots.)
+The same Markdown document, both paths. The official `reply` tool defaults to `format: "text"`, so markup arrives literal; its `markdownv2` mode requires the caller to produce Telegram-specific escaping. Here Claude returns ordinary CommonMark/GFM and the Stop hook passes `last_assistant_message` to the internal renderer, which picks the transport deterministically. (Figures are deterministic renderings, not device screenshots.)
 
-## Why this exists
+## What it deliberately doesn't do
 
-Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control sidecars beside it, without a second `getUpdates` consumer:
-
-- **Telegram Renderer MCP** — internal Stop-hook final delivery, successful Claude `Artifact` attachment delivery, plus silent edit-in-place tool disclosure. Rendering, quote targets, fallback, reactions, attachment transport, and disclosure redaction are deterministic; the model selects neither Telegram tool nor transport.
-- **Session Control MCP** — `/usage`, deterministic `/model`, `/rename NAME`, `/reset`, bounded `/sessions`, approval-gated `/resume N`, automatic one-shot semantic titles, and an optional allowlisted per-chat Bot Menu; privileged execution crosses only a peer-UID-checked Unix-socket broker into a versioned root helper that PID 1 executes.
-
-Both gaps are open upstream. This kit is the interim answer:
-
-- [anthropics/claude-code#39684](https://github.com/anthropics/claude-code/issues/39684) — no way to clear or reset context remotely
-- [anthropics/claude-code#36622](https://github.com/anthropics/claude-code/issues/36622) and [claude-plugins-official#774](https://github.com/anthropics/claude-plugins-official/issues/774) — requesting a MarkdownV2 `parse_mode`
+- No progress bubble for control commands. `/reset` kills the process before `Stop` can close the bubble, and a bubble that can never close is worse than none.
+- No retry on an unknown delivery outcome.
+- No arbitrary Bot API method tool, and no arbitrary shell command tool.
+- Normal hook receipts are empty. The sole exception is a proven oversized final, which blocks Stop once with a fixed bounded request for a shorter replacement.
+- The model never receives a confirmation code, session UUID, transcript path, helper path, service, or unit name.
 
 ## Quickstart
 
-Requires the official `telegram@claude-plugins-official` plugin already paired and working.
+This kit attaches to a Channel that already works. It never installs, replaces, or reconfigures one.
+
+Set up Anthropic's official `telegram@claude-plugins-official` Channel first by following [the Channels guide](https://code.claude.com/docs/en/channels), and confirm you can message Claude Code from Telegram and get a reply. Only then install anything here.
 
 ```bash
 git clone https://github.com/project-tharsis/claude-code-telegram-kit
 cd claude-code-telegram-kit
+git checkout --detach v0.3.0
 bun install --frozen-lockfile
 bun run check
 
@@ -44,23 +82,6 @@ Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settin
 The renderer package remains self-contained, but automatic final delivery requires the supplied Hook configuration. `/model`, `/reset`, and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
 
 For production deployment, rollback, and verification, follow the [operations runbook](docs/operations.md) rather than this section.
-
-## Architecture
-
-```text
-Telegram
-  -> telegram@claude-plugins-official     # sole inbound poller
-  -> Claude Code
-     -> Stop Hook(last_assistant_message)
-        -> telegram-renderer MCP            # internal final delivery
-        + lifecycle hooks                   # progress/typing/failure UX
-     -> session-control MCP                # reset + list/resume control
-       -> root socket broker               # peer UID + fixed protocol
-       -> systemd transient unit
-        -> root-owned session reset helper
-```
-
-The renderer and control MCPs reuse the official Channel's token and `access.json` authority. They require `dmPolicy: allowlist`, secure `0600` state files, and exact destination membership.
 
 ## Design invariants
 
@@ -91,7 +112,19 @@ scripts/                   Versioned local install and rollback
 - Claude Code 2.1.235 or newer
 - Bun 1.3.14 or newer
 - Python 3.11 or newer
-- Anthropic's official `telegram@claude-plugins-official` plugin
+- Anthropic's official [`telegram@claude-plugins-official`](https://code.claude.com/docs/en/channels) Channel plugin, already paired and working
+
+## Why Telegram only
+
+This release supports Telegram only. That is a deliberate scope choice, not a claim that every other platform is incapable of the design.
+
+Three of its properties are load-bearing here, not conveniences:
+
+- `editMessageText` on bot-authored messages. The single in-place progress bubble exists because of this. Without it, tool disclosure is either silence or a wall of new messages.
+- `setMessageReaction` on the user's own inbound message, which is how a turn acknowledges itself (`👀` to `👍`) without sending anything at all.
+- A plain HTTP Bot API, including native Rich Messages, with no second gateway connection for the outbound sidecars. The official Channel still owns pairing and inbound updates.
+
+iMessage has no general bot API; Discord and Slack expose different message and lifecycle primitives. The sidecar boundary is narrow enough to port, but a second target must implement the same edit, reaction, authority, and unknown-outcome contracts rather than weaken them behind a lowest-common-denominator abstraction.
 
 ## Installation model
 
@@ -138,11 +171,18 @@ bun audit
 
 Read [`SECURITY.md`](SECURITY.md) before deployment. Never commit bot tokens, chat IDs, transcripts, service-specific paths, or live reset configuration.
 
+## Upstream
+
+The two original gaps that motivated this kit remain open upstream:
+
+- [anthropics/claude-code#39684](https://github.com/anthropics/claude-code/issues/39684) — no way to clear or reset context remotely
+- [anthropics/claude-code#36622](https://github.com/anthropics/claude-code/issues/36622) and [claude-plugins-official#774](https://github.com/anthropics/claude-plugins-official/issues/774) — requesting a MarkdownV2 `parse_mode`
+
 ## Project status
 
 The code is extracted from a live, verified deployment, then generalized into a clean-room public repository. APIs may change before `1.0.0`.
 
-The initial release is source-only. Workspace packages are marked `private` and are not published to npm; install from an exact Git commit with the versioned deploy script.
+This release is source-only. Workspace packages are marked `private` and are not published to npm; install from an exact Git commit with the versioned deploy script.
 
 ## License
 
