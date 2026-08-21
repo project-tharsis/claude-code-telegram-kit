@@ -63,7 +63,9 @@ The same Markdown document, both paths. The official `reply` tool defaults to `f
 
 ## Quickstart
 
-Requires the official `telegram@claude-plugins-official` plugin already paired and working.
+This kit attaches to a Channel that already works. It never installs, replaces, or reconfigures one.
+
+Set up Anthropic's official `telegram@claude-plugins-official` Channel first by following [the Channels guide](https://code.claude.com/docs/en/channels), and confirm you can message Claude Code from Telegram and get a reply. Only then install anything here.
 
 ```bash
 git clone https://github.com/project-tharsis/claude-code-telegram-kit
@@ -110,7 +112,19 @@ scripts/                   Versioned local install and rollback
 - Claude Code 2.1.235 or newer
 - Bun 1.3.14 or newer
 - Python 3.11 or newer
-- Anthropic's official `telegram@claude-plugins-official` plugin
+- Anthropic's official [`telegram@claude-plugins-official`](https://code.claude.com/docs/en/channels) Channel plugin, already paired and working
+
+## Why Telegram only
+
+No Discord, no Slack, no iMessage. That is a judgment rather than a roadmap gap: of the messaging platforms, Telegram is the one that treats a bot as a first-class client instead of a guest.
+
+Three of its properties are load-bearing here, not conveniences:
+
+- `editMessageText` on any message the bot has sent. The single in-place progress bubble exists because of this. Without it, tool disclosure is either silence or a wall of new messages.
+- `setMessageReaction` on the user's own inbound message, which is how a turn acknowledges itself (`👀` to `👍`) without sending anything at all.
+- A plain HTTP Bot API with no gateway connection, no app review, and no verification queue. A token from BotFather and a systemd unit is the entire deployment.
+
+iMessage has no bot API. Discord's is gateway-first and guild-shaped, which suits a community rather than a private operator console. The sidecar boundary here is narrow enough to port if another platform grows the same three properties; until one does, adding a second target would mean lowering the delivery guarantees to whichever platform is weakest.
 
 ## Installation model
 
