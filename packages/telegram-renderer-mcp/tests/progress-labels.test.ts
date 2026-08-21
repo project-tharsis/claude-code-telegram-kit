@@ -53,10 +53,12 @@ describe("safe step labels", () => {
     expect(SAFE_STEP_LABELS).toContain("Working");
   });
 
-  test("collapses every subagent internal to one delegating label", () => {
-    for (const name of ["Read", "Bash", "mcp__x__y", "SomeBrandNewTool", "Task"]) {
-      expect(safeStepLabel(name, "agent-7")).toBe(DELEGATING_LABEL);
-    }
+  test("keeps granular tool labels inside subagents", () => {
+    expect(safeStepLabel("Read", "agent-7")).toBe("Read file");
+    expect(safeStepLabel("Bash", "agent-7")).toBe("Run command");
+    expect(safeStepLabel("mcp__x__y", "agent-7")).toBe("Use integration");
+    expect(safeStepLabel("SomeBrandNewTool", "agent-7")).toBe("Working");
+    expect(safeStepLabel("Task", "agent-7")).toBe(DELEGATING_LABEL);
   });
 
   test("still filters sidecar tools called from inside a subagent", () => {

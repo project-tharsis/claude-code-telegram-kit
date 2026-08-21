@@ -54,6 +54,7 @@ export const RecordToolInputSchema = z.object({
   pattern: optionalText(8_192),
   query: optionalText(8_192),
   url: optionalText(8_192),
+  skill: optionalText(128),
   description: optionalText(2_048),
   hook_event_name: z.literal("PreToolUse")
 }).strict();

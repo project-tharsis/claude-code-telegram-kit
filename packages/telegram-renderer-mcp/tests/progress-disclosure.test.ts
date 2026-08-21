@@ -602,7 +602,7 @@ describe("turn disclosure lifecycle", () => {
     expect(h.edits).toEqual([{ messageId: 101, text: "Working…\n• … Read file\n• … Run command" }]);
   });
 
-  test("filters internal sidecar tools and collapses subagent internals", async () => {
+  test("filters internal sidecar tools and discloses subagent internals", async () => {
     const h = harness();
     bind(h);
     tool(h, "t0", "mcp__telegram-renderer__send_reply");
@@ -611,7 +611,9 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t3", "Bash", "agent-1");
     tool(h, "t4", "mcp__session-control__list_sessions", "agent-1");
     await h.tick();
-    expect(h.sends[0]!.text).toBe("Working…\n• … Delegate work ×3");
+    expect(h.sends[0]!.text).toBe(
+      "Working…\n• … Delegate work\n• … Read file\n• … Run command"
+    );
   });
 
   test("dedupes a repeated tool_use_id across flushes", async () => {
