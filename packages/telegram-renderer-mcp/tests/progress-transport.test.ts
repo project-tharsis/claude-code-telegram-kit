@@ -59,7 +59,7 @@ describe("progress bubble send", () => {
     const body = JSON.parse(String(calls[0]!.init.body));
     expect(body).toEqual({
       chat_id: "123",
-      text: "<b>Working…</b>\n• ✓ <b>Run command</b>\n<pre>ls &lt;x&gt;</pre>",
+      text: "<b>Working…</b>\n• ✓ <b>Run command</b>\n<code>ls &lt;x&gt;</code>",
       parse_mode: "HTML",
       disable_notification: true,
       reply_parameters: { message_id: 9 }
