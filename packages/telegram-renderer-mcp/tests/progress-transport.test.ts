@@ -52,7 +52,7 @@ describe("progress bubble send", () => {
       config,
       "123",
       "9",
-      "Working…\n💻 terminal\n```shell\nls <x>\n```",
+      "Tinkering…\n💻 terminal\n```shell\nls <x>\n```",
       async (url, init) => {
       calls.push({ url: String(url), init: init! });
       return reply(200, { ok: true, result: { message_id: 55 } });
@@ -64,7 +64,7 @@ describe("progress bubble send", () => {
     const body = JSON.parse(String(calls[0]!.init.body));
     expect(body).toEqual({
       chat_id: "123",
-      text: "<b>✦ Working…</b>\n\n💻 terminal\n<pre><code class=\"language-shell\">ls &lt;x&gt;</code></pre>",
+      text: "<b>✦ Tinkering…</b>\n\n💻 terminal\n<pre><code class=\"language-shell\">ls &lt;x&gt;</code></pre>",
       parse_mode: "HTML",
       disable_notification: true,
       reply_parameters: { message_id: 9 }

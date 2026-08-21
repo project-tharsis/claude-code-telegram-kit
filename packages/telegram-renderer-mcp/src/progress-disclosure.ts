@@ -280,7 +280,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         if (envelope === null) return;
         // Session-control commands already have their own ACK/list/permission/completion UX.
         // A progress bubble is redundant, and resume/reset kill the current process before
-        // Stop can close it, leaving a permanent stale "Working…" bubble.
+        // Stop can close it, leaving a permanent stale progress bubble.
         if (CONTROL_NAMESPACE.test(envelope.body) || MODEL_REPLY_CHOICE.test(envelope.body)) return;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 
