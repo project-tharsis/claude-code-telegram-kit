@@ -47,7 +47,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Rich capability `404` responses use a 30-minute cooldown rather than permanently disabling Rich delivery for the process.
 - The official `plugin:telegram:telegram` Channel source binds correctly while prefix/suffix variants continue to fail closed.
 - Control commands no longer create progress bubbles that a reset/restart cannot close, and subagent disclosure no longer exposes underlying commands or private paths.
-- Root config mode, SessionStart receipt ownership, helper capability recovery, descriptor cleanup, duplicate Artifact IDs, and Unicode/Telegram progress length boundaries are covered by regression tests.
+- Regression tests cover root config, receipts, helper recovery, descriptor cleanup, Artifact IDs, Unicode boundaries, version drift, and exact release extraction.
 
 ### Upgrade notes
 
