@@ -214,19 +214,30 @@ describe("turn disclosure lifecycle", () => {
     expect(h.finalDeliveries).toEqual([]);
   });
 
-  test("a legacy send_reply reservation suppresses Stop auto-delivery", async () => {
-    const h = harness();
-    bind(h);
-    await h.disclosure.finalizeChat("123");
-    expect(await finish(h, "Stop", "must not duplicate")).toBe("finished");
-    expect(h.finalDeliveries).toEqual([]);
-  });
 
   test("StopFailure never delivers assistant text", async () => {
     const h = harness();
     bind(h);
     expect(await finish(h, "StopFailure", "must not send")).toBe("finished");
     expect(h.finalDeliveries).toEqual([]);
+  });
+
+  test("maps a semantic oversized final to retry before transport", async () => {
+    const h = harness();
+    bind(h);
+    expect(await finish(h, "Stop", "x".repeat(100_001))).toBe("retry");
+    expect(h.finalDeliveries).toEqual([]);
+    expect(h.typingStarts).toEqual(["123", "123"]);
+  });
+
+  test("a second semantic oversized final sends the fixed fallback once", async () => {
+    const h = harness();
+    bind(h);
+    expect(await finish(h, "Stop", "x".repeat(100_001))).toBe("retry");
+    expect(await finish(h, "Stop", "y".repeat(100_001))).toBe("finished");
+    expect(h.finalDeliveries.map(item => item.content)).toEqual([
+      "The response was too long to deliver. Ask for a shorter answer."
+    ]);
   });
 
   test("a local oversized final asks Claude to shorten once, then delivers the replacement", async () => {
@@ -488,12 +499,10 @@ describe("turn disclosure lifecycle", () => {
     expect(alerts).toBe(1);
   });
 
-  test("starts sustained typing on bind and stops it on final/send cleanup", async () => {
+  test("starts sustained typing on bind and stops it on final cleanup", async () => {
     const h = harness();
     bind(h);
     expect(h.typingStarts).toEqual(["123"]);
-    await h.disclosure.finalizeChat("123");
-    expect(h.typingStops.count).toBe(1);
     await finish(h);
     expect(h.typingStops.count).toBe(1);
   });
@@ -631,7 +640,7 @@ describe("turn disclosure lifecycle", () => {
   test("filters internal sidecar tools and discloses subagent internals", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t0", "mcp__telegram-renderer__send_reply");
+    tool(h, "t0", "mcp__telegram-renderer__finish_turn");
     tool(h, "t1", "Task");
     tool(h, "t2", "Read", "agent-1");
     tool(h, "t3", "Bash", "agent-1");

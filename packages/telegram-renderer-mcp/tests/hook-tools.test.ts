@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createHookToolHandler, HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS, RECORD_TOOL_TOOL } from "../src/hook-tools.js";
+import { BIND_TURN_TOOL, createHookToolHandler, HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS, RECORD_TOOL_TOOL } from "../src/hook-tools.js";
 import { RecordToolInputSchema } from "../src/hook-contract.js";
 import { createTurnDisclosure } from "../src/progress-disclosure.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
-import { SEND_REPLY_TOOL } from "../src/unified-tool.js";
+
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 
@@ -33,11 +33,11 @@ function recorder() {
 }
 
 describe("internal hook tool declarations", () => {
-  test("are distinguishable from the public reply tool", () => {
+  test("advertise only the internal hook tools", () => {
     expect(HOOK_TOOL_NAMES).toEqual([
       "bind_turn", "record_tool", "record_tool_success", "record_tool_failure", "finish_turn"
     ]);
-    expect(HOOK_TOOL_NAMES).not.toContain(SEND_REPLY_TOOL.name);
+    expect(HOOK_TOOL_NAMES).not.toContain("send_reply");
 
     for (const tool of INTERNAL_HOOK_TOOLS) {
       expect(tool.description).toContain("Internal Claude Code hook tool");
@@ -56,6 +56,13 @@ describe("internal hook tool declarations", () => {
     }
   });
 
+  test("declares the optional transcript authority accepted by bind_turn", () => {
+    expect(BIND_TURN_TOOL.inputSchema.properties.transcript_path).toEqual({
+      type: "string",
+      maxLength: 8192
+    });
+  });
+
   test("allows Claude's empty substitution for an absent optional agent_id", () => {
     expect(RECORD_TOOL_TOOL.inputSchema.properties.agent_id.pattern).toBe(
       "^(?:|[A-Za-z0-9_.:-]{1,128})$"
@@ -72,6 +79,18 @@ describe("internal hook tool declarations", () => {
 });
 
 describe("internal hook tool handler", () => {
+  test("routes a transport-large final instead of swallowing it", async () => {
+    const { calls, handle } = recorder();
+    const result = await handle("finish_turn", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      last_assistant_message: "x".repeat(100_001),
+      hook_event_name: "Stop"
+    });
+    expect(calls.map(call => call.kind)).toEqual(["finish"]);
+    expect(result!.content).toEqual([{ type: "text", text: "" }]);
+  });
+
   test("blocks Stop only when final delivery asks Claude to shorten", async () => {
     const handle = createHookToolHandler({
       bindTurn: () => undefined,
@@ -127,6 +146,7 @@ describe("internal hook tool handler", () => {
     await handle("finish_turn", {
       session_id: SESSION,
       prompt_id: "p1",
+      last_assistant_message: "",
       hook_event_name: "Stop"
     });
     expect(calls.map(call => call.kind)).toEqual(["bind", "tool", "success", "failure", "finish"]);
@@ -283,7 +303,7 @@ describe("internal hook tool handler", () => {
     expect(result!.isError).toBeFalsy();
   });
 
-  test("returns null for a tool it does not own so the reply tool still routes", async () => {
+  test("returns null for tools it does not own so the server can reject them uniformly", async () => {
     const { handle } = recorder();
     expect(await handle("send_reply", {})).toBeNull();
     expect(await handle("anything_else", {})).toBeNull();

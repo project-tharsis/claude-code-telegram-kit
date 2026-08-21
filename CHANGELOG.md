@@ -35,6 +35,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Root helper operations use absolute `/usr/bin/systemctl`, bounded timeouts, and exact supplied old/new session identities; rollback authority is never inferred from transcript mtimes.
 - Root idempotency receipts expire after 30 days and fail closed at 4096 entries.
 - The dead `bind_command`, `list_sessions`, and `resume_session` MCP surfaces are removed; `dispatch_command` is the sole deterministic control router.
+- The legacy hidden `send_reply` direct-call surface and reservation path are removed; the renderer accepts only its five declared hook tools.
 - Artifact delivery anchors every directory and file through trusted directory descriptors, requires same-UID private regular files, rejects links/writable/nested/oversized paths, bounds reads and aggregate memory, and never retries an unknown upload outcome.
 - The legacy model-facing `schedule_session_reset` surface is removed. Confirmed `/reset` remains exclusively on the deterministic pre-LLM path.
 - Telegram authority parsing accepts only exact direct Channel envelopes, rejects malformed or duplicate authority attributes, and keeps recipient allowlisting independent from transcript discovery.
@@ -49,6 +50,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 - The official `plugin:telegram:telegram` Channel source binds correctly while prefix/suffix variants continue to fail closed.
 - Control commands no longer create progress bubbles that a reset/restart cannot close, and subagent disclosure no longer exposes underlying commands or private paths.
 - Automatic title hooks keep exact session/transcript authority while allowing Claude's tool cwd to change during the turn.
+- Finals above the semantic 100,000-character limit now close progress and enter the existing one-retry shorter-answer path instead of being swallowed by hook validation.
+- `bind_turn` now advertises its optional transcript authority, and example hook inputs are contract-checked against every renderer tool declaration.
+- Read/Edit/Write-family progress previews show filenames rather than absolute paths.
+- Version checks now require a dated Changelog heading matching the package/server/lock version.
 - Regression tests cover root config, receipts, helper recovery, descriptor cleanup, Artifact IDs, Unicode boundaries, version drift, and exact release extraction.
 
 ### Upgrade notes

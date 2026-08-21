@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const MAX_HOOK_FINAL_CHARACTERS = 1_000_000;
+
 export {
   parseDirectTelegramEnvelope,
   type DirectTelegramEnvelope
@@ -18,8 +20,15 @@ const uuid = z.string().regex(
 );
 const identifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9_.:-]+$/, "invalid identifier");
 const toolName = z.string().min(1).max(128).regex(/^[A-Za-z0-9_.:-]+$/, "invalid tool name");
+function boundedText(maxLength: number) {
+  return z.string().refine(
+    value => Array.from(value).length <= maxLength,
+    `text exceeds ${maxLength} characters`
+  );
+}
+
 /** Never persisted, never logged; parsed for the direct-envelope target and then dropped. */
-const prompt = z.string().max(1_000_000);
+const prompt = boundedText(1_000_000);
 
 /** An empty string is Claude Code's rendering of an absent optional template field. */
 const optionalIdentifier = z.union([z.literal(""), identifier])
@@ -27,8 +36,13 @@ const optionalIdentifier = z.union([z.literal(""), identifier])
   .transform(value => (value === undefined || value === "" ? undefined : value));
 
 function optionalText(maxLength: number) {
-  return z.string().max(maxLength).optional()
+  return boundedText(maxLength).optional()
     .transform(value => (value === undefined || value === "" ? undefined : value));
+}
+
+function requiredTemplateText(maxLength: number) {
+  return boundedText(maxLength)
+    .transform(value => (value === "" ? undefined : value));
 }
 
 const turnKey = {
@@ -76,7 +90,7 @@ export const RecordToolFailureInputSchema = z.object({
 
 export const FinishTurnInputSchema = z.object({
   ...turnKey,
-  last_assistant_message: optionalText(100_000),
+  last_assistant_message: requiredTemplateText(MAX_HOOK_FINAL_CHARACTERS),
   hook_event_name: z.union([z.literal("Stop"), z.literal("StopFailure")])
 }).strict();
 

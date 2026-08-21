@@ -35,6 +35,22 @@ describe("stdio MCP server", () => {
     }
   }, 10_000);
 
+  test("rejects the removed send_reply surface as an unknown tool", async () => {
+    const transport = new StdioClientTransport({
+      command: execPath,
+      args: ["run", resolve(import.meta.dir, "../src/server.ts")]
+    });
+    const client = new Client({ name: "renderer-test", version: "0.1.0" });
+    clients.push(client);
+    await client.connect(transport);
+    const result = await client.callTool({
+      name: "send_reply",
+      arguments: { chat_id: "123", message_id: "9", content: "must not send" }
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: "unknown renderer tool" }]);
+  }, 10_000);
+
   test("rejects a spoofed internal hook call without failing the caller", async () => {
     const transport = new StdioClientTransport({
       command: execPath,

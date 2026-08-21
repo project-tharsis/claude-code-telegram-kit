@@ -33,9 +33,17 @@ describe("progress preview modes", () => {
     }, "verbose")).toMatchObject({ preview: `auth.ts L${Number.MAX_SAFE_INTEGER}` });
   });
 
-  test("verbose mode shows paths and commands but redacts actual secrets", () => {
+  test("verbose mode shows filenames and commands but redacts actual secrets", () => {
+    for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      expect(buildProgressStep(tool, { file_path: "/home/USER/repo/src/auth.ts" }, "verbose"))
+        .toMatchObject({ preview: "auth.ts" });
+    }
+    for (const path of ["/", "\\", "../../", "C:\\"]) {
+      expect(buildProgressStep("Edit", { file_path: path }, "verbose"))
+        .toEqual({ emoji: "🔧", label: "Editing", kind: "inline", connector: " " });
+    }
     expect(buildProgressStep("Edit", { file_path: "/home/USER/repo/src/auth.ts" }, "verbose"))
-      .toMatchObject({ emoji: "🔧", label: "Editing", preview: "/home/USER/repo/src/auth.ts" });
+      .toMatchObject({ emoji: "🔧", label: "Editing" });
     expect(buildProgressStep("Bash", { command: "pytest tests/auth.py --token abc123" }, "verbose"))
       .toEqual({
         emoji: "💻",
@@ -58,14 +66,14 @@ describe("progress preview modes", () => {
   test("shows integration and tool-search previews without internal sidecar plumbing", () => {
     const toolSearch = buildProgressStep(
       "ToolSearch",
-      { query: "select:mcp__telegram-renderer__send_reply" },
+      { query: "select:mcp__telegram-renderer__finish_turn" },
       "verbose"
     )!;
     expect(toolSearch.preview?.startsWith("select:mcp__telegram-renderer__")).toBe(true);
     expect(toolSearch.preview?.endsWith("…")).toBe(true);
     expect(buildProgressStep("mcp__github__search_issues", { query: "bug" }, "verbose"))
       .toMatchObject({ emoji: "🔌", label: "Using integration", preview: "bug" });
-    expect(buildProgressStep("mcp__telegram-renderer__send_reply", {}, "verbose")).toBeNull();
+    expect(buildProgressStep("mcp__telegram-renderer__finish_turn", {}, "verbose")).toBeNull();
     expect(buildProgressStep("VendorControlledToolName", { command: "leak-me" }, "verbose"))
       .toEqual({ emoji: "⚙️", label: "Working", kind: "inline", connector: " " });
   });

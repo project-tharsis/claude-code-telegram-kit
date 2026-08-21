@@ -10,7 +10,7 @@ import {
 describe("internal sidecar tool filtering", () => {
   test("filters every renderer and control tool, public or internal", () => {
     for (const name of [
-      "mcp__telegram-renderer__send_reply",
+      "mcp__telegram-renderer__record_tool_success",
       "mcp__telegram-renderer__bind_turn",
       "mcp__telegram-renderer__record_tool",
       "mcp__telegram-renderer__finish_turn",
@@ -61,7 +61,7 @@ describe("safe step presentation", () => {
   });
 
   test("still filters sidecar tools called from inside a subagent", () => {
-    expect(safeStepPresentation("mcp__telegram-renderer__send_reply", "agent-7")).toBeNull();
+    expect(safeStepPresentation("mcp__telegram-renderer__finish_turn", "agent-7")).toBeNull();
   });
 
   test("every produced label is in the fixed safe set", () => {

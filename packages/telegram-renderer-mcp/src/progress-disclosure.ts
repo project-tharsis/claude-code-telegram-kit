@@ -12,6 +12,7 @@ import {
 } from "./hook-contract.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
 import { TurnProgress } from "./progress-state.js";
+import { MAX_UNIFIED_CONTENT_CHARACTERS } from "./unified-contract.js";
 import type {
   ProgressEditOutcome,
   ProgressSendOutcome
@@ -410,20 +411,23 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           return "finished";
         }
         turn.finalDeliveryAttempted = true;
-        let outcome: FinalDeliveryOutcome = "rejected";
+        let outcome: FinalDeliveryOutcome = Array.from(input.last_assistant_message).length
+          > MAX_UNIFIED_CONTENT_CHARACTERS ? "too_large" : "rejected";
         let config: RuntimeConfig | undefined;
-        try {
-          config = deps.loadConfig();
-          assertAuthorizedChat(config, turn.chatId);
-          outcome = await deps.deliverFinal(
-            config,
-            turn.chatId,
-            turn.quoteMessageId,
-            input.last_assistant_message,
-            collectArtifacts(turn)
-          );
-        } catch {
-          outcome = "rejected";
+        if (outcome !== "too_large") {
+          try {
+            config = deps.loadConfig();
+            assertAuthorizedChat(config, turn.chatId);
+            outcome = await deps.deliverFinal(
+              config,
+              turn.chatId,
+              turn.quoteMessageId,
+              input.last_assistant_message,
+              collectArtifacts(turn)
+            );
+          } catch {
+            outcome = "rejected";
+          }
         }
         if (outcome === "too_large") {
           if (turn.finalDeliveryRetries < 1) {
@@ -431,6 +435,14 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             turn.finalDeliveryAttempted = false;
             turn.cancelTyping = deps.startTyping(turn.chatId);
             return "retry";
+          }
+          if (config === undefined) {
+            try {
+              config = deps.loadConfig();
+              assertAuthorizedChat(config, turn.chatId);
+            } catch {
+              config = undefined;
+            }
           }
           if (config !== undefined) {
             try {
@@ -453,16 +465,6 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         // Never surface a disclosure failure to the agent.
         return "finished";
       }
-    },
-
-    async finalizeChat(chatId: string): Promise<void> {
-      const pending: Promise<void>[] = [];
-      for (const turn of turns.values()) {
-        if (turn.chatId !== chatId) continue;
-        turn.finalDeliveryAttempted = true;
-        pending.push(finalize(turn, "Stop"));
-      }
-      await Promise.allSettled(pending);
     }
   };
 }

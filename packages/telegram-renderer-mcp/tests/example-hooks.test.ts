@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { HOOK_TOOL_NAMES } from "../src/hook-tools.js";
+import { HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS } from "../src/hook-tools.js";
 
 interface HookEntry {
   matcher?: string;
@@ -83,8 +83,11 @@ describe("supported Claude Code hook configuration", () => {
     for (const tool of HOOK_TOOL_NAMES) {
       expect(settings.permissions.deny).toContain(`mcp__telegram-renderer__${tool}`);
     }
-    expect(settings.permissions.allow).not.toContain("mcp__telegram-renderer__send_reply");
-    expect(settings.permissions.deny).toContain("mcp__telegram-renderer__send_reply");
+    expect([
+      ...settings.permissions.allow,
+      ...settings.permissions.ask,
+      ...settings.permissions.deny
+    ]).not.toContain("mcp__telegram-renderer__send_reply");
     expect(settings.permissions.deny).toContain("mcp__plugin_telegram_telegram__reply");
     for (const tool of ["dispatch_command"]) {
       expect(settings.permissions.deny).toContain(`mcp__session-control__${tool}`);
@@ -110,6 +113,21 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("Stop")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
     expect(toolsFor("StopFailure")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
+  });
+
+  test("keeps example hook inputs inside each advertised renderer schema", () => {
+    const declared = new Map<string, Set<string>>(INTERNAL_HOOK_TOOLS.map(tool => [
+      tool.name,
+      new Set(Object.keys(tool.inputSchema.properties))
+    ]));
+    for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure"]) {
+      for (const hook of toolsFor(event).filter(item => item.server === "telegram-renderer")) {
+        expect(declared.has(hook.tool), `${event}:${hook.tool}`).toBe(true);
+        for (const key of Object.keys(hook.input)) {
+          expect(declared.get(hook.tool)!.has(key), `${event}:${hook.tool}:${key}`).toBe(true);
+        }
+      }
+    }
   });
 
   test("fails control namespaces closed with an independent command hook guard", () => {

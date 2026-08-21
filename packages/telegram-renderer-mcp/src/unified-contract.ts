@@ -1,8 +1,13 @@
 import { z } from "zod";
 
+export const MAX_UNIFIED_CONTENT_CHARACTERS = 100_000;
+
 const boundedContent = z.string()
   .refine(value => value.trim().length > 0, "content must not be empty")
-  .refine(value => Array.from(value).length <= 100_000, "content exceeds 100000 characters");
+  .refine(
+    value => Array.from(value).length <= MAX_UNIFIED_CONTENT_CHARACTERS,
+    `content exceeds ${MAX_UNIFIED_CONTENT_CHARACTERS} characters`
+  );
 
 const telegramMessageId = z.string()
   .regex(/^\d+$/)
@@ -20,9 +25,3 @@ export const UnifiedReplyInputSchema = z.object({
 }).strict();
 
 export type UnifiedReplyInput = z.infer<typeof UnifiedReplyInputSchema>;
-
-/** Loose target extraction so a rejected input can still finalize its 👀 acknowledgement. */
-export const ReactionTargetSchema = z.object({
-  chat_id: z.string().regex(/^-?\d+$/),
-  message_id: telegramMessageId
-});
