@@ -60,6 +60,14 @@ The same Markdown document, both paths. The official `reply` tool defaults to `f
 - Normal hook receipts are empty. The sole exception is a proven oversized final, which blocks Stop once with a fixed bounded request for a shorter replacement.
 - The model never receives a confirmation code, session UUID, transcript path, helper path, service, or unit name.
 
+## Requirements
+
+- Linux with systemd and procfs mounted at `/proc`
+- Claude Code 2.1.235 or newer
+- Bun 1.3.14 or newer
+- Python 3.11 or newer
+- Anthropic's official [`telegram@claude-plugins-official`](https://code.claude.com/docs/en/channels) Channel plugin, already paired and working
+
 ## Quickstart
 
 This kit attaches to a Channel that already works. It never installs, replaces, or reconfigures one.
@@ -78,6 +86,8 @@ python3 scripts/deploy_local.py install --repo . --ref "$sha" --bun "$(command -
 ```
 
 Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and, if you choose a different workspace, updating the exact workspace/session-directory pair consistently in the service and both MCP environments. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the final table should use Rich Message, and the inbound reaction should become `👍` without a model-facing reply tool call.
+
+`examples/CLAUDE.md` guides model behavior; it is not an authorization boundary. The permission deny list, exact hook schemas, Channel envelope parsing, and destination allowlist remain the enforcement layer.
 
 The renderer package remains self-contained, but automatic final delivery requires the supplied Hook configuration. `/model`, `/reset`, and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
 
@@ -106,19 +116,11 @@ examples/                  Generic Claude, MCP, systemd, and reset config
 scripts/                   Versioned local install and rollback
 ```
 
-## Requirements
-
-- Linux with systemd and procfs mounted at `/proc`
-- Claude Code 2.1.235 or newer
-- Bun 1.3.14 or newer
-- Python 3.11 or newer
-- Anthropic's official [`telegram@claude-plugins-official`](https://code.claude.com/docs/en/channels) Channel plugin, already paired and working
-
 ## Why Telegram only
 
-This release supports Telegram only. That is a deliberate scope choice, not a claim that every other platform is incapable of the design.
+Telegram is the only target in this release because edit-in-place progress, inbound reaction lifecycle, and a plain HTTP Rich delivery surface are load-bearing parts of the contract, not interchangeable conveniences. This is a deliberate scope choice, not a claim that every other platform is incapable of the design.
 
-Three of its properties are load-bearing here, not conveniences:
+Those properties are:
 
 - `editMessageText` on bot-authored messages. The single in-place progress bubble exists because of this. Without it, tool disclosure is either silence or a wall of new messages.
 - `setMessageReaction` on the user's own inbound message, which is how a turn acknowledges itself (`👀` to `👍`) without sending anything at all.

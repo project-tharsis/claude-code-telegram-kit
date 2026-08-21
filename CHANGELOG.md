@@ -6,6 +6,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Example Claude guidance now requires one complete canonical final while preserving the depth and length the user requests; it no longer treats Telegram as a reason to shorten answers.
+- README prerequisites now precede installation, model guidance is identified as behavior rather than authority, and the Telegram-only rationale leads with the delivery primitives that make the target load-bearing.
+
 ## [0.3.0] - 2026-08-21
 
 ### Added
