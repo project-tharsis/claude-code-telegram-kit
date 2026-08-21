@@ -51,6 +51,8 @@ export const RecordToolInputSchema = z.object({
   command: optionalText(32_768),
   file_path: optionalText(4_096),
   path: optionalText(4_096),
+  offset: optionalText(32),
+  limit: optionalText(32),
   pattern: optionalText(8_192),
   query: optionalText(8_192),
   url: optionalText(8_192),

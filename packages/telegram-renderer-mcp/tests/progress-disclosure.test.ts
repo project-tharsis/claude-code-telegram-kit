@@ -552,7 +552,7 @@ describe("turn disclosure lifecycle", () => {
     expect(h.sends).toEqual([]);
     expect(h.delays).toEqual([PROGRESS_DEBOUNCE_MS]);
     await h.tick();
-    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• … Read file" }]);
+    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n📖 Reading" }]);
   });
 
   test("coalesces a burst into one debounced flush and one bubble", async () => {
@@ -564,7 +564,7 @@ describe("turn disclosure lifecycle", () => {
     expect(h.delays).toEqual([PROGRESS_DEBOUNCE_MS]);
     await h.tick();
     expect(h.sends.length).toBe(1);
-    expect(h.sends[0]!.text).toBe("Working…\n• … Read file\n• … Search code\n• … Run command");
+    expect(h.sends[0]!.text).toBe("Working…\n📖 Reading\n🔎 Searching code\n💻 terminal");
   });
 
   test("serializes Stop behind an in-flight debounced send without a duplicate bubble", async () => {
@@ -588,7 +588,7 @@ describe("turn disclosure lifecycle", () => {
     await Promise.all([firstFlush, finalFlush]);
 
     expect(h.sends.length).toBe(1);
-    expect(h.edits).toEqual([{ messageId: 101, text: "Done\n• ✓ Read file" }]);
+    expect(h.edits).toEqual([{ messageId: 101, text: "Done\n📖 Reading" }]);
   });
 
   test("later steps edit the same bubble instead of sending another", async () => {
@@ -599,7 +599,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t2", "Bash");
     await h.tick();
     expect(h.sends.length).toBe(1);
-    expect(h.edits).toEqual([{ messageId: 101, text: "Working…\n• … Read file\n• … Run command" }]);
+    expect(h.edits).toEqual([{ messageId: 101, text: "Working…\n📖 Reading\n💻 terminal" }]);
   });
 
   test("filters internal sidecar tools and discloses subagent internals", async () => {
@@ -612,7 +612,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t4", "mcp__session-control__list_sessions", "agent-1");
     await h.tick();
     expect(h.sends[0]!.text).toBe(
-      "Working…\n• … Delegate work\n• … Read file\n• … Run command"
+      "Working…\n👥 Delegating\n📖 Reading\n💻 terminal"
     );
   });
 
@@ -639,7 +639,7 @@ describe("turn disclosure lifecycle", () => {
       hook_event_name: "PostToolUseFailure"
     });
     await finish(h);
-    expect(h.edits.at(-1)!.text).toBe("Done\n• ✕ Run command");
+    expect(h.edits.at(-1)!.text).toBe("Done\n❌ 💻 terminal");
   });
 
   test("finish drains without waiting for the debounce timer", async () => {
@@ -648,7 +648,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t1", "Read");
     await finish(h);
     expect(h.sends.length).toBe(1);
-    expect(h.sends[0]!.text).toBe("Done\n• ✓ Read file");
+    expect(h.sends[0]!.text).toBe("Done\n📖 Reading");
     expect(h.pending()).toBe(false);
   });
 
@@ -657,7 +657,7 @@ describe("turn disclosure lifecycle", () => {
     bind(h);
     tool(h, "t1", "Read");
     await finish(h, "StopFailure");
-    expect(h.sends[0]!.text).toBe("Failed\n• ✕ Read file");
+    expect(h.sends[0]!.text).toBe("Failed\n❌ 📖 Reading");
   });
 
   test("late events after close change nothing", async () => {
@@ -690,7 +690,7 @@ describe("turn disclosure lifecycle", () => {
     await h.tick();
     expect(h.edits).toEqual([]);
     expect(h.sends.length).toBe(2);
-    expect(h.sends[1]!.text).toBe("Working…\n• … Run command");
+    expect(h.sends[1]!.text).toBe("Working…\n💻 terminal");
   });
 
   test("a second message in the same session still binds progress", async () => {
@@ -705,7 +705,7 @@ describe("turn disclosure lifecycle", () => {
       hook_event_name: "PreToolUse"
     });
     await h.tick();
-    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n• … Read file" }]);
+    expect(h.sends).toEqual([{ chatId: "123", replyTo: "9", text: "Working…\n📖 Reading" }]);
   });
 });
 
@@ -753,7 +753,7 @@ describe("turn disclosure failure handling", () => {
     expect(h.sends.length).toBe(1);
     expect(h.edits.length).toBe(2);
     expect(h.edits[1]!.messageId).toBe(101);
-    expect(h.edits[1]!.text).toBe("Done\n• ✓ Read file\n• ✓ Run command");
+    expect(h.edits[1]!.text).toBe("Done\n📖 Reading\n💻 terminal");
   });
 
   test("a flood-controlled edit abandons disclosure for the rest of the turn", async () => {

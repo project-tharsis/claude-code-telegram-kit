@@ -1,69 +1,93 @@
 /**
- * User-visible progress labels are a fixed allowlist. Unknown or vendor-controlled tool
- * identifiers never become Telegram text; they degrade to `Working`.
+ * User-visible progress presentation is a fixed allowlist. Unknown or vendor-controlled tool
+ * identifiers never become Telegram text; they degrade to one generic presentation.
  */
 
-export const DELEGATING_LABEL = "Delegate work";
+export const DELEGATING_LABEL = "Delegating";
 
 export const SAFE_STEP_LABELS = [
-  "Read file",
-  "Read notebook",
-  "Find files",
-  "Search code",
-  "Edit file",
-  "Write file",
-  "Edit files",
-  "Edit notebook",
-  "Run command",
-  "Read command output",
-  "Stop command",
-  "Read web page",
-  "Search web",
-  "Update plan",
-  "Finish planning",
-  "Run skill",
+  "Reading",
+  "Reading notebook",
+  "Finding files",
+  "Searching code",
+  "Editing",
+  "Writing",
+  "Editing files",
+  "Editing notebook",
+  "terminal",
+  "Reading command output",
+  "Stopping command",
+  "Reading web page",
+  "Searching web",
+  "Updating plan",
+  "Finishing planning",
+  "Reading skill",
   DELEGATING_LABEL,
-  "Find tool",
-  "Use integration",
+  "Finding tool",
+  "Using integration",
   "Working"
 ] as const;
 
 export type SafeStepLabel = (typeof SAFE_STEP_LABELS)[number];
+export type StepPresentationKind = "inline" | "command";
+
+export interface SafeStepPresentation {
+  emoji: string;
+  label: SafeStepLabel;
+  kind: StepPresentationKind;
+  connector: " " | " for ";
+}
 
 /** Servers this kit owns. Their tools are plumbing, never a user-visible step. */
 const SIDECAR_SERVERS = ["telegram-renderer", "session-control"] as const;
 
-const TOOL_LABELS = new Map<string, SafeStepLabel>([
-  ["Read", "Read file"],
-  ["NotebookRead", "Read notebook"],
-  ["Glob", "Find files"],
-  ["Grep", "Search code"],
-  ["Edit", "Edit file"],
-  ["Write", "Write file"],
-  ["MultiEdit", "Edit files"],
-  ["NotebookEdit", "Edit notebook"],
-  ["Bash", "Run command"],
-  ["BashOutput", "Read command output"],
-  ["KillShell", "Stop command"],
-  ["KillBash", "Stop command"],
-  ["WebFetch", "Read web page"],
-  ["WebSearch", "Search web"],
-  ["TodoWrite", "Update plan"],
-  ["ExitPlanMode", "Finish planning"],
-  ["Skill", "Run skill"],
-  ["Task", DELEGATING_LABEL],
-  ["Agent", DELEGATING_LABEL],
-  ["ToolSearch", "Find tool"]
+const inline = (
+  emoji: string,
+  label: SafeStepLabel,
+  connector: SafeStepPresentation["connector"] = " "
+): SafeStepPresentation => ({ emoji, label, kind: "inline", connector });
+
+const TOOL_PRESENTATIONS = new Map<string, SafeStepPresentation>([
+  ["Read", inline("📖", "Reading")],
+  ["NotebookRead", inline("📓", "Reading notebook")],
+  ["Glob", inline("🗂️", "Finding files")],
+  ["Grep", inline("🔎", "Searching code", " for ")],
+  ["Edit", inline("🔧", "Editing")],
+  ["Write", inline("✍️", "Writing")],
+  ["MultiEdit", inline("🔧", "Editing files")],
+  ["NotebookEdit", inline("🔧", "Editing notebook")],
+  ["Bash", { emoji: "💻", label: "terminal", kind: "command", connector: " " }],
+  ["BashOutput", inline("🖥️", "Reading command output")],
+  ["KillShell", inline("🛑", "Stopping command")],
+  ["KillBash", inline("🛑", "Stopping command")],
+  ["WebFetch", inline("🌐", "Reading web page")],
+  ["WebSearch", inline("🔍", "Searching web", " for ")],
+  ["TodoWrite", inline("📋", "Updating plan")],
+  ["ExitPlanMode", inline("✅", "Finishing planning")],
+  ["Skill", inline("📚", "Reading skill")],
+  ["Task", inline("👥", DELEGATING_LABEL)],
+  ["Agent", inline("👥", DELEGATING_LABEL)],
+  ["ToolSearch", inline("🧰", "Finding tool")]
 ]);
+
+const INTEGRATION_PRESENTATION = inline("🔌", "Using integration");
+const UNKNOWN_PRESENTATION = inline("⚙️", "Working");
 
 export function isInternalSidecarTool(toolName: string): boolean {
   return SIDECAR_SERVERS.some(server => toolName.startsWith(`mcp__${server}__`));
 }
 
-export function safeStepLabel(toolName: string, _agentId?: string): SafeStepLabel | null {
+export function safeStepPresentation(
+  toolName: string,
+  _agentId?: string
+): SafeStepPresentation | null {
   if (isInternalSidecarTool(toolName)) return null;
-  const known = TOOL_LABELS.get(toolName);
+  const known = TOOL_PRESENTATIONS.get(toolName);
   if (known !== undefined) return known;
-  if (toolName.startsWith("mcp__")) return "Use integration";
-  return "Working";
+  if (toolName.startsWith("mcp__")) return INTEGRATION_PRESENTATION;
+  return UNKNOWN_PRESENTATION;
+}
+
+export function safeStepLabel(toolName: string, agentId?: string): SafeStepLabel | null {
+  return safeStepPresentation(toolName, agentId)?.label ?? null;
 }

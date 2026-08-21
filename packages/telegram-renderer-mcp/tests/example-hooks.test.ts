@@ -143,6 +143,8 @@ describe("supported Claude Code hook configuration", () => {
       command: "${tool_input.command}",
       file_path: "${tool_input.file_path}",
       path: "${tool_input.path}",
+      offset: "${tool_input.offset}",
+      limit: "${tool_input.limit}",
       pattern: "${tool_input.pattern}",
       query: "${tool_input.query}",
       url: "${tool_input.url}",
