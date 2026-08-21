@@ -21,6 +21,6 @@ export function formatProgressHtml(text: string): string {
 
     const label = display.slice(0, separator);
     const preview = display.slice(separator + 3);
-    return `${prefix}<b>${escapeHtml(label)}</b>\n<pre>${escapeHtml(preview)}</pre>`;
+    return `${prefix}<b>${escapeHtml(label)}</b>\n<code>${escapeHtml(preview)}</code>`;
   }).join("\n");
 }
