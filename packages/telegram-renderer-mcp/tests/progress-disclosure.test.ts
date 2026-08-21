@@ -545,6 +545,7 @@ describe("turn disclosure lifecycle", () => {
       "2 · Sonnet",
       "3 · Haiku",
       "4 · Inherit",
+      "5 · Cancel",
       "/reset extra",
       "/resume 1",
       "/resume@ExampleAssistant 10",

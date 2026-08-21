@@ -30,7 +30,7 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 export const MAX_RETAINED_TURNS = 32;
 
 const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)/;
-const MODEL_REPLY_CHOICE = /^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$/;
+const MODEL_REPLY_CHOICE = /^(?:[1-4] · (?:Opus|Sonnet|Haiku|Inherit)|5 · Cancel)$/;
 
 export type CancelScheduled = () => void;
 export type FinalDeliveryOutcome = "delivered" | "uncertain" | "too_large" | "rejected";

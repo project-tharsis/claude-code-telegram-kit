@@ -24,6 +24,8 @@ describe("exact control command parser", () => {
     expect(parseControlCommand("2 · Sonnet")).toEqual({ kind: "model-switch", model: "sonnet" });
     expect(parseControlCommand("3 · Haiku")).toEqual({ kind: "model-switch", model: "haiku" });
     expect(parseControlCommand("4 · Inherit")).toEqual({ kind: "model-switch", model: "inherit" });
+    expect(parseControlCommand("5 · Cancel")).toEqual({ kind: "model-cancel" });
+    expect(parseControlCommand("Cancel")).toEqual({ kind: "other" });
     expect(parseControlCommand("/rename Model routing controls")).toEqual({
       kind: "rename", title: "Model routing controls"
     });
