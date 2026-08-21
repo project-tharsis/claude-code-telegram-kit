@@ -52,13 +52,16 @@ describe("progress preview modes", () => {
         connector: " ",
         preview: "pytest tests/auth.py --token=[REDACTED]"
       });
+    const wrapped = "cd ~/claude-code-telegram-kit && sed -n 1,60p packages/telegram-renderer-mcp/src/progress-labels.ts";
+    expect(buildProgressStep("Bash", { command: wrapped }, "verbose"))
+      .toMatchObject({ preview: "sed -n 1,60p package…/progress-labels.ts" });
   });
 
   test("all and verbose modes use distinct mobile-width preview bounds", () => {
     const all = buildProgressStep("Bash", { command: "x".repeat(200) }, "all")!;
     const verbose = buildProgressStep("Bash", { command: "x".repeat(200) }, "verbose")!;
-    expect(all.preview?.endsWith("…")).toBe(true);
-    expect(verbose.preview?.endsWith("…")).toBe(true);
+    expect(all.preview?.includes("…")).toBe(true);
+    expect(verbose.preview?.includes("…")).toBe(true);
     expect(Array.from(all.preview ?? "")).toHaveLength(28);
     expect(Array.from(verbose.preview ?? "")).toHaveLength(40);
   });

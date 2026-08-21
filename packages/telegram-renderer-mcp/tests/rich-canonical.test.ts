@@ -20,6 +20,23 @@ describe("canonical Rich Markdown", () => {
       .toBe("literal\n\\| - | - |\nend");
   });
 
+  test("makes CJK-adjacent emphasis safe for a standard downstream parser", () => {
+    expect(canonicalizeRichMarkdown("**#3 对比图降级、改 caption。**图本身留着"))
+      .toBe("**#3 对比图降级、改 caption。** 图本身留着");
+    expect(canonicalizeRichMarkdown("前文**（重点）**"))
+      .toBe("前文 **（重点）**");
+    expect(canonicalizeRichMarkdown("[x](u)**中。**x"))
+      .toBe("[x](u) **中。** x");
+    expect(canonicalizeRichMarkdown("`x`**中。**x"))
+      .toBe("`x` **中。** x");
+    for (const canonical of [
+      "**#3 对比图降级、改 caption。** 图本身留着",
+      "前文 **（重点）**",
+      "[x](u) **中。** x",
+      "`x` **中。** x"
+    ]) expect(canonicalizeRichMarkdown(canonical)).toBe(canonical);
+  });
+
   test("preserves Rich-only and GFM structures while canonicalizing tables", () => {
     const input = [
       "[Anthropic](https://anthropic.com?a=1&b=2)",

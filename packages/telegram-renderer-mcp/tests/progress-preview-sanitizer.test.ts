@@ -18,16 +18,16 @@ describe("sanitizeProgressPreview", () => {
     ).toBe("Fetched https://example.test/a?token=REDACTED&view=full and read /home/USER/project/file.ts plus ~/notes.txt");
   });
 
-  test("redacts credential-like assignments and bearer tokens", () => {
+  test("truncates after the first named secret prefix", () => {
     expect(
       sanitizeProgressPreview("Using api_key=abc123 and Authorization: Bearer eyJsecret.payload.sig")
-    ).toBe("Using api_key=[REDACTED] and [REDACTED]");
+    ).toBe("Using api_key=[REDACTED]");
   });
 
-  test("redacts prefixed env names, quoted flag values, and credential headers", () => {
+  test("fails closed after a prefixed secret assignment", () => {
     expect(sanitizeProgressPreview(
       'OPENAI_API_KEY="abc def" curl --auth-token "secret value" -H "Cookie: sid=abc"'
-    )).toBe('OPENAI_API_KEY=[REDACTED] curl --auth-token=[REDACTED] -H "Cookie=[REDACTED]"');
+    )).toBe("OPENAI_API_KEY=[REDACTED]");
   });
 
   test("redacts escaped quoted secrets and zero-width-obfuscated names", () => {
@@ -46,6 +46,53 @@ describe("sanitizeProgressPreview", () => {
   test("truncates by Unicode code points and appends an ellipsis", () => {
     const preview = "x".repeat(200);
     expect(sanitizeProgressPreview(preview, { maxLength: 32 })).toBe(`${"x".repeat(31)}…`);
+  });
+
+  test("middle truncation preserves a command head and target tail", () => {
+    const preview = "sed -n 1,60p packages/telegram-renderer-mcp/src/progress-labels.ts";
+    expect(sanitizeProgressPreview(preview, { maxLength: 40, truncation: "middle" }))
+      .toBe("sed -n 1,60p package…/progress-labels.ts");
+    expect(Array.from(sanitizeProgressPreview(preview, { maxLength: 40, truncation: "middle" })))
+      .toHaveLength(40);
+    expect(sanitizeProgressPreview("abcdef", { maxLength: 1, truncation: "middle" })).toBe("…");
+    expect(sanitizeProgressPreview("abcdef", { maxLength: 2, truncation: "middle" })).toBe("a…");
+    expect(sanitizeProgressPreview("abcdef", { maxLength: 3, truncation: "middle" })).toBe("a…f");
+  });
+
+  test("removes a simple cd wrapper before fail-closed redaction", () => {
+    const preview = 'cd "/tmp/token=secret repo" && curl --auth-token "secret value" /target/file.txt';
+    const output = sanitizeProgressPreview(preview, {
+      maxLength: 80,
+      truncation: "middle",
+      stripLeadingCdWrapper: true
+    });
+    expect(output).toBe("curl --auth-token=[REDACTED]");
+    expect(output).not.toContain("secret");
+  });
+
+  test("redacts complete shell substitutions in sensitive values", () => {
+    expect(sanitizeProgressPreview("--token=$(cat /tmp/secret)"))
+      .toBe("--token=[REDACTED]");
+    expect(sanitizeProgressPreview("API_KEY=$(printf supersecret)"))
+      .toBe("API_KEY=[REDACTED]");
+    expect(sanitizeProgressPreview("--token=`cat /tmp/secret`"))
+      .toBe("--token=[REDACTED]");
+    expect(sanitizeProgressPreview(String.raw`API_KEY=\"$(cat /tmp/secret) supersecret\"`))
+      .toBe("API_KEY=[REDACTED]");
+    expect(sanitizeProgressPreview(String.raw`--token=\"a\\\"b supersecret\"`))
+      .toBe("--token=[REDACTED]");
+    expect(sanitizeProgressPreview(String.raw`API_KEY=\'a\\\'b supersecret\'`))
+      .toBe("API_KEY=[REDACTED]");
+    expect(sanitizeProgressPreview("--token=$(printf $(cat /tmp/secret))"))
+      .toBe("--token=[REDACTED]");
+    expect(sanitizeProgressPreview("--token=$(cat /tmp/secret"))
+      .toBe("--token=[REDACTED]");
+    expect(sanitizeProgressPreview("Authorization: Bearer $(cat /tmp/secret)"))
+      .toBe("[REDACTED]");
+    expect(sanitizeProgressPreview("--token=$((1 + 2))"))
+      .toBe("--token=[REDACTED]");
+    expect(sanitizeProgressPreview("--token=$(echo (secret) /tmp/path)"))
+      .toBe("--token=[REDACTED]");
   });
 
   test("returns an empty string for nullish or non-string input", () => {

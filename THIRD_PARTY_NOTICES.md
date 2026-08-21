@@ -11,6 +11,7 @@ This repository depends on the following direct packages. Their licenses apply t
 - `mdast-util-to-markdown` — MIT
 - `mdast-util-gfm` — MIT
 - `micromark-extension-gfm` — MIT
+- `micromark-extension-cjk-friendly` — MIT
 
 ## Development dependencies
 
