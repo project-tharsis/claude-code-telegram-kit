@@ -2,7 +2,8 @@
 Description=Claude Code Telegram Channel
 Documentation=https://code.claude.com/docs/en/channels
 Wants=network-online.target
-After=network-online.target
+Requires=claude-code-control.socket
+After=network-online.target claude-code-control.socket
 
 [Service]
 Type=simple
@@ -24,6 +25,10 @@ KillMode=control-group
 StandardInput=null
 StandardOutput=journal
 StandardError=journal
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

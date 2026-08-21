@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 import pwd
 import re
@@ -37,6 +38,9 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{24}$")
 REQUEST_STATE_ROOT = Path("/var/lib/claude-code-telegram-kit/reset-requests")
+REQUEST_RETENTION_SECONDS = 30 * 24 * 60 * 60
+MAX_REQUEST_RECEIPTS = 4_096
+MAX_REQUEST_SCAN_ENTRIES = 8_192
 MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 # Receipt schema written by the SessionStart command-hook writer and read back by this helper.
@@ -195,6 +199,42 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _prune_request_receipts(
+    state_root: Path,
+    *,
+    expected_uid: int,
+    now: int | None = None,
+    retention_seconds: int = REQUEST_RETENTION_SECONDS,
+    max_entries: int = MAX_REQUEST_RECEIPTS,
+) -> None:
+    current = int(time.time()) if now is None else now
+    kept = 0
+    removed = False
+    with os.scandir(state_root) as entries:
+        for index, entry in enumerate(entries, start=1):
+            if index > MAX_REQUEST_SCAN_ENTRIES:
+                raise RuntimeError("reset request state scan limit exceeded")
+            if re.fullmatch(r"\.[a-f0-9]{24}\.tmp\.[a-f0-9]{32}", entry.name):
+                os.unlink(entry.path)
+                removed = True
+                continue
+            if re.fullmatch(r"[a-f0-9]{24}\.json", entry.name) is None:
+                raise ValueError("unexpected reset request state entry")
+            payload = json.loads(_read_secure_regular(Path(entry.path), expected_uid, 0o600, "reset request receipt"))
+            updated = payload.get("updated_at") if isinstance(payload, dict) else None
+            if not isinstance(updated, int) or isinstance(updated, bool):
+                raise ValueError("invalid reset request receipt timestamp")
+            if current - updated >= retention_seconds:
+                os.unlink(entry.path)
+                removed = True
+            else:
+                kept += 1
+    if removed:
+        _fsync_dir(state_root)
+    if kept >= max_entries:
+        raise RuntimeError("reset request state capacity exceeded")
+
+
 def claim_request(
     state_root: Path,
     request_id: str,
@@ -227,6 +267,21 @@ def claim_request(
         raise ValueError("reset request state must be private and correctly owned")
 
     receipt_path = state_root / f"{request_id}.json"
+    try:
+        existing = json.loads(_read_secure_regular(receipt_path, expected_uid, 0o600, "reset request receipt"))
+    except FileNotFoundError:
+        existing = None
+    if existing is not None:
+        if (
+            not isinstance(existing, dict)
+            or existing.get("request_id") != request_id
+            or existing.get("chat_id") != chat_id
+            or existing.get("action") != action
+            or existing.get("target_session") != target_session
+        ):
+            raise ValueError("reset request receipt does not match request")
+        return {"claimed": False, "receipt": existing}
+    _prune_request_receipts(state_root, expected_uid=expected_uid)
     payload = {
         "request_id": request_id,
         "chat_id": chat_id,
@@ -679,8 +734,8 @@ def _is_expected_claude_process(config: ResetConfig, pid: int, command: str) -> 
 
 def _service_model_health(config: ResetConfig, model: str | None) -> bool:
     try:
-        _run(["systemctl", "is-active", "--quiet", config.service_name], timeout=10)
-        main = int(_run(["systemctl", "show", "-p", "MainPID", "--value", config.service_name], timeout=10).stdout.strip())
+        _run(["/usr/bin/systemctl", "is-active", "--quiet", config.service_name], timeout=10)
+        main = int(_run(["/usr/bin/systemctl", "show", "-p", "MainPID", "--value", config.service_name], timeout=10).stdout.strip())
     except Exception:
         return False
     rows = _process_rows()
@@ -822,9 +877,9 @@ def _service_health(
     require_workers: bool = True,
 ) -> bool:
     try:
-        _run(["systemctl", "is-active", "--quiet", config.service_name], timeout=10)
+        _run(["/usr/bin/systemctl", "is-active", "--quiet", config.service_name], timeout=10)
         main = int(_run(
-            ["systemctl", "show", "-p", "MainPID", "--value", config.service_name],
+            ["/usr/bin/systemctl", "show", "-p", "MainPID", "--value", config.service_name],
             timeout=10,
         ).stdout.strip())
     except Exception:
@@ -872,7 +927,7 @@ def _wait_active(config: ResetConfig, timeout: float = 45.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            _run(["systemctl", "is-active", "--quiet", config.service_name], timeout=5)
+            _run(["/usr/bin/systemctl", "is-active", "--quiet", config.service_name], timeout=5)
             return
         except Exception:
             time.sleep(1)
@@ -892,12 +947,12 @@ def _wait_model_service(config: ResetConfig, model: str | None, timeout: float) 
 
 
 def _reload_and_restart(config: ResetConfig) -> None:
-    _run(["systemctl", "daemon-reload"], timeout=20)
-    _run(["systemctl", "restart", config.service_name], timeout=30)
+    _run(["/usr/bin/systemctl", "daemon-reload"], timeout=20)
+    _run(["/usr/bin/systemctl", "restart", config.service_name], timeout=30)
 
 
 def _reload_only() -> None:
-    _run(["systemctl", "daemon-reload"], timeout=20)
+    _run(["/usr/bin/systemctl", "daemon-reload"], timeout=20)
 
 
 def _notify(
@@ -940,9 +995,11 @@ def _recover_old(config: ResetConfig, original_unit: str, old_session: str) -> b
     try:
         _atomic_write(config.unit_path, resume_unit_from_continue(original_unit, old_session))
         _reload_and_restart(config)
-        _wait_active(config)
+        _wait_for_resumed_session(config, old_session, timeout=45.0)
         _atomic_write(config.unit_path, original_unit)
         _reload_only()
+        if not _service_health(config, old_session, flag="--resume"):
+            raise RuntimeError("recovered session lost health after unit restore")
         return True
     except Exception:
         try:
@@ -1462,6 +1519,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        if not math.isfinite(args.timeout) or args.timeout < 1 or args.timeout > 300:
+            raise ValueError("--timeout must be between 1 and 300 seconds")
         if args.protocol != PROTOCOL_VERSION:
             raise ValueError("unsupported helper protocol version")
         if args.action != "model" and args.model is not None:

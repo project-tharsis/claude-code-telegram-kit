@@ -22,8 +22,8 @@ The server advertises only the deterministic hook router plus the bounded list/r
 2. Validate the exact direct envelope, live allowlist, and control-command grammar.
 3. `/reset` or `/resume N` sends a quoted 60-second confirmation challenge and performs no mutation.
 4. The exact action-bound confirmation consumes the challenge once; replay, wrong action, wrong code, and expiry fail closed.
-5. Send a quoted acceptance message, then submit a fixed, no-shell `systemd-run --no-block` command.
-6. Let the root-owned helper verify the exact runtime and send completion or failure independently.
+5. Send a quoted acceptance message, then submit one bounded Broker Protocol v1 JSON line over the private Unix socket.
+6. The peer-UID-checking root broker derives the request ID, unit, helper/config paths, and fixed `systemd-run --no-block` argv; the root-owned helper verifies the exact runtime and reports completion or failure independently.
 
 The MCP does not accept command, path, unit, service, or helper arguments from the model.
 
@@ -32,9 +32,7 @@ The MCP does not accept command, path, unit, service, or helper arguments from t
 The MCP reads:
 
 ```text
-CLAUDE_SESSION_RESET_HELPER
-CLAUDE_SESSION_RESET_CONFIG
-CLAUDE_SESSION_RESET_UNIT_PREFIX
+CLAUDE_SESSION_CONTROL_SOCKET
 CLAUDE_PROJECT_SESSIONS_DIR
 CLAUDE_WORKSPACE_DIR
 TELEGRAM_COMMAND_MENU_ENABLED
@@ -42,7 +40,7 @@ TELEGRAM_COMMAND_MENU_ENABLED
 
 Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. Model status always reads the fixed root-owned, mode-`0644`, single-line `/etc/claude-code-telegram-kit/model.env` that the service loads through an optional `EnvironmentFile=` directive. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
 
-Before each confirmed privileged action, the control MCP runs the helper's read-only `--capabilities` command with a five-second hard process deadline and requires Session Control Protocol v4 with `reset`, `resume`, and `model` plus the fixed model allowlist. Version skew or an unavailable helper fails before acceptance delivery while read-only status/listing and rendering remain available; a repaired helper is detected on the next action without restarting the MCP. Protocol v4 adds atomic root-owned `model.env` updates, service restart, process-environment verification, and rollback; resume/reset retain their exact-session and secure-receipt contracts.
+Before each confirmed privileged action, the control MCP asks the broker for its read-only capabilities with a five-second socket deadline and requires Broker Protocol v1 plus Session Control Protocol v4 with `reset`, `resume`, and `model` and the fixed model allowlist. Version skew or an unavailable broker/helper fails before acceptance delivery while read-only status/listing and rendering remain available; a repaired path is detected on the next action without restarting the MCP. The unprivileged process never receives helper/config/systemd paths and never executes `sudo` or `systemd-run`.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
 
@@ -54,32 +52,30 @@ Control replies use Telegram HTML sparingly for mobile hierarchy: bold headings,
 
 After the first meaningful Stop, an auth-inheriting command hook extracts only the first bounded Telegram prompt, first bounded assistant text, and tool names; raw tool inputs/outputs are excluded. It makes at most one isolated `haiku` call for that exact UUID, validates a 60-character title, then uses the official zero-turn `claude -p "/rename ..." --resume` local-command path and exact readback to persist `custom-title`. Private `0600` state and persistent kernel-`flock` files under `~/.local/state/claude-code-telegram-kit/session-titles/` enforce cross-process singleflight and provenance. `/rename NAME` is deterministic, private-chat only, uses zero model calls, and permanently locks the user title above native/automatic titles.
 
-The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`, keyed by a hash of the inbound chat and message IDs.
+The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`. Receipts expire after 30 days. The store is capped at 4096 entries and fails closed when full.
 
-## Installing the root helper
+## Installing root assets
 
-The versioned user-level deploy script intentionally does **not** install privileged files. Review an exact commit, copy the helper to a temporary root-reviewed path, verify its digest, then install it explicitly:
+The user-level deploy script never installs privileged files. After reviewing and merging one exact commit, run the installer from that same checkout. The installer refuses non-SHA refs, verifies its own bytes against the exact Git object, renders the socket owner, backs up every destination, installs atomically, and reads back mode/owner/SHA-256:
 
 ```bash
-git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_reset.py > /tmp/claude-code-session-reset
-git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_session_receipt.py > /tmp/claude-session-start-receipt
-git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_control_guard.py > /tmp/claude-control-command-guard
-git show <exact-commit-sha>:packages/session-control-mcp/scripts/claude_code_usage_snapshot.py > /tmp/claude-usage-snapshot
-sha256sum /tmp/claude-code-session-reset
-sha256sum /tmp/claude-session-start-receipt /tmp/claude-control-command-guard
-sha256sum /tmp/claude-usage-snapshot
-sudo install -o root -g root -m 0755 /tmp/claude-code-session-reset /usr/local/sbin/claude-code-session-reset
-sudo install -o root -g root -m 0755 /tmp/claude-session-start-receipt /usr/local/sbin/claude-session-start-receipt
-sudo install -o root -g root -m 0755 /tmp/claude-control-command-guard /usr/local/sbin/claude-control-command-guard
-sudo install -o root -g root -m 0755 /tmp/claude-usage-snapshot /usr/local/sbin/claude-usage-snapshot
-sudo sha256sum /usr/local/sbin/claude-code-session-reset
-sudo sha256sum /usr/local/sbin/claude-session-start-receipt /usr/local/sbin/claude-control-command-guard
-sudo sha256sum /usr/local/sbin/claude-usage-snapshot
-sudo install -d -o USER -g USER -m 0700 /home/USER/.local/state/claude-code-telegram-kit
+SHA=<exact-40-char-merge-sha>
+SERVICE_USER=USER
+sudo python3 scripts/install_root_assets.py install \
+  --repo . \
+  --commit "$SHA" \
+  --service-user "$SERVICE_USER"
+sudo python3 -c 'import json; p="/var/lib/claude-code-telegram-kit/root-assets/installed.json"; d=json.load(open(p)); print(d["commit"], len(d["assets"]))'
 /usr/local/sbin/claude-code-session-reset --capabilities
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-code-control.socket
+sudo systemctl restart claude-telegram.service
+systemctl is-active claude-telegram.service
 ```
 
-Never run a privileged installer directly from a mutable checkout or user-writable `current` symlink.
+The socket must read back as mode `0600` and owned by the service user. Never grant the service user `sudo`, `systemd-run`, arbitrary D-Bus, or a writable broker/helper/unit path. To restore the previous root-owned assets, run `sudo python3 scripts/install_root_assets.py rollback`, then `systemctl daemon-reload` and restart the Claude service.
+
+Never bypass the installer's self-verification or invoke privileged asset installation from a user-writable `current` symlink.
 
 ## Local recovery
 

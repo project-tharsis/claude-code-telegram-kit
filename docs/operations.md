@@ -36,6 +36,9 @@ Copy and adapt:
 - `examples/telegram-settings.json`
 - `examples/CLAUDE.md`
 - `examples/claude-telegram.service`
+- `examples/claude-telegram-hardening.conf`
+- `examples/claude-code-control.socket`
+- `examples/claude-code-control@.service`
 - `examples/reset.json`
 
 Keep `examples/reset.json` root-owned when installed under `/etc/claude-code-telegram-kit/reset.json`.
@@ -44,7 +47,7 @@ The system service must include `EnvironmentFile=-/etc/claude-code-telegram-kit/
 
 Set both `CLAUDE_PROJECT_SESSIONS_DIR` and `CLAUDE_WORKSPACE_DIR` in the `session-control` MCP environment to the one exact Claude project/session directory pair. Do not derive either path from a model argument or inbound message.
 
-## Install the root helper
+## Install the root broker and helper
 
 Follow the exact-commit/digest procedure in `packages/session-control-mcp/README.md`. Do not install it from a mutable `current` symlink. When the helper changes, install it from the same merged SHA before restarting the service, then require:
 
@@ -52,7 +55,7 @@ Follow the exact-commit/digest procedure in `packages/session-control-mcp/README
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 
-The receipt must report protocol `4` with `reset`, `resume`, and `model`, plus `opus`, `sonnet`, `haiku`, and `inherit`.
+The helper receipt must report protocol `4` with `reset`, `resume`, and `model`, plus `opus`, `sonnet`, `haiku`, and `inherit`. Install the broker and both systemd units from the same SHA by the procedure in the package README. The socket must be mode `0600`, owned by the exact service user, and enabled before the Claude service starts.
 
 A fresh reset also requires the SessionStart receipt writer, installed from the same merged SHA:
 
@@ -80,6 +83,7 @@ Replace `USER` in the directory command and `statusLine` path with the service a
 
 ```bash
 sudo systemctl daemon-reload
+sudo systemctl enable --now claude-code-control.socket
 sudo systemctl restart claude-telegram.service
 systemctl is-active claude-telegram.service
 ```
@@ -103,18 +107,22 @@ Verify from the real destination:
 14. when command-menu sync is enabled, `getMyCommands` for the allowlisted chat-specific scope returns exactly `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`; the official `all_private_chats` scope remains untouched.
 15. `/usr/bin/flock` is present and executable; the first meaningful Stop creates at most one `0600` per-session title-state record, makes one isolated Haiku call, appends a verified `custom-title` through the official zero-turn `/rename` local-command path and exact readback, and never exposes credentials, prompt bodies, UUIDs, paths, or tool inputs in Telegram;
 16. `/rename NAME` writes the exact current session, returns escaped HTML, marks `USER_LOCKED`, and survives later Stops, `/sessions`, `/reset`, and resume without automatic overwrite.
+17. `systemctl show claude-telegram.service -p NoNewPrivileges` returns `yes`; `sudo` from a process with the same service hardening fails, while Broker Protocol `capabilities` succeeds through the private socket.
+18. a successful Claude `Artifact` tool call sends one quoted silent document after the canonical final text; failed/unmatched, wrong-session, symlink, hardlink, writable, oversized, and uncertain files never replay or expose a path.
 
 Before removing an allowlisted private chat or disabling menu sync, set `TELEGRAM_COMMAND_MENU_ENABLED=delete`, restart once, verify the chat-specific `getMyCommands` result is empty, then remove the chat or env key. A stale menu never grants authority, but verified cleanup keeps Telegram UI aligned with the live allowlist.
 
 ## Rollback
 
 ```bash
+sudo python3 scripts/install_root_assets.py rollback
+sudo systemctl daemon-reload
 python3 scripts/deploy_local.py rollback
 python3 scripts/deploy_local.py status
 sudo systemctl restart claude-telegram.service
 ```
 
-Reinstall the root helper from the previous reviewed commit if it changed. Repeat destination readback after rollback.
+Reinstall the root broker, helper, and unit files from the previous reviewed commit if they changed. Restore the previous Claude unit before disabling the broker socket; otherwise `NoNewPrivileges` correctly prevents the old `sudo systemd-run` path. Repeat destination readback after rollback.
 
 ## Break-glass reset
 

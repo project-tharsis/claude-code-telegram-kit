@@ -233,6 +233,30 @@ class RequestIdempotencyTests(unittest.TestCase):
             self.assertEqual(third["receipt"]["status"], "complete")
             self.assertEqual(third["receipt"]["new_session"], NEW_SESSION)
 
+    def test_request_receipt_retention_and_capacity_are_bounded(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            now = reset.REQUEST_RETENTION_SECONDS + 10
+            state.chmod(0o700)
+            for index in range(3):
+                request_id = f"{index:024x}"
+                path = state / f"{request_id}.json"
+                path.write_text(json.dumps({"request_id": request_id, "updated_at": 0}))
+                path.chmod(0o600)
+            (state / f".{('f' * 24)}.tmp.{('e' * 32)}").write_text("stale")
+            reset._prune_request_receipts(
+                state, expected_uid=os.getuid(), now=now, retention_seconds=reset.REQUEST_RETENTION_SECONDS, max_entries=2,
+            )
+            self.assertEqual(list(state.iterdir()), [])
+
+            for index in range(2):
+                request_id = f"{index:024x}"
+                path = state / f"{request_id}.json"
+                path.write_text(json.dumps({"request_id": request_id, "updated_at": now}))
+                path.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, "capacity"):
+                reset._prune_request_receipts(state, expected_uid=os.getuid(), now=now, max_entries=2)
+
     def test_request_receipt_binds_action_and_target(self):
         with tempfile.TemporaryDirectory() as td:
             state = Path(td)
@@ -322,6 +346,11 @@ class ProtocolTests(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertEqual(payload["protocol"], 4)
         self.assertIn("model", payload["actions"])
+
+    def test_rejects_non_finite_or_unbounded_operation_timeout(self):
+        for value in ("0", "-1", "301", "inf", "nan"):
+            with self.subTest(value=value):
+                self.assertEqual(reset.main(["--timeout", value]), 1)
 
     def test_capabilities_never_mutates_state(self):
         import io
@@ -905,6 +934,13 @@ class ResetOrchestrationTests(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
+
+    def test_recovery_proves_the_exact_old_session_and_workers(self):
+        with mock.patch.object(reset, "_wait_for_resumed_session") as wait, \
+                mock.patch.object(reset, "_service_health", return_value=True) as health:
+            self.assertTrue(reset._recover_old(self.config, BASE_UNIT, OLD_SESSION))
+        wait.assert_called_once_with(self.config, OLD_SESSION, timeout=45.0)
+        health.assert_called_once_with(self.config, OLD_SESSION, flag="--resume")
 
     def test_reset_claims_an_action_bound_receipt_and_persists_on_success(self):
         with mock.patch.object(reset, "validate_notification_target", return_value=TEST_TOKEN), \

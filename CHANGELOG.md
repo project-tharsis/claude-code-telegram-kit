@@ -8,6 +8,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Root-helper operation timeouts now reject non-finite or out-of-range values, every service-control call uses `/usr/bin/systemctl`, rollback proves the exact old session and workers, and the root receipt store has a 30-day/4096-entry bound.
+
 - The legacy model-facing `schedule_session_reset` MCP tool is removed; confirmed `/reset` remains exclusively on the deterministic pre-LLM control path. Privileged actions now run a fresh root-helper capability probe with a hard process timeout, so repaired helpers recover without an MCP restart and failed probes occur before acceptance delivery.
 
 - Slash-control replies now share Telegram HTML typography: bold hierarchy, italic metadata, code-formatted commands/values, escaped session titles, and concise success/failure copy. Root completion messages no longer expose truncated session UUIDs.
@@ -24,6 +26,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Broker Protocol v1 moves `capabilities`, `reset`, `resume`, and `model` across a mode-`0600`, peer-UID-checked Unix socket. The unprivileged MCP no longer executes `sudo`, `systemd-run`, helper paths, config paths, unit names, or arbitrary privileged argv; example socket/template units, `NoNewPrivileges` service hardening, and an exact-commit self-verifying atomic root-asset installer with rollback are included.
 - Up to four successful Claude `Artifact` tool-use/result pairs from the exact bound transcript append receive deterministic Stop-owned Telegram `sendDocument` delivery after the canonical final text. No registration or file-send tool is exposed; exact project/session scratchpad layout, directory-FD-anchored inode/ownership/mode/size checks, silent quoted uploads, and no-retry unknown outcomes preserve the renderer's transport boundary.
 - Automatic semantic session titles: the first successful Stop runs one bounded, isolated Haiku title call per session from an auth-inheriting command hook, validates the result, and persists it through the official zero-turn `/rename` local-command path with exact readback. `/sessions` and `/reset` are best-effort backstops, while `/rename NAME` creates a permanent user-owned override.
 - `/model` now returns a one-time Telegram reply keyboard with `1 · Opus`, `2 · Sonnet`, `3 · Haiku`, and `4 · Inherit`; each button sends an exact deterministic control payload, and the pending acknowledgement removes the keyboard before restart.

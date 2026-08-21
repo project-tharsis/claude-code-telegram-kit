@@ -1,0 +1,15 @@
+[Unit]
+Description=Claude Code Telegram control broker socket
+Before=claude-telegram.service
+
+[Socket]
+ListenStream=/run/claude-code-telegram-kit/control.sock
+SocketUser=USER
+SocketMode=0600
+DirectoryMode=0755
+Accept=yes
+MaxConnections=32
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
