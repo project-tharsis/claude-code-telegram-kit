@@ -12,7 +12,10 @@ export interface TurnVerbPair {
   complete: string;
 }
 
-/** Claude Code-compatible spinner/completion pairs, selected once per turn. */
+/**
+ * Selected once per turn. Active forms come from Claude Code's spinner vocabulary;
+ * completions must read unambiguously as finished work, never as the assistant's state.
+ */
 export const TURN_VERB_PAIRS: readonly TurnVerbPair[] = [
   { active: "Baking…", complete: "Baked" },
   { active: "Brewing…", complete: "Brewed" },
@@ -21,7 +24,7 @@ export const TURN_VERB_PAIRS: readonly TurnVerbPair[] = [
   { active: "Cooking…", complete: "Cooked" },
   { active: "Crunching…", complete: "Crunched" },
   { active: "Sautéing…", complete: "Sautéed" },
-  { active: "Working…", complete: "Worked" }
+  { active: "Tinkering…", complete: "Tinkered" }
 ];
 
 export type TurnOutcome = "Stop" | "StopFailure";

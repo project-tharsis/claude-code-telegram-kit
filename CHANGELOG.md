@@ -12,7 +12,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Deterministic pre-LLM Telegram controls: `/usage`, `/sessions`, `/resume N`, `/reset`, `/rename NAME`, and `/model`. Destructive controls are private-chat only, confirmation challenges are action/session bound and single-use, and handled control commands never reach the model.
 - Session catalog and exact-session resume with bounded metadata-only titles. `/rename NAME` creates a permanent user-owned title, while the first meaningful Stop can generate one validated Haiku title through Claude's official zero-turn local `/rename --resume` path.
-- One-time `/model` reply keyboard, root-owned `ANTHROPIC_MODEL` persistence, exact process-environment readback, and optional per-chat Telegram command menus.
+- Compact one-time `/model` reply keyboard with four model choices plus deterministic Cancel, root-owned `ANTHROPIC_MODEL` persistence, exact process-environment readback, and optional per-chat Telegram command menus.
 - Hermes-style tool progress with configurable `safe`/`all`/`verbose` disclosure, full parent/subagent step visibility, bounded code/path/query previews, credential redaction, sustained typing, deterministic completion state, and no tool-output leakage.
 - Deterministic `/usage` from Claude's documented private `statusLine.rate_limits` snapshot, plus quoted runtime authentication-failure delivery from the exact trusted transcript append.
 - Successful Claude `Artifact` results can send up to four quoted documents after the canonical final text. Discovery scans the bounded transcript tail. Files are sent one at a time with size-aware timeouts; no registration or file-send tool exists.
@@ -27,6 +27,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Slash-control replies use concise Telegram HTML hierarchy, escaped titles, code-formatted commands/values, honest metadata-only title fallbacks, and no exposed UUID/path internals.
 - Progress remains fully visible until Telegram's 4096-character wire limit instead of folding after eight steps; shell commands use a bounded one-line block and Skill calls name the loaded Skill.
 - Each progress bubble selects one stable Claude-style spinner/completion verb pair for the turn, such as `Brewing…` → `Brewed`; Telegram marks the header with `✦`/`✓` and separates it from the tool steps.
+- Spinner pairs use only Claude Code active verbs whose completion form reads unambiguously as finished work; `Tinkering…` → `Tinkered` replaces the generic `Working…` pair.
 - Long Bash previews remove a simple leading `cd <dir> &&` wrapper, then retain the command head and target tail with a middle ellipsis.
 - Monorepo packages and both MCP server identities advance to `0.3.0`.
 

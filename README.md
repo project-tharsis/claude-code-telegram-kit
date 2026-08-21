@@ -157,7 +157,7 @@ sudo claude-code-session-reset \
   --current-session-id <exact-current-session-uuid>
 ```
 
-The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/sessions`, and `/model` status execute immediately. `/model <alias>` and the exact one-time keyboard labels intentionally switch immediately because the operation is allowlisted, private-chat only, reversible, and verified after restart; `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
+The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/sessions`, and `/model` status execute immediately. `/model <alias>` and the four exact model labels switch immediately because the operation is allowlisted, private-chat only, reversible, and verified after restart; `5 · Cancel` only removes the keyboard. `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
 
 ## Development
 

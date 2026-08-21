@@ -30,7 +30,7 @@ export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
 export const MAX_RETAINED_TURNS = 32;
 
 const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)/;
-const MODEL_REPLY_CHOICE = /^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$/;
+const MODEL_REPLY_CHOICE = /^(?:[1-4] · (?:Opus|Sonnet|Haiku|Inherit)|5 · Cancel)$/;
 
 export type CancelScheduled = () => void;
 export type FinalDeliveryOutcome = "delivered" | "uncertain" | "too_large" | "rejected";
@@ -280,7 +280,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         if (envelope === null) return;
         // Session-control commands already have their own ACK/list/permission/completion UX.
         // A progress bubble is redundant, and resume/reset kill the current process before
-        // Stop can close it, leaving a permanent stale "Working…" bubble.
+        // Stop can close it, leaving a permanent stale progress bubble.
         if (CONTROL_NAMESPACE.test(envelope.body) || MODEL_REPLY_CHOICE.test(envelope.body)) return;
         assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
 

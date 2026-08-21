@@ -138,6 +138,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
     const readOnlyNamespace = command.kind === "sessions"
       || command.kind === "usage"
       || command.kind === "model-status"
+      || command.kind === "model-cancel"
       || (command.kind === "malformed" && ["sessions", "usage", "model"].includes(command.namespace));
     const destructiveNamespace = !readOnlyNamespace;
     if (destructiveNamespace && envelope.chatId.startsWith("-")) {
@@ -196,6 +197,23 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
           envelope.messageId,
           "HTML",
           MODEL_REPLY_KEYBOARD
+        );
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      } catch {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+      return { handled: true };
+    }
+
+    if (command.kind === "model-cancel") {
+      try {
+        await deps.sendMessage(
+          config,
+          envelope.chatId,
+          "<i>Model selection closed.</i>",
+          envelope.messageId,
+          "HTML",
+          REMOVE_MODEL_REPLY_KEYBOARD
         );
         await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
       } catch {
