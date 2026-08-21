@@ -57,7 +57,8 @@ function resolveAuthority(payload: HookPayload, roots: {
   }
   const workspaceDir = canonicalDirectory(roots.workspaceDir, "configured workspace");
   const projectSessionsDir = canonicalDirectory(roots.projectSessionsDir, "configured sessions directory");
-  if (typeof payload.cwd !== "string" || resolve(payload.cwd) !== workspaceDir) throw new Error("invalid workspace");
+  // Claude Code reports the active tool working directory here; it can legitimately change during a turn.
+  // The configured workspace and exact transcript path are the title authority, not payload.cwd.
   if (typeof payload.transcript_path !== "string" || !isAbsolute(payload.transcript_path)) {
     throw new Error("invalid transcript authority");
   }
