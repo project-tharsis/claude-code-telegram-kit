@@ -18,7 +18,7 @@ The same Markdown document, both paths. The official `reply` tool defaults to `f
 Every other "Claude Code + Telegram" project replaces the official Channel: its own poller, its own session management, its own pairing. This one does not. Inbound polling, sender pairing, attachments, and permission relay stay with Anthropic's plugin. The kit adds two bounded outbound/control sidecars beside it, without a second `getUpdates` consumer:
 
 - **Telegram Renderer MCP** — internal Stop-hook final delivery, successful Claude `Artifact` attachment delivery, plus silent edit-in-place tool disclosure. Rendering, quote targets, fallback, reactions, attachment transport, and disclosure redaction are deterministic; the model selects neither Telegram tool nor transport.
-- **Session Control MCP** — `/usage`, deterministic `/model`, `/rename NAME`, `/reset`, bounded `/sessions`, approval-gated `/resume N`, automatic one-shot semantic titles, and an optional allowlisted per-chat Bot Menu; privileged restart/session execution goes through a versioned, root-owned, fail-closed helper that PID 1 executes.
+- **Session Control MCP** — `/usage`, deterministic `/model`, `/rename NAME`, `/reset`, bounded `/sessions`, approval-gated `/resume N`, automatic one-shot semantic titles, and an optional allowlisted per-chat Bot Menu; privileged execution crosses only a peer-UID-checked Unix-socket broker into a versioned root helper that PID 1 executes.
 
 Both gaps are open upstream. This kit is the interim answer:
 
@@ -55,7 +55,8 @@ Telegram
         -> telegram-renderer MCP            # internal final delivery
         + lifecycle hooks                   # progress/typing/failure UX
      -> session-control MCP                # reset + list/resume control
-        -> systemd transient unit
+       -> root socket broker               # peer UID + fixed protocol
+       -> systemd transient unit
         -> root-owned session reset helper
 ```
 

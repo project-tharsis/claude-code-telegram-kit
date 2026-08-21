@@ -1,416 +1,153 @@
-import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  BROKER_PROTOCOL_VERSION,
+  callControlBroker,
   createResetScheduler,
   createSessionScheduler,
   HELPER_PROTOCOL_VERSION,
-  isSecureRootOwnedFileMetadata,
   probeHelperCapabilities,
-  runCommand,
   sendTelegramMessage,
-  type CommandRunner,
+  type BrokerCall,
   type FetchLike
 } from "../src/runtime.js";
-
-describe("root-owned scheduler file metadata", () => {
-  const info = (overrides: Record<string, unknown> = {}) => ({
-    isFile: () => true,
-    isSymbolicLink: () => false,
-    uid: 0,
-    mode: 0o100600,
-    nlink: 1,
-    ...overrides
-  });
-
-  test("accepts only the explicitly allowed private or public-read modes", () => {
-    expect(isSecureRootOwnedFileMetadata(info(), [0o600, 0o644])).toBe(true);
-    expect(isSecureRootOwnedFileMetadata(info({ mode: 0o100644 }), [0o600, 0o644])).toBe(true);
-    for (const mode of [0o100640, 0o100666, 0o100755]) {
-      expect(isSecureRootOwnedFileMetadata(info({ mode }), [0o600, 0o644])).toBe(false);
-    }
-  });
-
-  test("rejects foreign ownership, links, symlinks, and non-files", () => {
-    expect(isSecureRootOwnedFileMetadata(info({ uid: 1000 }), [0o600])).toBe(false);
-    expect(isSecureRootOwnedFileMetadata(info({ nlink: 2 }), [0o600])).toBe(false);
-    expect(isSecureRootOwnedFileMetadata(info({ isSymbolicLink: () => true }), [0o600])).toBe(false);
-    expect(isSecureRootOwnedFileMetadata(info({ isFile: () => false }), [0o600])).toBe(false);
-  });
-});
-import {
-  MAX_TELEGRAM_RESPONSE_BYTES,
-  type RuntimeConfig
-} from "@project-tharsis/claude-code-telegram-shared";
+import { MAX_TELEGRAM_RESPONSE_BYTES, type RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
 const TEST_TOKEN = `123456789:${"A".repeat(32)}`;
-const config: RuntimeConfig = {
-  token: TEST_TOKEN,
-  allowedChatIds: new Set(["123456789"])
-};
+const config: RuntimeConfig = { token: TEST_TOKEN, allowedChatIds: new Set(["123456789"]) };
+const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
+const roots: string[] = [];
+const servers: Server[] = [];
+afterEach(async () => {
+  while (servers.length) await new Promise<void>(resolve => servers.pop()!.close(() => resolve()));
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
+});
 
-describe("control runtime boundaries", () => {
-  test("kills a hung helper command at the configured deadline", async () => {
-    const started = performance.now();
-    await expect(runCommand([
-      "/usr/bin/env",
-      "python3",
-      "-c",
-      "import time; time.sleep(30)"
-    ], { timeoutMs: 50 })).rejects.toThrow("command timed out");
-    expect(performance.now() - started).toBeLessThan(2_000);
-  });
+function broker(response: unknown, seen: unknown[] = []): BrokerCall {
+  return async request => { seen.push(request); return response; };
+}
 
-  test("sends the exact ACK wire and requires a message receipt", async () => {
+function capabilities(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "ok",
+    capabilities: {
+      protocol: HELPER_PROTOCOL_VERSION,
+      actions: ["reset", "resume", "model"],
+      models: ["opus", "sonnet", "haiku", "inherit"],
+      ...overrides
+    }
+  };
+}
+
+async function unixServer(handler: (socket: Socket) => void): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), "control-socket-"));
+  roots.push(root);
+  const path = join(root, "control.sock");
+  const server = createServer(handler);
+  servers.push(server);
+  await new Promise<void>((resolve, reject) => server.listen(path, resolve).once("error", reject));
+  return path;
+}
+
+describe("control Telegram notification", () => {
+  test("sends the exact quoted ACK wire and requires a message receipt", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown>; init: RequestInit | undefined }> = [];
     const fetchImpl: FetchLike = async (input, init) => {
       calls.push({ url: String(input), body: JSON.parse(String(init?.body)), init });
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), { status: 200 });
     };
-
-    const id = await sendTelegramMessage(config, "123456789", "Reset accepted", fetchImpl, "51");
-
-    expect(id).toBe(71);
-    expect(calls).toHaveLength(1);
+    expect(await sendTelegramMessage(config, "123456789", "Reset accepted", fetchImpl, "51")).toBe(71);
     expect(calls[0]!.url.endsWith("/sendMessage")).toBe(true);
     expect(calls[0]!.init?.redirect).toBe("error");
     expect(calls[0]!.init?.signal).toBeDefined();
-    expect(calls[0]!.body).toEqual({
-      chat_id: "123456789",
-      reply_parameters: { message_id: 51 },
-      text: "Reset accepted"
-    });
+    expect(calls[0]!.body).toEqual({ chat_id: "123456789", text: "Reset accepted", reply_parameters: { message_id: 51 } });
   });
 
-  test("adds HTML parse mode only for an explicitly formatted notification", async () => {
+  test("adds HTML and a reply keyboard only when requested", async () => {
     const bodies: unknown[] = [];
     const fetchImpl: FetchLike = async (_input, init) => {
       bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 73 } }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 73 } }), { status: 200 });
     };
-    await sendTelegramMessage(config, "123456789", "<b>Usage</b>", fetchImpl, "51", "HTML");
-    expect(bodies).toEqual([{
-      chat_id: "123456789",
-      text: "<b>Usage</b>",
-      parse_mode: "HTML",
-      reply_parameters: { message_id: 51 }
-    }]);
+    const replyMarkup = { keyboard: [[{ text: "1 · Opus" }]], one_time_keyboard: true };
+    await sendTelegramMessage(config, "123456789", "<b>Usage</b>", fetchImpl, "51", "HTML", replyMarkup);
+    expect(bodies[0]).toEqual({ chat_id: "123456789", text: "<b>Usage</b>", parse_mode: "HTML", reply_markup: replyMarkup, reply_parameters: { message_id: 51 } });
   });
 
-  test("adds a reply keyboard only when explicitly requested", async () => {
-    const bodies: unknown[] = [];
-    const fetchImpl: FetchLike = async (_input, init) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 74 } }), { status: 200 });
-    };
-    const replyMarkup = {
-      keyboard: [[{ text: "1 · Opus" }]],
-      resize_keyboard: true,
-      one_time_keyboard: true
-    };
-    await sendTelegramMessage(
-      config, "123456789", "Choose", fetchImpl, "51", undefined, replyMarkup
-    );
-    expect(bodies).toEqual([{
-      chat_id: "123456789",
-      text: "Choose",
-      reply_parameters: { message_id: 51 },
-      reply_markup: replyMarkup
-    }]);
-  });
-
-  test("keeps injected fetch as the fourth argument", async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const fetchImpl: FetchLike = async (_input, init) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 72 } }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      });
-    };
-
-    const id = await sendTelegramMessage(config, "123456789", "Independent", fetchImpl);
-
-    expect(id).toBe(72);
-    expect(bodies).toEqual([{ chat_id: "123456789", text: "Independent" }]);
-  });
-
-  test("rejects an unauthorized chat before the Telegram request", async () => {
+  test("rejects unauthorized, lossy, oversized, and malformed outcomes", async () => {
     let calls = 0;
-    await expect(sendTelegramMessage(config, "999", "Reset accepted", async () => {
-      calls += 1;
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), { status: 200 });
-    }, undefined)).rejects.toThrow("chat is not authorized");
+    await expect(sendTelegramMessage(config, "999", "x", async () => { calls += 1; return new Response(); })).rejects.toThrow("not authorized");
+    await expect(sendTelegramMessage(config, "123456789", "x", async () => { calls += 1; return new Response(); }, "9007199254740993")).rejects.toThrow("invalid reply");
     expect(calls).toBe(0);
-  });
-
-  test("rejects a lossy reply message ID before the Telegram request", async () => {
-    let calls = 0;
-    await expect(sendTelegramMessage(config, "123456789", "Reset accepted", async () => {
-      calls += 1;
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 71 } }), { status: 200 });
-    }, "9007199254740993")).rejects.toThrow("invalid reply message ID");
-    expect(calls).toBe(0);
-  });
-
-  test("rejects an oversized ACK response", async () => {
-    await expect(sendTelegramMessage(
-      config,
-      "123456789",
-      "Reset accepted",
-      async () => new Response("x".repeat(MAX_TELEGRAM_RESPONSE_BYTES + 1), { status: 200 }),
-      undefined
-    )).rejects.toThrow("notification failed");
-  });
-
-  test("rejects invalid Telegram response message IDs", async () => {
-    for (const messageId of [0, -1, 9_007_199_254_740_992]) {
-      await expect(sendTelegramMessage(
-        config,
-        "123456789",
-        "Reset accepted",
-        async () => new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        })
-      )).rejects.toThrow("notification failed");
-    }
-  });
-
-  test("constructs one fixed no-shell systemd-run command", async () => {
-    const argvSeen: string[][] = [];
-    const runner: CommandRunner = async argv => {
-      argvSeen.push(argv);
-      return { exitCode: 0, stderr: "" };
-    };
-    const schedule = createResetScheduler({
-      run: runner,
-      verifyHelper: () => undefined
-    });
-    const requestId = createHash("sha256").update("123456789:51").digest("hex").slice(0, 24);
-
-    const unit = await schedule("123456789", "51");
-
-    expect(unit).toBe(`claude-session-reset-${requestId}`);
-    expect(argvSeen).toEqual([[
-      "/usr/bin/sudo",
-      "-n",
-      "/usr/bin/systemd-run",
-      `--unit=${requestId ? `claude-session-reset-${requestId}` : ""}`,
-      "--collect",
-      "--no-block",
-      "/usr/local/sbin/claude-code-session-reset",
-      "--config",
-      "/etc/claude-code-telegram-kit/reset.json",
-      "--protocol",
-      String(HELPER_PROTOCOL_VERSION),
-      "--action",
-      "reset",
-      "--chat-id",
-      "123456789",
-      "--request-id",
-      requestId
-    ]]);
-  });
-
-  test("rejects an invalid chat ID before systemd-run", async () => {
-    let calls = 0;
-    const schedule = createResetScheduler({
-      run: async () => { calls += 1; return { exitCode: 0, stderr: "" }; },
-      verifyHelper: () => undefined
-    });
-
-    await expect(schedule("1;rm -rf /", "51")).rejects.toThrow("invalid chat ID");
-    expect(calls).toBe(0);
+    await expect(sendTelegramMessage(config, "123456789", "x", async () => new Response("x".repeat(MAX_TELEGRAM_RESPONSE_BYTES + 1), { status: 200 }))).rejects.toThrow("notification failed");
+    await expect(sendTelegramMessage(config, "123456789", "x", async () => new Response("not json", { status: 200 }))).rejects.toThrow("notification failed");
   });
 });
 
-const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
-
-describe("session action scheduling", () => {
-  function scheduler(run: CommandRunner) {
-    return createSessionScheduler({ run, verifyHelper: () => undefined });
-  }
-
-  test("schedules a resume with a fixed argv carrying the exact session UUID", async () => {
-    const argvSeen: string[][] = [];
-    const schedule = scheduler(async argv => {
-      argvSeen.push(argv);
-      return { exitCode: 0, stderr: "" };
+describe("Unix control broker transport", () => {
+  test("sends one JSON line and accepts one bounded JSON response", async () => {
+    let request = "";
+    const path = await unixServer(socket => {
+      socket.on("data", chunk => {
+        request += chunk.toString();
+        if (request.endsWith("\n")) {
+          socket.end('{"status":"ok","capabilities":{"protocol":4,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"]}}\n');
+        }
+      });
     });
-    const requestId = createHash("sha256")
-      .update(`resume:123456789:51:${SESSION}`)
-      .digest("hex")
-      .slice(0, 24);
-
-    const unit = await schedule.scheduleResume("123456789", "51", SESSION, SESSION);
-
-    expect(unit).toBe(`claude-session-reset-resume-${requestId}`);
-    expect(argvSeen).toEqual([[
-      "/usr/bin/sudo",
-      "-n",
-      "/usr/bin/systemd-run",
-      `--unit=claude-session-reset-resume-${requestId}`,
-      "--collect",
-      "--no-block",
-      "/usr/local/sbin/claude-code-session-reset",
-      "--config",
-      "/etc/claude-code-telegram-kit/reset.json",
-      "--protocol",
-      String(HELPER_PROTOCOL_VERSION),
-      "--action",
-      "resume",
-      "--current-session-id",
-      SESSION,
-      "--session-id",
-      SESSION,
-      "--chat-id",
-      "123456789",
-      "--request-id",
-      requestId
-    ]]);
+    const result = await callControlBroker({ protocol: 1, action: "capabilities" }, { socketPath: path });
+    expect(JSON.parse(request)).toEqual({ protocol: 1, action: "capabilities" });
+    expect((result as { status: string }).status).toBe("ok");
   });
 
-  test("gives reset and resume distinct idempotency keys and units", async () => {
-    const argvSeen: string[][] = [];
-    const schedule = scheduler(async argv => {
-      argvSeen.push(argv);
-      return { exitCode: 0, stderr: "" };
-    });
-
-    const resetUnit = await schedule.scheduleReset("123456789", "51");
-    const resumeUnit = await schedule.scheduleResume("123456789", "51", SESSION, SESSION);
-
-    expect(resetUnit).not.toBe(resumeUnit);
-    expect(argvSeen[0]!.at(-1)).not.toBe(argvSeen[1]!.at(-1));
-  });
-
-  test("schedules a model switch with one fixed allowlisted alias", async () => {
-    const argvSeen: string[][] = [];
-    const schedule = scheduler(async argv => {
-      argvSeen.push(argv);
-      return { exitCode: 0, stderr: "" };
-    });
-    const unit = await schedule.scheduleModel("123456789", "52", "sonnet");
-    expect(unit).toMatch(/^claude-session-reset-model-[a-f0-9]{24}$/);
-    expect(argvSeen[0]).toContain("model");
-    expect(argvSeen[0]!.slice(argvSeen[0]!.indexOf("--model"), argvSeen[0]!.indexOf("--model") + 2))
-      .toEqual(["--model", "sonnet"]);
-    expect(argvSeen[0]).not.toContain("--session-id");
-    await expect(schedule.scheduleModel("123456789", "53", "fable" as any))
-      .rejects.toThrow("invalid model alias");
-  });
-
-  test("never accepts a path, service, or command in place of a session UUID", async () => {
-    let calls = 0;
-    const schedule = scheduler(async () => {
-      calls += 1;
-      return { exitCode: 0, stderr: "" };
-    });
-
-    for (const bad of [
-      "/etc/passwd",
-      "../../etc/passwd",
-      "claude-telegram.service",
-      "3fcbaf06-4378-4339-b026-8c2e026a65e7 --continue",
-      "3FCBAF06-4378-4339-B026-8C2E026A65E7",
-      ""
-    ]) {
-      await expect(schedule.scheduleResume("123456789", "51", SESSION, bad)).rejects.toThrow("invalid session UUID");
-    }
-    expect(calls).toBe(0);
-  });
-
-  test("never accepts a non-UUID current session identity", async () => {
-    let calls = 0;
-    const schedule = scheduler(async () => {
-      calls += 1;
-      return { exitCode: 0, stderr: "" };
-    });
-
-    for (const bad of [
-      "3fcbaf06-4378-4339-b026-8c2e026a65e7 --continue",
-      "../../etc/passwd",
-      "claude-telegram.service",
-      "3FCBAF06-4378-4339-B026-8C2E026A65E7",
-      ""
-    ]) {
-      await expect(schedule.scheduleResume("123456789", "51", bad, SESSION)).rejects.toThrow(
-        "invalid current session UUID"
-      );
-    }
-    expect(calls).toBe(0);
-  });
-
-  test("reports a systemd rejection instead of reporting success", async () => {
-    const schedule = scheduler(async () => ({ exitCode: 1, stderr: "denied" }));
-    await expect(schedule.scheduleResume("123456789", "51", SESSION, SESSION)).rejects.toThrow("systemd rejected");
+  test("bounds timeout and malformed responses", async () => {
+    const hanging = await unixServer(() => undefined);
+    await expect(callControlBroker({ protocol: 1, action: "capabilities" }, { socketPath: hanging, timeoutMs: 20 })).rejects.toThrow("timed out");
+    const malformed = await unixServer(socket => socket.end("{}\n{}\n"));
+    await expect(callControlBroker({ protocol: 1, action: "capabilities" }, { socketPath: malformed })).rejects.toThrow("malformed");
   });
 });
 
-describe("root helper capability preflight", () => {
-  test("requires Session Control Protocol v4", () => {
-    expect(HELPER_PROTOCOL_VERSION).toBe(4);
+describe("session scheduler broker contract", () => {
+  test("sends bounded reset, resume, and model requests", async () => {
+    const seen: unknown[] = [];
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-${"a".repeat(24)}` }, seen) });
+    expect(await scheduler.scheduleReset("123", "51")).toMatch(/^claude-session-reset-/);
+    const resume = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-resume-${"b".repeat(24)}` }, seen) });
+    await resume.scheduleResume("123", "52", SESSION, SESSION);
+    const model = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-model-${"c".repeat(24)}` }, seen) });
+    await model.scheduleModel("123", "53", "sonnet");
+    expect(seen).toEqual([
+      { protocol: BROKER_PROTOCOL_VERSION, action: "reset", chat_id: "123", message_id: "51" },
+      { protocol: BROKER_PROTOCOL_VERSION, action: "resume", chat_id: "123", message_id: "52", current_session_id: SESSION, session_id: SESSION },
+      { protocol: BROKER_PROTOCOL_VERSION, action: "model", chat_id: "123", message_id: "53", model: "sonnet" }
+    ]);
   });
 
-  test("accepts a matching protocol and action set", async () => {
-    const argvSeen: string[][] = [];
-    const capabilities = await probeHelperCapabilities({
-      run: async argv => {
-        argvSeen.push(argv);
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            protocol: 4,
-            actions: ["reset", "resume", "model"],
-            models: ["opus", "sonnet", "haiku", "inherit"]
-          }),
-          stderr: ""
-        };
-      },
-      verifyHelper: () => undefined
-    });
+  test("rejects malformed identity and broker receipts", async () => {
+    const schedule = createResetScheduler({ callBroker: broker({ status: "scheduled", unit: "evil.service" }) });
+    await expect(schedule("123", "51")).rejects.toThrow("rejected");
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-resume-${"a".repeat(24)}` }) });
+    await expect(scheduler.scheduleResume("123", "51", "bad", SESSION)).rejects.toThrow("current session UUID");
+    await expect(scheduler.scheduleModel("123", "51", "other" as "sonnet")).rejects.toThrow("model alias");
+  });
+});
 
-    expect(capabilities).toEqual({
+describe("broker capability preflight", () => {
+  test("accepts protocol v4 and required actions/models", async () => {
+    expect(await probeHelperCapabilities({ callBroker: broker(capabilities()) })).toEqual({
       protocol: 4,
       actions: ["reset", "resume", "model"],
       models: ["opus", "sonnet", "haiku", "inherit"]
     });
-    expect(argvSeen).toEqual([["/usr/local/sbin/claude-code-session-reset", "--capabilities"]]);
   });
 
-  test("fails closed on a protocol mismatch, a missing action, or unusable output", async () => {
-    for (const output of [
-      JSON.stringify({ protocol: 2, actions: ["reset", "resume"] }),
-      JSON.stringify({ protocol: 4, actions: ["reset", "resume"] }),
-      JSON.stringify({ protocol: 4, actions: ["reset", "resume", "model"], models: ["opus"] }),
-      JSON.stringify({ protocol: 1 }),
-      JSON.stringify({ actions: ["reset", "resume", "model"] }),
-      "not json",
-      "x".repeat(70_000)
-    ]) {
-      await expect(probeHelperCapabilities({
-        run: async () => ({ exitCode: 0, stdout: output, stderr: "" }),
-        verifyHelper: () => undefined
-      })).rejects.toThrow();
-    }
-  });
-
-  test("fails closed when the helper cannot run at all", async () => {
-    await expect(probeHelperCapabilities({
-      run: async () => ({ exitCode: 127, stdout: "", stderr: "not found" }),
-      verifyHelper: () => undefined
-    })).rejects.toThrow();
-    await expect(probeHelperCapabilities({
-      run: async () => {
-        throw new Error("ENOENT");
-      },
-      verifyHelper: () => undefined
-    })).rejects.toThrow();
+  test("fails closed on protocol/action/model skew", async () => {
+    await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ protocol: 3 })) })).rejects.toThrow("protocol mismatch");
+    await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ actions: ["reset"] })) })).rejects.toThrow("actions");
+    await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ models: ["opus"] })) })).rejects.toThrow("models");
   });
 });

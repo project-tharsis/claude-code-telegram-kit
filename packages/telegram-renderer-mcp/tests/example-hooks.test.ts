@@ -52,8 +52,12 @@ describe("supported Claude Code hook configuration", () => {
   });
 
   test("opts the control sidecar into per-chat command-menu sync", () => {
-    expect(mcp.mcpServers["session-control"].env?.TELEGRAM_COMMAND_MENU_ENABLED).toBe("true");
-    expect(mcp.mcpServers["session-control"].env?.CLAUDE_WORKSPACE_DIR).toBe("/home/USER/claude-bot-workspace");
+    const env = mcp.mcpServers["session-control"].env ?? {};
+    expect(env.TELEGRAM_COMMAND_MENU_ENABLED).toBe("true");
+    expect(env.CLAUDE_WORKSPACE_DIR).toBe("/home/USER/claude-bot-workspace");
+    expect(env).not.toHaveProperty("CLAUDE_SESSION_RESET_HELPER");
+    expect(env).not.toHaveProperty("CLAUDE_SESSION_RESET_CONFIG");
+    expect(env).not.toHaveProperty("CLAUDE_SESSION_RESET_UNIT_PREFIX");
   });
 
   test("wires a private statusLine rate-limit snapshot writer", () => {

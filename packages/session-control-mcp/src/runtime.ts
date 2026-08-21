@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { lstatSync } from "node:fs";
+import { createConnection } from "node:net";
 import {
   assertAuthorizedChat,
   readTelegramJson,
@@ -9,22 +8,16 @@ import {
 import { MODEL_ALIASES, type ModelAlias } from "./control-command.js";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-export interface CommandRunnerOptions { timeoutMs?: number }
-export type CommandRunner = (
-  argv: string[],
-  options?: CommandRunnerOptions
-) => Promise<{ exitCode: number; stderr: string; stdout?: string }>;
 export type TelegramReplyMarkup = Record<string, unknown>;
 
-const DEFAULT_HELPER = "/usr/local/sbin/claude-code-session-reset";
-const DEFAULT_CONFIG = "/etc/claude-code-telegram-kit/reset.json";
-const DEFAULT_UNIT_PREFIX = "claude-session-reset";
-/** Wire protocol between this MCP and the root helper. Both sides must agree exactly. */
+const DEFAULT_BROKER_SOCKET = "/run/claude-code-telegram-kit/control.sock";
+const MAX_BROKER_RESPONSE_BYTES = 64 * 1024;
+const DEFAULT_BROKER_TIMEOUT_MS = 5_000;
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UNIT = /^claude-session-reset(?:-(?:resume|model))?-[0-9a-f]{24}$/;
+export const BROKER_PROTOCOL_VERSION = 1;
 export const HELPER_PROTOCOL_VERSION = 4;
 export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model"] as const;
-const MAX_CAPABILITIES_BYTES = 64 * 1024;
-const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
-const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 interface TelegramEnvelope {
   ok?: unknown;
@@ -53,16 +46,13 @@ export async function sendTelegramMessage(
   }
   let response: Response;
   try {
-    response = await fetchImpl(
-      `https://api.telegram.org/bot${config.token}/sendMessage`,
-      {
-        method: "POST",
-        redirect: "error",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
-      }
-    );
+    response = await fetchImpl(`https://api.telegram.org/bot${config.token}/sendMessage`, {
+      method: "POST",
+      redirect: "error",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
+    });
   } catch {
     throw new Error("Telegram control notification failed");
   }
@@ -73,191 +63,112 @@ export async function sendTelegramMessage(
     throw new Error("Telegram control notification failed");
   }
   const messageId = envelope.result?.message_id;
-  if (
-    !response.ok
-    || envelope.ok !== true
-    || typeof messageId !== "number"
-    || !Number.isSafeInteger(messageId)
-    || messageId < 1
-  ) {
+  if (!response.ok || envelope.ok !== true || typeof messageId !== "number"
+      || !Number.isSafeInteger(messageId) || messageId < 1) {
     throw new Error("Telegram control notification failed");
   }
   return messageId;
 }
 
-export async function runCommand(
-  argv: string[],
-  options: CommandRunnerOptions = {}
-): Promise<{ exitCode: number; stderr: string; stdout: string }> {
-  const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
-  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, 60_000));
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, timeoutMs);
-  timer.unref?.();
-  try {
-    const [exitCode, stderr, stdout] = await Promise.all([
-      child.exited,
-      child.stderr ? new Response(child.stderr).text() : Promise.resolve(""),
-      child.stdout ? new Response(child.stdout).text() : Promise.resolve("")
-    ]);
-    if (timedOut) throw new Error("command timed out");
-    return {
-      exitCode,
-      stderr: stderr.slice(0, 4_096),
-      stdout: stdout.slice(0, MAX_CAPABILITIES_BYTES + 1)
+export type BrokerRequest =
+  | { protocol: 1; action: "capabilities" }
+  | { protocol: 1; action: "reset"; chat_id: string; message_id: string }
+  | { protocol: 1; action: "resume"; chat_id: string; message_id: string; current_session_id: string; session_id: string }
+  | { protocol: 1; action: "model"; chat_id: string; message_id: string; model: ModelAlias };
+
+export type BrokerCall = (request: BrokerRequest) => Promise<unknown>;
+
+export function callControlBroker(
+  request: BrokerRequest,
+  options: { socketPath?: string; timeoutMs?: number } = {}
+): Promise<unknown> {
+  const socketPath = options.socketPath ?? process.env.CLAUDE_SESSION_CONTROL_SOCKET ?? DEFAULT_BROKER_SOCKET;
+  if (!socketPath.startsWith("/") || socketPath.includes("\0")) {
+    return Promise.reject(new Error("invalid control socket path"));
+  }
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_BROKER_TIMEOUT_MS, 60_000));
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const finish = (error?: Error, value?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error !== undefined) reject(error); else resolve(value);
     };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function assertAbsolutePath(value: string, label: string): void {
-  if (!value.startsWith("/") || value.includes("\0")) throw new Error(`${label} must be an absolute path`);
-}
-
-interface RootOwnedFileMetadata {
-  isFile: () => boolean;
-  isSymbolicLink: () => boolean;
-  uid: number;
-  mode: number;
-  nlink: number;
-}
-
-export function isSecureRootOwnedFileMetadata(
-  info: RootOwnedFileMetadata,
-  allowedModes: readonly number[]
-): boolean {
-  return (
-    info.isFile()
-    && !info.isSymbolicLink()
-    && info.uid === 0
-    && info.nlink === 1
-    && allowedModes.includes(info.mode & 0o777)
-  );
-}
-
-function verifyRootOwnedFile(path: string, modes: readonly number[], label: string): void {
-  const info = lstatSync(path);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${label} is not a regular file`);
-  if (!isSecureRootOwnedFileMetadata(info, modes)) {
-    throw new Error(`${label} ownership or mode is invalid`);
-  }
+    const timer = setTimeout(() => finish(new Error("control broker timed out")), timeoutMs);
+    timer.unref?.();
+    socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.on("data", chunk => {
+      total += chunk.byteLength;
+      if (total > MAX_BROKER_RESPONSE_BYTES) return finish(new Error("control broker response too large"));
+      chunks.push(chunk);
+    });
+    socket.once("error", () => finish(new Error("control broker unavailable")));
+    socket.once("end", () => {
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
+          return finish(new Error("control broker response is malformed"));
+        }
+        finish(undefined, JSON.parse(text));
+      } catch {
+        finish(new Error("control broker response is malformed"));
+      }
+    });
+  });
 }
 
 export interface SchedulerOptions {
-  run?: CommandRunner;
-  verifyHelper?: () => void;
-  helperPath?: string;
-  configPath?: string;
-  unitPrefix?: string;
+  callBroker?: BrokerCall;
+  socketPath?: string;
+  timeoutMs?: number;
 }
 
-interface ResolvedScheduler {
-  run: CommandRunner;
-  helperPath: string;
-  configPath: string;
-  unitPrefix: string;
-  verifyHelper: () => void;
+function brokerCall(options: SchedulerOptions): BrokerCall {
+  return options.callBroker ?? (request => callControlBroker(request, {
+    ...(options.socketPath === undefined ? {} : { socketPath: options.socketPath }),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
+  }));
 }
 
-function resolveScheduler(options: SchedulerOptions): ResolvedScheduler {
-  const run = options.run ?? runCommand;
-  const helperPath = options.helperPath ?? process.env.CLAUDE_SESSION_RESET_HELPER ?? DEFAULT_HELPER;
-  const configPath = options.configPath ?? process.env.CLAUDE_SESSION_RESET_CONFIG ?? DEFAULT_CONFIG;
-  const unitPrefix = options.unitPrefix ?? process.env.CLAUDE_SESSION_RESET_UNIT_PREFIX ?? DEFAULT_UNIT_PREFIX;
-  assertAbsolutePath(helperPath, "reset helper");
-  assertAbsolutePath(configPath, "reset config");
-  if (!/^[A-Za-z0-9_.@-]+$/.test(unitPrefix)) throw new Error("invalid reset unit prefix");
-
-  const verifyHelper = options.verifyHelper ?? (() => {
-    verifyRootOwnedFile(helperPath, [0o755], "reset helper");
-    verifyRootOwnedFile(configPath, [0o600, 0o644], "reset config");
-  });
-
-  return { run, helperPath, configPath, unitPrefix, verifyHelper };
+function validId(value: string, label: string): void {
+  const parsed = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`invalid ${label}`);
+  }
 }
 
-/**
- * The only shape of privileged command this MCP ever builds: a fixed argv, no shell, no
- * caller-supplied executable, path, unit, or service. The action and its session UUID are the
- * only variable parts, and the UUID is resolved from a user-private snapshot, never the model.
- */
 export function createSessionScheduler(options: SchedulerOptions = {}) {
-  const resolved = resolveScheduler(options);
-
-  async function submit(
-    action: "reset" | "resume" | "model",
-    chatId: string,
-    messageId: string,
-    currentSessionId?: string,
-    sessionId?: string,
-    model?: ModelAlias
-  ): Promise<string> {
-    if (!/^\d+$/.test(chatId)) throw new Error("invalid chat ID");
-    if (!/^\d+$/.test(messageId)) throw new Error("invalid message ID");
-    if (action === "resume" && (sessionId === undefined || !SESSION_UUID.test(sessionId))) {
-      throw new Error("invalid session UUID");
+  const call = brokerCall(options);
+  async function submit(request: Exclude<BrokerRequest, { action: "capabilities" }>): Promise<string> {
+    validId(request.chat_id, "chat ID");
+    validId(request.message_id, "message ID");
+    if (request.action === "resume") {
+      if (!SESSION_UUID.test(request.session_id)) throw new Error("invalid session UUID");
+      if (!SESSION_UUID.test(request.current_session_id)) throw new Error("invalid current session UUID");
     }
-    if (action === "resume" && (currentSessionId === undefined || !SESSION_UUID.test(currentSessionId))) {
-      throw new Error("invalid current session UUID");
-    }
-    if (action === "model" && !MODEL_ALIASES.includes((model ?? "") as ModelAlias)) {
+    if (request.action === "model" && !MODEL_ALIASES.includes(request.model)) {
       throw new Error("invalid model alias");
     }
-    resolved.verifyHelper();
-
-    // Reset and resume for the same inbound message stay separately idempotent at the root.
-    const seed = action === "reset"
-      ? `${chatId}:${messageId}`
-      : action === "resume"
-        ? `${action}:${chatId}:${messageId}:${currentSessionId!}`
-        : `${action}:${chatId}:${messageId}:${model!}`;
-    const id = createHash("sha256").update(seed).digest("hex").slice(0, 24);
-    const unit = action === "reset"
-      ? `${resolved.unitPrefix}-${id}`
-      : `${resolved.unitPrefix}-${action}-${id}`;
-    const argv = [
-      "/usr/bin/sudo",
-      "-n",
-      "/usr/bin/systemd-run",
-      `--unit=${unit}`,
-      "--collect",
-      "--no-block",
-      resolved.helperPath,
-      "--config",
-      resolved.configPath,
-      "--protocol",
-      String(HELPER_PROTOCOL_VERSION),
-      "--action",
-      action,
-      ...(action === "resume" ? ["--current-session-id", currentSessionId!] : []),
-      ...(action === "resume" ? ["--session-id", sessionId!] : []),
-      ...(action === "model" ? ["--model", model!] : []),
-      "--chat-id",
-      chatId,
-      "--request-id",
-      id
-    ];
-    const result = await resolved.run(argv);
-    if (result.exitCode !== 0) throw new Error(`systemd rejected the ${action} job`);
-    return unit;
+    const result = await call(request) as { status?: unknown; unit?: unknown };
+    if (result?.status !== "scheduled" || typeof result.unit !== "string" || !UNIT.test(result.unit)) {
+      throw new Error(`control broker rejected the ${request.action} job`);
+    }
+    return result.unit;
   }
-
   return {
-    scheduleReset: (chatId: string, messageId: string) => submit("reset", chatId, messageId),
-    scheduleResume: (chatId: string, messageId: string, currentSessionId: string, sessionId: string) =>
-      submit("resume", chatId, messageId, currentSessionId, sessionId),
-    scheduleModel: (chatId: string, messageId: string, model: ModelAlias) =>
-      submit("model", chatId, messageId, undefined, undefined, model)
+    scheduleReset: (chatId: string, messageId: string) => submit({ protocol: 1, action: "reset", chat_id: chatId, message_id: messageId }),
+    scheduleResume: (chatId: string, messageId: string, currentSessionId: string, sessionId: string) => submit({ protocol: 1, action: "resume", chat_id: chatId, message_id: messageId, current_session_id: currentSessionId, session_id: sessionId }),
+    scheduleModel: (chatId: string, messageId: string, model: ModelAlias) => submit({ protocol: 1, action: "model", chat_id: chatId, message_id: messageId, model })
   };
 }
 
 export function createResetScheduler(options: SchedulerOptions = {}) {
-  const { scheduleReset } = createSessionScheduler(options);
-  return scheduleReset;
+  return createSessionScheduler(options).scheduleReset;
 }
 
 export interface HelperCapabilities {
@@ -266,38 +177,24 @@ export interface HelperCapabilities {
   models: string[];
 }
 
-/**
- * Read-only preflight against the installed root helper. It runs unprivileged and mutates
- * nothing, so a version skew between this checkout and `/usr/local/sbin` is discovered before
- * a user is told an action was accepted rather than after a failed privileged job.
- */
 export async function probeHelperCapabilities(options: SchedulerOptions = {}): Promise<HelperCapabilities> {
-  const resolved = resolveScheduler(options);
-  resolved.verifyHelper();
-
-  const result = await resolved.run([resolved.helperPath, "--capabilities"]);
-  if (result.exitCode !== 0) throw new Error("reset helper capability probe failed");
-  const stdout = result.stdout ?? "";
-  if (stdout.length === 0 || stdout.length > MAX_CAPABILITIES_BYTES) {
-    throw new Error("reset helper capability output is unusable");
+  const result = await brokerCall(options)({ protocol: 1, action: "capabilities" }) as {
+    status?: unknown;
+    capabilities?: { protocol?: unknown; actions?: unknown; models?: unknown };
+  };
+  if (result?.status !== "ok" || typeof result.capabilities !== "object" || result.capabilities === null) {
+    throw new Error("control broker capability probe failed");
   }
-
-  const parsed = JSON.parse(stdout) as { protocol?: unknown; actions?: unknown; models?: unknown };
-  if (parsed.protocol !== HELPER_PROTOCOL_VERSION) {
-    throw new Error("reset helper protocol mismatch");
-  }
+  const parsed = result.capabilities;
+  if (parsed.protocol !== HELPER_PROTOCOL_VERSION) throw new Error("reset helper protocol mismatch");
   const actions: unknown[] = Array.isArray(parsed.actions) ? parsed.actions : [];
-  if (
-    !actions.every((action): action is string => typeof action === "string")
-    || !REQUIRED_HELPER_ACTIONS.every(action => actions.includes(action))
-  ) {
+  if (!actions.every((action): action is string => typeof action === "string")
+      || !REQUIRED_HELPER_ACTIONS.every(action => actions.includes(action))) {
     throw new Error("reset helper does not support the required actions");
   }
   const models: unknown[] = Array.isArray(parsed.models) ? parsed.models : [];
-  if (
-    !models.every((model): model is string => typeof model === "string")
-    || !MODEL_ALIASES.every(model => models.includes(model))
-  ) {
+  if (!models.every((model): model is string => typeof model === "string")
+      || !MODEL_ALIASES.every(model => models.includes(model))) {
     throw new Error("reset helper does not support the required models");
   }
   return { protocol: HELPER_PROTOCOL_VERSION, actions, models };

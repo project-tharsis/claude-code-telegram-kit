@@ -18,8 +18,6 @@
         "/home/USER/.local/share/claude-code-telegram-kit/current/packages/session-control-mcp/src/server.ts"
       ],
       "env": {
-        "CLAUDE_SESSION_RESET_HELPER": "/usr/local/sbin/claude-code-session-reset",
-        "CLAUDE_SESSION_RESET_CONFIG": "/etc/claude-code-telegram-kit/reset.json",
         "CLAUDE_PROJECT_SESSIONS_DIR": "/home/USER/.claude/projects/PROJECT",
         "CLAUDE_WORKSPACE_DIR": "/home/USER/claude-bot-workspace",
         "TELEGRAM_COMMAND_MENU_ENABLED": "true"
