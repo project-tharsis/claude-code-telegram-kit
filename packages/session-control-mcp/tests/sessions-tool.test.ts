@@ -6,7 +6,7 @@ import {
   RESUME_SESSION_TOOL,
   SESSIONS_TOOL_NAMES
 } from "../src/sessions-tool.js";
-import { RESET_TOOL } from "../src/tool.js";
+
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 
@@ -42,9 +42,8 @@ function harness(overrides: {
 }
 
 describe("session control tool declarations", () => {
-  test("adds two public tools and one internal binder beside the reset tool", () => {
+  test("adds two bounded session tools and one internal binder", () => {
     expect(SESSIONS_TOOL_NAMES).toEqual(["list_sessions", "resume_session", "bind_command"]);
-    expect(SESSIONS_TOOL_NAMES).not.toContain(RESET_TOOL.name);
     expect(LIST_SESSIONS_TOOL.annotations.readOnlyHint).toBe(false);
     expect(LIST_SESSIONS_TOOL.annotations.idempotentHint).toBe(false);
     expect(RESUME_SESSION_TOOL.annotations.destructiveHint).toBe(true);

@@ -12,7 +12,7 @@ dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmi
 
 An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
 
-Legacy public reset/list/resume tools remain exposed only as fail-closed compatibility surfaces and should all be listed under `permissions.deny`. Exact control commands never rely on model tool selection.
+The server advertises only the deterministic hook router plus the bounded list/resume compatibility tools. The legacy model-callable reset tool is removed; exact control commands never rely on model tool selection.
 
 `/usage` reads a private service-user-owned cache written from Claude's documented `statusLine.rate_limits`; it starts no extra Claude process and calls neither the LLM nor the OAuth usage endpoint. Delivery uses Telegram-safe HTML with bold percentages, reset timestamps, and a compact ten-cell micro-bar. `/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
 
@@ -42,7 +42,7 @@ TELEGRAM_COMMAND_MENU_ENABLED
 
 Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. Model status always reads the fixed root-owned, mode-`0644`, single-line `/etc/claude-code-telegram-kit/model.env` that the service loads through an optional `EnvironmentFile=` directive. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
 
-At startup the control MCP runs the helper's read-only `--capabilities` command and requires Session Control Protocol v4 with `reset`, `resume`, and `model` plus the fixed model allowlist. Version skew disables privileged actions while leaving read-only status/listing and rendering available. Protocol v4 adds atomic root-owned `model.env` updates, service restart, process-environment verification, and rollback; resume/reset retain their exact-session and secure-receipt contracts.
+Before each confirmed privileged action, the control MCP runs the helper's read-only `--capabilities` command with a five-second hard process deadline and requires Session Control Protocol v4 with `reset`, `resume`, and `model` plus the fixed model allowlist. Version skew or an unavailable helper fails before acceptance delivery while read-only status/listing and rendering remain available; a repaired helper is detected on the next action without restarting the MCP. Protocol v4 adds atomic root-owned `model.env` updates, service restart, process-environment verification, and rollback; resume/reset retain their exact-session and secure-receipt contracts.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
 

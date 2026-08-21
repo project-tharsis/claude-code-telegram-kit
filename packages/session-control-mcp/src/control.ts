@@ -28,6 +28,7 @@ export interface ResetReceipt {
 
 export interface ResetControllerDeps {
   loadConfig: () => RuntimeConfig;
+  helperReady: () => Promise<boolean>;
   sendMessage: (
     config: RuntimeConfig,
     chatId: string,
@@ -49,6 +50,7 @@ export function createResetController(deps: ResetControllerDeps) {
     const request = ResetRequestSchema.parse(rawRequest);
     const config = deps.loadConfig();
     assertAuthorizedChat(config, request.chat_id);
+    if (!await deps.helperReady()) throw new Error("session reset is unavailable on this host");
 
     let ackMessageId: number;
     try {

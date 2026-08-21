@@ -17,6 +17,7 @@ function recorder() {
     recordTool: (input: unknown) => {
       calls.push({ kind: "tool", input });
     },
+
     recordSuccess: (input: unknown) => {
       calls.push({ kind: "success", input });
     },
@@ -37,6 +38,7 @@ describe("internal hook tool declarations", () => {
       "bind_turn", "record_tool", "record_tool_success", "record_tool_failure", "finish_turn"
     ]);
     expect(HOOK_TOOL_NAMES).not.toContain(SEND_REPLY_TOOL.name);
+
     for (const tool of INTERNAL_HOOK_TOOLS) {
       expect(tool.description).toContain("Internal Claude Code hook tool");
       expect(tool.annotations.readOnlyHint).toBe(tool.name !== "finish_turn");
@@ -74,6 +76,7 @@ describe("internal hook tool handler", () => {
     const handle = createHookToolHandler({
       bindTurn: () => undefined,
       recordTool: () => undefined,
+
       recordSuccess: () => undefined,
       recordFailure: () => undefined,
       finishTurn: async () => "retry"
@@ -108,6 +111,7 @@ describe("internal hook tool handler", () => {
       tool_name: "Read",
       hook_event_name: "PreToolUse"
     });
+
     await handle("record_tool_success", {
       session_id: SESSION,
       prompt_id: "p1",
@@ -260,6 +264,7 @@ describe("internal hook tool handler", () => {
       recordTool: () => {
         throw new Error("boom");
       },
+
       recordSuccess: () => {
         throw new Error("boom");
       },

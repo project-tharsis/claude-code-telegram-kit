@@ -18,6 +18,23 @@ function isPositiveSafeTelegramId(value: string): boolean {
   return Number.isSafeInteger(parsed) && parsed >= 1;
 }
 
+function parseChannelAttributes(tag: string): Map<string, string> | null {
+  const attributes = new Map<string, string>();
+  const pattern = /\s+([a-z_][a-z0-9_]{0,31})="([^"<>]{0,256})"/iy;
+  let cursor = 0;
+  while (cursor < tag.length) {
+    if (/^\s+$/u.test(tag.slice(cursor))) break;
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(tag);
+    if (match === null || match.index !== cursor) return null;
+    const key = match[1]!.toLowerCase();
+    if (attributes.has(key)) return null;
+    attributes.set(key, match[2]!);
+    cursor = pattern.lastIndex;
+  }
+  return attributes;
+}
+
 /**
  * Accepts only a direct inbound Telegram message: the official Channel envelope must open
  * the prompt, and the prompt must contain exactly one channel tag. Quoted, forwarded, or
@@ -41,13 +58,8 @@ export function parseDirectTelegramEnvelope(prompt: string): DirectTelegramEnvel
   const tag = trimmed.slice(CHANNEL_TAG_OPEN.length, close);
   if (tag.length === 0 || !/^[\s]/.test(tag)) return null;
 
-  const attributes = new Map<string, string>();
-  const pattern = /([a-z_][a-z0-9_]{0,31})="([^"<>]{0,256})"/gi;
-  let match = pattern.exec(tag);
-  while (match !== null) {
-    attributes.set(match[1]!.toLowerCase(), match[2]!);
-    match = pattern.exec(tag);
-  }
+  const attributes = parseChannelAttributes(tag);
+  if (attributes === null) return null;
 
   // The official Channel emits `plugin:telegram:telegram`; earlier versions emitted `telegram`.
   // Accept both exact values only — prefixes or suffixes must not pass.

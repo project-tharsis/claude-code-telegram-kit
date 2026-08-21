@@ -5,12 +5,14 @@ import {
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   finalizeTelegramReaction,
   loadRuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
+import { createArtifactDeliverer } from "./artifact-delivery.js";
+import { startArtifactTranscriptTracker } from "./artifact-transcript.js";
 import { watchAuthFailureTranscript } from "./auth-failure-watcher.js";
 import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
@@ -26,9 +28,16 @@ import { createUnifiedToolHandler, SEND_REPLY_TOOL } from "./unified-tool.js";
 const configRoot = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", "telegram");
 const projectSessionsDir = process.env.CLAUDE_PROJECT_SESSIONS_DIR;
+const serviceUid = process.getuid?.();
+const artifactRoot = projectSessionsDir === undefined || serviceUid === undefined
+  ? undefined
+  : join("/tmp", `claude-${serviceUid}`, basename(projectSessionsDir));
 const loadConfig = () => loadRuntimeConfig(stateDir);
 const disclosureMode = parseToolDisclosureMode(process.env.TELEGRAM_TOOL_DISCLOSURE_MODE);
 const deliver = createUnifiedDeliverer();
+const deliverArtifacts = artifactRoot === undefined
+  ? null
+  : createArtifactDeliverer({ root: artifactRoot });
 const AUTH_FAILURE_MESSAGE =
   "Claude Code authentication failed.\n\nRe-authenticate Claude Code on the host, then resend this message.";
 const handleTool = createUnifiedToolHandler({
@@ -46,6 +55,9 @@ const disclosure = createTurnDisclosure({
   loadConfig,
   mode: disclosureMode,
   startTyping: chatId => typing.start(chatId),
+  startArtifactTracking: input => projectSessionsDir === undefined
+    ? null
+    : startArtifactTranscriptTracker(input, { expectedRoot: projectSessionsDir }),
   startAuthFailureWatch: (input, onFailure) => {
     if (projectSessionsDir === undefined || input.transcript_path === undefined) return () => undefined;
     return watchAuthFailureTranscript({
@@ -64,7 +76,7 @@ const disclosure = createTurnDisclosure({
       disable_notification: false
     }, config);
   },
-  deliverFinal: async (config, chatId, messageId, content) => {
+  deliverFinal: async (config, chatId, messageId, content, artifacts) => {
     try {
       await deliver({
         chat_id: chatId,
@@ -72,6 +84,38 @@ const disclosure = createTurnDisclosure({
         content,
         disable_notification: false
       }, config);
+      if (artifacts.length > 0) {
+        if (deliverArtifacts === null) {
+          process.stderr.write("artifact delivery: root is not configured\n");
+          try {
+            await deliver({
+              chat_id: chatId,
+              message_id: messageId,
+              content: "One or more artifacts could not be attached.",
+              disable_notification: false
+            }, config);
+          } catch {
+            // The canonical final text is already delivered.
+          }
+        } else {
+          const result = await deliverArtifacts(config, chatId, messageId, artifacts);
+          if (result.kind === "local_rejected" || result.kind === "permanent") {
+            process.stderr.write(`artifact delivery: ${result.kind}\n`);
+            try {
+              await deliver({
+                chat_id: chatId,
+                message_id: messageId,
+                content: "One or more artifacts could not be attached.",
+                disable_notification: false
+              }, config);
+            } catch {
+              // The canonical final text is already delivered.
+            }
+          } else if (result.kind === "uncertain") {
+            process.stderr.write("artifact delivery: outcome uncertain; no retry\n");
+          }
+        }
+      }
       return "delivered";
     } catch (error) {
       if (error instanceof TelegramContentTooLargeError) return "too_large";

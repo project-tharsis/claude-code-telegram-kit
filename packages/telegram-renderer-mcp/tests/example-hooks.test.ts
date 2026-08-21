@@ -72,13 +72,13 @@ describe("supported Claude Code hook configuration", () => {
       "dispatch_command",
       "bind_command",
       "list_sessions",
-      "resume_session",
-      "schedule_session_reset"
+      "resume_session"
     ]) {
       expect(settings.permissions.deny).toContain(`mcp__session-control__${tool}`);
     }
     expect(settings.permissions.allow.some(tool => tool.startsWith("mcp__session-control__"))).toBe(false);
     expect(settings.permissions.ask.some(tool => tool.startsWith("mcp__session-control__"))).toBe(false);
+    expect(settings.permissions.deny).not.toContain("mcp__session-control__schedule_session_reset");
   });
 
   test("wires each lifecycle event to the exact internal MCP tool", () => {
@@ -153,5 +153,6 @@ describe("supported Claude Code hook configuration", () => {
       hook_event_name: "PreToolUse"
     });
     expect(input).not.toHaveProperty("tool_input");
+
   });
 });

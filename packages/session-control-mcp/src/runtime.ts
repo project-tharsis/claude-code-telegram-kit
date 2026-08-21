@@ -9,7 +9,11 @@ import {
 import { MODEL_ALIASES, type ModelAlias } from "./control-command.js";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-export type CommandRunner = (argv: string[]) => Promise<{ exitCode: number; stderr: string; stdout?: string }>;
+export interface CommandRunnerOptions { timeoutMs?: number }
+export type CommandRunner = (
+  argv: string[],
+  options?: CommandRunnerOptions
+) => Promise<{ exitCode: number; stderr: string; stdout?: string }>;
 export type TelegramReplyMarkup = Record<string, unknown>;
 
 const DEFAULT_HELPER = "/usr/local/sbin/claude-code-session-reset";
@@ -19,6 +23,7 @@ const DEFAULT_UNIT_PREFIX = "claude-session-reset";
 export const HELPER_PROTOCOL_VERSION = 4;
 export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model"] as const;
 const MAX_CAPABILITIES_BYTES = 64 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 interface TelegramEnvelope {
@@ -80,20 +85,33 @@ export async function sendTelegramMessage(
   return messageId;
 }
 
-async function defaultRunner(
-  argv: string[]
+export async function runCommand(
+  argv: string[],
+  options: CommandRunnerOptions = {}
 ): Promise<{ exitCode: number; stderr: string; stdout: string }> {
   const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stderr, stdout] = await Promise.all([
-    child.exited,
-    child.stderr ? new Response(child.stderr).text() : Promise.resolve(""),
-    child.stdout ? new Response(child.stdout).text() : Promise.resolve("")
-  ]);
-  return {
-    exitCode,
-    stderr: stderr.slice(0, 4_096),
-    stdout: stdout.slice(0, MAX_CAPABILITIES_BYTES + 1)
-  };
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, 60_000));
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, timeoutMs);
+  timer.unref?.();
+  try {
+    const [exitCode, stderr, stdout] = await Promise.all([
+      child.exited,
+      child.stderr ? new Response(child.stderr).text() : Promise.resolve(""),
+      child.stdout ? new Response(child.stdout).text() : Promise.resolve("")
+    ]);
+    if (timedOut) throw new Error("command timed out");
+    return {
+      exitCode,
+      stderr: stderr.slice(0, 4_096),
+      stdout: stdout.slice(0, MAX_CAPABILITIES_BYTES + 1)
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function assertAbsolutePath(value: string, label: string): void {
@@ -146,7 +164,7 @@ interface ResolvedScheduler {
 }
 
 function resolveScheduler(options: SchedulerOptions): ResolvedScheduler {
-  const run = options.run ?? defaultRunner;
+  const run = options.run ?? runCommand;
   const helperPath = options.helperPath ?? process.env.CLAUDE_SESSION_RESET_HELPER ?? DEFAULT_HELPER;
   const configPath = options.configPath ?? process.env.CLAUDE_SESSION_RESET_CONFIG ?? DEFAULT_CONFIG;
   const unitPrefix = options.unitPrefix ?? process.env.CLAUDE_SESSION_RESET_UNIT_PREFIX ?? DEFAULT_UNIT_PREFIX;

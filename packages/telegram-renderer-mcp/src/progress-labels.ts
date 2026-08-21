@@ -24,6 +24,7 @@ export const SAFE_STEP_LABELS = [
   "Reading skill",
   DELEGATING_LABEL,
   "Finding tool",
+  "Creating artifact",
   "Using integration",
   "Working"
 ] as const;
@@ -67,7 +68,8 @@ const TOOL_PRESENTATIONS = new Map<string, SafeStepPresentation>([
   ["Skill", inline("📚", "Reading skill")],
   ["Task", inline("👥", DELEGATING_LABEL)],
   ["Agent", inline("👥", DELEGATING_LABEL)],
-  ["ToolSearch", inline("🧰", "Finding tool")]
+  ["ToolSearch", inline("🧰", "Finding tool")],
+  ["Artifact", inline("📦", "Creating artifact")]
 ]);
 
 const INTEGRATION_PRESENTATION = inline("🔌", "Using integration");

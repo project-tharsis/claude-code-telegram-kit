@@ -17,8 +17,7 @@
       "mcp__session-control__dispatch_command",
       "mcp__session-control__bind_command",
       "mcp__session-control__list_sessions",
-      "mcp__session-control__resume_session",
-      "mcp__session-control__schedule_session_reset"
+      "mcp__session-control__resume_session"
     ]
   },
   "hooks": {

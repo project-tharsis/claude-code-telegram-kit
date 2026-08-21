@@ -72,6 +72,7 @@ function previewSource(toolName: string, fields: ToolPreviewFields): string {
     case "Task":
     case "Agent": return fields.description ?? "";
     case "Skill": return fields.skill ?? fields.description ?? "";
+    case "Artifact": return fields.description ?? "";
     default: return toolName.startsWith("mcp__")
       ? fields.query ?? fields.description ?? ""
       : "";

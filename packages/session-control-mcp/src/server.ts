@@ -31,7 +31,7 @@ import {
 } from "./session-selection.js";
 import { createSessionsController } from "./sessions-control.js";
 import { createSessionsToolHandler, SESSIONS_TOOLS } from "./sessions-tool.js";
-import { createToolHandler, RESET_TOOL } from "./tool.js";
+
 import { DEFAULT_MODEL_ENV_FILE, readConfiguredModel } from "./model-status.js";
 import { readSubscriptionUsage } from "./subscription-usage.js";
 import { createSessionTitleService } from "./session-title-service.js";
@@ -53,26 +53,15 @@ const workspaceDir = process.env.CLAUDE_WORKSPACE_DIR;
 const selectionDir = defaultSelectionDirectory();
 const loadConfig = () => loadRuntimeConfig(stateDir);
 
-/**
- * A skew between this checkout and the installed root helper disables the privileged actions
- * rather than letting a user be told an action was accepted that the helper cannot perform.
- * Listing stays available because it needs no privileged helper at all.
- */
-const PREFLIGHT_TIMEOUT_MS = 5_000;
-let helperReady = false;
-try {
-  helperReady = await Promise.race([
-    probeHelperCapabilities().then(() => true),
-    new Promise<boolean>(resolve => {
-      const timer = setTimeout(() => resolve(false), PREFLIGHT_TIMEOUT_MS);
-      timer.unref?.();
-    })
-  ]);
-} catch {
-  helperReady = false;
-}
-
 const scheduler = createSessionScheduler();
+const helperReady = async (): Promise<boolean> => {
+  try {
+    await probeHelperCapabilities();
+    return true;
+  } catch {
+    return false;
+  }
+};
 const capabilities = createCapabilityStore({ loadConfig });
 const challenges = createConfirmationChallengeStore();
 const titleService = projectSessionsDir !== undefined && workspaceDir !== undefined
@@ -81,15 +70,13 @@ const titleService = projectSessionsDir !== undefined && workspaceDir !== undefi
 
 const controller = createResetController({
   loadConfig,
+  helperReady,
   sendMessage: (config, chatId, text, replyTo, parseMode) =>
     sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode),
   react: finalizeTelegramReaction,
-  schedule: (chatId, messageId) => {
-    if (!helperReady) throw new Error("session reset is unavailable on this host");
-    return scheduler.scheduleReset(chatId, messageId);
-  }
+  schedule: (chatId, messageId) => scheduler.scheduleReset(chatId, messageId)
 });
-const handleTool = createToolHandler(controller);
+
 
 const sessionsController = createSessionsController({
   loadConfig,
@@ -111,7 +98,7 @@ const sessionsController = createSessionsController({
   react: finalizeTelegramReaction,
   scheduleResume: (chatId, messageId, currentSessionId, sessionId) =>
     scheduler.scheduleResume(chatId, messageId, currentSessionId, sessionId),
-  helperReady: () => helperReady,
+  helperReady,
   now: Date.now
 });
 const handleSessionsTool = createSessionsToolHandler({
@@ -140,7 +127,7 @@ const dispatchControlCommand = createControlCommandDispatcher({
     ].join("\n");
   },
   switchModel: async request => {
-    if (!helperReady) throw new Error("model switch is unavailable on this host");
+    if (!await helperReady()) throw new Error("model switch is unavailable on this host");
     return {
       status: "scheduled" as const,
       unit: await scheduler.scheduleModel(request.chatId, request.messageId, request.model)
@@ -161,14 +148,14 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [CONTROL_COMMAND_TOOL, RESET_TOOL, ...SESSIONS_TOOLS]
+  tools: [CONTROL_COMMAND_TOOL, ...SESSIONS_TOOLS]
 }));
 server.setRequestHandler(CallToolRequestSchema, async request => {
   const routerResult = await handleControlRouterTool(request.params.name, request.params.arguments);
   if (routerResult !== null) return routerResult;
   const sessionsResult = await handleSessionsTool(request.params.name, request.params.arguments);
   if (sessionsResult !== null) return sessionsResult;
-  return handleTool(request.params.name, request.params.arguments);
+  return { isError: true, content: [{ type: "text", text: "unknown control tool" }] };
 });
 await server.connect(new StdioServerTransport());
 
