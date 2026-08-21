@@ -45,10 +45,10 @@ describe("session title command hook", () => {
     }
   });
 
-  test("binds the hook identity to the configured workspace and transcript directory", async () => {
+  test("binds fixed roots while allowing Claude's mutable tool cwd", async () => {
     const { payload, workspaceDir, projectSessionsDir } = fixture();
     const seen: unknown[] = [];
-    await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, {
+    await handleSessionTitleCommand({ ...payload, cwd: projectSessionsDir, hook_event_name: "Stop" }, {
       workspaceDir,
       projectSessionsDir,
       ensure: async authority => { seen.push(authority); }
@@ -61,12 +61,11 @@ describe("session title command hook", () => {
     }]);
   });
 
-  test("rejects traversal, mismatched roots, and transcript identities", async () => {
+  test("rejects traversal and transcript identity mismatch", async () => {
     const { payload, workspaceDir, projectSessionsDir } = fixture();
     for (const candidate of [
       { ...payload, hook_event_name: "Stop", session_id: "../../etc/passwd" },
-      { ...payload, hook_event_name: "Stop", transcript_path: join(projectSessionsDir, "other.jsonl") },
-      { ...payload, hook_event_name: "Stop", cwd: projectSessionsDir }
+      { ...payload, hook_event_name: "Stop", transcript_path: join(projectSessionsDir, "other.jsonl") }
     ]) {
       await expect(handleSessionTitleCommand(candidate, {
         workspaceDir,
