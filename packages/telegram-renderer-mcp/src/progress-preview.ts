@@ -55,7 +55,7 @@ export function buildProgressStep(
   if (label === null) return null;
   if (mode === "safe") return label;
   const preview = sanitizeProgressPreview(previewSource(toolName, fields), {
-    maxLength: mode === "verbose" ? 40 : 28
+    maxLength: toolName === "Skill" ? 128 : mode === "verbose" ? 40 : 28
   });
   return preview ? `${label} — ${preview}` : label;
 }

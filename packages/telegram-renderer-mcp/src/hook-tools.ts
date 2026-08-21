@@ -80,7 +80,7 @@ export const RECORD_TOOL_TOOL = {
       pattern: { type: "string", maxLength: 8192 },
       query: { type: "string", maxLength: 8192 },
       url: { type: "string", maxLength: 8192 },
-      skill: { type: "string", maxLength: 2048 },
+      skill: { type: "string", maxLength: 128 },
       description: { type: "string", maxLength: 2048 },
       hook_event_name: { type: "string", const: "PreToolUse" }
     }

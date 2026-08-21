@@ -111,6 +111,7 @@ describe("internal hook tool schemas", () => {
     expect(RecordToolInputSchema.parse({ ...base, agent_id: "agent-1" }).agent_id).toBe("agent-1");
     expect(RecordToolInputSchema.parse({ ...base, skill: "requesting-code-review" }).skill)
       .toBe("requesting-code-review");
+    expect(() => RecordToolInputSchema.parse({ ...base, skill: "x".repeat(129) })).toThrow();
     expect(() => RecordToolInputSchema.parse({ ...base, tool_input: { file_path: "/etc/passwd" } })).toThrow();
     expect(() => RecordToolInputSchema.parse({ ...base, hook_event_name: "PostToolUse" })).toThrow();
   });

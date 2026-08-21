@@ -48,8 +48,9 @@ describe("progress preview modes", () => {
   });
 
   test("shows the exact Skill tool name", () => {
-    expect(buildProgressStep("Skill", { skill: "requesting-code-review" }, "verbose"))
-      .toBe("Run skill — requesting-code-review");
+    const skill = `skill-${"x".repeat(80)}`;
+    expect(buildProgressStep("Skill", { skill }, "verbose"))
+      .toBe(`Run skill — ${skill}`);
   });
 
   test("invalid configured modes fail safe", () => {

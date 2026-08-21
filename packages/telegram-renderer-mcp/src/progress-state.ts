@@ -101,20 +101,18 @@ export class TurnProgress {
   render(): string {
     if (!this.hasSteps) return "";
     const header = this.#outcome === null ? HEADERS.open : HEADERS[this.#outcome];
-    const lines = this.#lines.map(line => {
+    const renderLine = (line: StepLine): string => {
       const statuses = Array.from(line.toolStatuses.values());
       const icon = statuses.includes("running") ? "…" : statuses.includes("failed") ? "✕" : "✓";
       const count = statuses.length > 1 ? ` ×${statuses.length}` : "";
       return `• ${icon} ${line.display}${count}`;
-    });
-    const full = [header, ...lines].join("\n");
-    if (codePointLength(full) <= MAX_PROGRESS_CHARACTERS) return full;
+    };
 
     const visible: string[] = [];
     let used = codePointLength(header);
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index]!;
-      const remaining = lines.length - index - 1;
+    for (let index = 0; index < this.#lines.length; index += 1) {
+      const line = renderLine(this.#lines[index]!);
+      const remaining = this.#lines.length - index - 1;
       const footer = remaining > 0 ? `… +${remaining} more steps` : "";
       const candidateLength = used
         + 1 + codePointLength(line)
@@ -124,7 +122,7 @@ export class TurnProgress {
       used += 1 + codePointLength(line);
     }
 
-    const overflow = lines.length - visible.length;
+    const overflow = this.#lines.length - visible.length;
     if (overflow > 0) visible.push(`… +${overflow} more steps`);
     return [header, ...visible].join("\n");
   }
