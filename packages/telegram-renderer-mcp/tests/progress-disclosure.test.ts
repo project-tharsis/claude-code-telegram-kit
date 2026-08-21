@@ -5,6 +5,7 @@ import {
   PROGRESS_DEBOUNCE_MS
 } from "../src/progress-disclosure.js";
 import type { FinalDeliveryOutcome } from "../src/progress-disclosure.js";
+import type { ArtifactCandidate } from "../src/progress-disclosure.js";
 import type {
   ProgressEditOutcome,
   ProgressSendOutcome
@@ -21,7 +22,12 @@ interface Harness {
   disclosure: ReturnType<typeof createTurnDisclosure>;
   sends: Array<{ chatId: string; replyTo: string; text: string }>;
   edits: Array<{ messageId: number; text: string }>;
-  finalDeliveries: Array<{ chatId: string; messageId: string; content: string }>;
+  finalDeliveries: Array<{
+    chatId: string;
+    messageId: string;
+    content: string;
+    artifacts: readonly ArtifactCandidate[];
+  }>;
   typingStarts: string[];
   typingStops: { count: number };
   delays: number[];
@@ -37,6 +43,7 @@ function harness(options: {
     index: number
   ) => FinalDeliveryOutcome | Promise<FinalDeliveryOutcome>);
   config?: RuntimeConfig;
+  artifacts?: readonly ArtifactCandidate[];
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
@@ -53,8 +60,12 @@ function harness(options: {
       typingStarts.push(chatId);
       return () => { typingStops.count += 1; };
     },
-    deliverFinal: async (_config, chatId, messageId, content) => {
-      finalDeliveries.push({ chatId, messageId, content });
+    startArtifactTracking: () => ({
+      collect: () => [...(options.artifacts ?? [])],
+      close: () => undefined
+    }),
+    deliverFinal: async (_config, chatId, messageId, content, artifacts) => {
+      finalDeliveries.push({ chatId, messageId, content, artifacts });
       return typeof options.finalOutcome === "function"
         ? options.finalOutcome(content, finalDeliveries.length - 1)
         : options.finalOutcome ?? "delivered";
@@ -98,6 +109,7 @@ function bind(h: Harness, prompt = ENVELOPE, promptId = PROMPT): void {
     session_id: SESSION,
     prompt_id: promptId,
     prompt,
+    transcript_path: "/tmp/test-transcript.jsonl",
     hook_event_name: "UserPromptSubmit"
   });
 }
@@ -134,10 +146,24 @@ describe("turn disclosure lifecycle", () => {
     expect(h.finalDeliveries).toEqual([{
       chatId: "123",
       messageId: "9",
-      content: "**hello**"
+      content: "**hello**",
+      artifacts: []
     }]);
     expect(await finish(h, "Stop", "**hello**")).toBe("finished");
     expect(h.finalDeliveries).toHaveLength(1);
+  });
+
+  test("delivers Artifact candidates collected from the bound transcript at Stop", async () => {
+    const artifact: ArtifactCandidate = {
+      sessionId: SESSION,
+      path: `/tmp/claude-1000/project/${SESSION}/scratchpad/report.html`,
+      description: "Report"
+    };
+    const h = harness({ artifacts: [artifact] });
+    bind(h);
+
+    expect(await finish(h, "Stop", "Report attached.")).toBe("finished");
+    expect(h.finalDeliveries[0]!.artifacts).toEqual([artifact]);
   });
 
   test("concurrent replayed Stop hooks reserve one final delivery before network I/O", async () => {

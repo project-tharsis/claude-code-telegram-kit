@@ -3,6 +3,7 @@ import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
   parseDirectTelegramEnvelope,
+
   RecordToolFailureInputSchema,
   RecordToolInputSchema
 } from "../src/hook-contract.js";
@@ -118,6 +119,7 @@ describe("internal hook tool schemas", () => {
     expect(() => RecordToolInputSchema.parse({ ...base, tool_input: { file_path: "/etc/passwd" } })).toThrow();
     expect(() => RecordToolInputSchema.parse({ ...base, hook_event_name: "PostToolUse" })).toThrow();
   });
+
 
   test("record_tool_failure keys on tool_use_id and its own event", () => {
     const base = {

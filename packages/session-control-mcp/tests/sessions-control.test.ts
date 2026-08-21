@@ -82,7 +82,7 @@ function harness(options: HarnessOptions = {}) {
       scheduled.push([chatId, messageId, currentSessionId, sessionId]);
       return options.schedule ? options.schedule() : "claude-session-reset-resume-abc";
     },
-    helperReady: () => options.helperReady ?? true,
+    helperReady: async () => options.helperReady ?? true,
     now: () => 5_000
   });
 

@@ -35,10 +35,22 @@ export type CancelScheduled = () => void;
 export type FinalDeliveryOutcome = "delivered" | "uncertain" | "too_large" | "rejected";
 export type FinishTurnDisposition = "finished" | "retry";
 
+export interface ArtifactCandidate {
+  sessionId: string;
+  path: string;
+  description?: string;
+}
+
+export interface ArtifactTracker {
+  collect: () => ArtifactCandidate[];
+  close: () => void;
+}
+
 export interface TurnDisclosureDeps {
   loadConfig: () => RuntimeConfig;
   mode: ToolDisclosureMode;
   startTyping: (chatId: string) => CancelScheduled;
+  startArtifactTracking?: (input: BindTurnInput) => ArtifactTracker | null;
   startAuthFailureWatch?: (
     input: BindTurnInput,
     onFailure: () => Promise<void>
@@ -52,7 +64,8 @@ export interface TurnDisclosureDeps {
     config: RuntimeConfig,
     chatId: string,
     messageId: string,
-    content: string
+    content: string,
+    artifacts: readonly ArtifactCandidate[]
   ) => Promise<FinalDeliveryOutcome>;
   send: (
     config: RuntimeConfig,
@@ -88,11 +101,26 @@ interface Turn {
   cancelAuthWatch: CancelScheduled | null;
   finalDeliveryAttempted: boolean;
   finalDeliveryRetries: number;
+  artifactTracker: ArtifactTracker | null;
+  artifacts: ArtifactCandidate[] | null;
   chain: Promise<void>;
 }
 
 function turnKey(sessionId: string, promptId: string): string {
   return `${sessionId}/${promptId}`;
+}
+
+function collectArtifacts(turn: Turn): ArtifactCandidate[] {
+  if (turn.artifacts !== null) return turn.artifacts;
+  try {
+    turn.artifacts = turn.artifactTracker?.collect() ?? [];
+  } catch {
+    turn.artifacts = [];
+  } finally {
+    turn.artifactTracker?.close();
+    turn.artifactTracker = null;
+  }
+  return turn.artifacts;
 }
 
 /**
@@ -109,6 +137,9 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancelTyping = null;
     turn.cancelAuthWatch?.();
     turn.cancelAuthWatch = null;
+    turn.artifactTracker?.close();
+    turn.artifactTracker = null;
+    turn.artifacts = [];
     turn.state = "abandoned";
   }
 
@@ -283,9 +314,18 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           cancelAuthWatch: null,
           finalDeliveryAttempted: false,
           finalDeliveryRetries: 0,
+          artifactTracker: null,
+          artifacts: null,
           chain: Promise.resolve()
         };
         turns.set(key, turn);
+        if (input.transcript_path !== undefined && deps.startArtifactTracking !== undefined) {
+          try {
+            turn.artifactTracker = deps.startArtifactTracking(input);
+          } catch {
+            turn.artifactTracker = null;
+          }
+        }
         if (
           input.transcript_path !== undefined
           && deps.startAuthFailureWatch !== undefined
@@ -329,6 +369,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         // Never surface a disclosure failure to the agent.
       }
     },
+
 
     recordSuccess(input: RecordToolSuccessInput): void {
       try {
@@ -378,7 +419,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             config,
             turn.chatId,
             turn.quoteMessageId,
-            input.last_assistant_message
+            input.last_assistant_message,
+            collectArtifacts(turn)
           );
         } catch {
           outcome = "rejected";
@@ -396,7 +438,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
                 config,
                 turn.chatId,
                 turn.quoteMessageId,
-                "The response was too long to deliver. Ask for a shorter answer."
+                "The response was too long to deliver. Ask for a shorter answer.",
+                []
               );
             } catch {
               // The fixed fallback is attempted once; unknown outcomes are never replayed.

@@ -17,6 +17,9 @@ The README lists the five invariants that define the project's blast radius. Thi
 - User-facing replies quote the inbound message by default; an explicit `reply_to` only overrides the quote target, never the reaction target.
 - A proven endpoint capability failure holds Rich off for a bounded cooldown, then re-probes, because a 404 is also what a revoked token or an intermediary returns.
 - Single-chat allowlisting is the default; multi-chat routing requires an explicit opt-in.
+- Outbound files originate only from successful Claude `Artifact` tool-use/result pairs parsed from the exact bound transcript append. No artifact-registration or Telegram file-send tool exists.
+- Artifact delivery uses only `sendDocument`, after the canonical final text, from the exact Claude `/tmp/claude-UID/PROJECT/SESSION_UUID/scratchpad/FILE` layout derived from the bound project and session. Every parent and file is directory-FD anchored and same-UID checked; symlinks, hardlinks, writable files, nested paths, more than four files, files over 50 MiB, and totals over 100 MiB fail closed.
+- Confirmed artifact uploads are never replayed. An unknown upload outcome stops the sequence; local or permanent rejection emits at most one fixed failure notice without exposing a path.
 
 ## Processing reactions
 

@@ -83,6 +83,17 @@ describe("progress preview modes", () => {
       .toMatchObject({ emoji: "📚", label: "Reading skill", preview: skill });
   });
 
+  test("shows a bounded Artifact description inline", () => {
+    expect(buildProgressStep("Artifact", { description: "Architecture report" }, "verbose"))
+      .toEqual({
+        emoji: "📦",
+        label: "Creating artifact",
+        kind: "inline",
+        connector: " ",
+        preview: "Architecture report"
+      });
+  });
+
   test("invalid configured modes fail safe", () => {
     expect(parseToolDisclosureMode("verbose")).toBe("verbose");
     expect(parseToolDisclosureMode("nope")).toBe("safe");

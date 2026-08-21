@@ -6,6 +6,7 @@ import {
   HELPER_PROTOCOL_VERSION,
   isSecureRootOwnedFileMetadata,
   probeHelperCapabilities,
+  runCommand,
   sendTelegramMessage,
   type CommandRunner,
   type FetchLike
@@ -48,6 +49,17 @@ const config: RuntimeConfig = {
 };
 
 describe("control runtime boundaries", () => {
+  test("kills a hung helper command at the configured deadline", async () => {
+    const started = performance.now();
+    await expect(runCommand([
+      "/usr/bin/env",
+      "python3",
+      "-c",
+      "import time; time.sleep(30)"
+    ], { timeoutMs: 50 })).rejects.toThrow("command timed out");
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   test("sends the exact ACK wire and requires a message receipt", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown>; init: RequestInit | undefined }> = [];
     const fetchImpl: FetchLike = async (input, init) => {

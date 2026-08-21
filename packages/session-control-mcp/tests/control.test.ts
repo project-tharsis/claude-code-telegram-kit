@@ -27,6 +27,7 @@ describe("reset control plane", () => {
     const events: string[] = [];
     const controller = createResetController({
       loadConfig: () => config,
+      helperReady: async () => true,
       sendMessage: async (_cfg, chatId, text, replyTo, parseMode) => {
         events.push(`ack:${chatId}:${replyTo}:${parseMode}:${text}`);
         return 71;
@@ -62,6 +63,7 @@ describe("reset control plane", () => {
     let scheduleCalls = 0;
     const controller = createResetController({
       loadConfig: () => config,
+      helperReady: async () => true,
       sendMessage: async () => 71,
       react: async () => { throw new TypeError("reaction timeout"); },
       schedule: async () => {
@@ -84,6 +86,7 @@ describe("reset control plane", () => {
     let scheduleCalls = 0;
     const controller = createResetController({
       loadConfig: () => config,
+      helperReady: async () => true,
       sendMessage: async () => { throw new TypeError("timeout"); },
       react: async () => true,
       schedule: async () => {
@@ -98,10 +101,26 @@ describe("reset control plane", () => {
     expect(scheduleCalls).toBe(0);
   });
 
+  test("fails closed before ACK when the helper is unavailable", async () => {
+    let ackCalls = 0;
+    const controller = createResetController({
+      loadConfig: () => config,
+      helperReady: async () => false,
+      sendMessage: async () => { ackCalls += 1; return 1; },
+      react: async () => true,
+      schedule: async () => "unexpected"
+    });
+
+    await expect(controller({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION }))
+      .rejects.toThrow("unavailable");
+    expect(ackCalls).toBe(0);
+  });
+
   test("fails closed before ACK for an unauthorized chat", async () => {
     let ackCalls = 0;
     const controller = createResetController({
       loadConfig: () => config,
+      helperReady: async () => true,
       sendMessage: async () => { ackCalls += 1; return 1; },
       react: async () => true,
       schedule: async () => "unexpected"
@@ -118,6 +137,7 @@ describe("reset control plane", () => {
     const reactions: Array<[string, string, string]> = [];
     const controller = createResetController({
       loadConfig: () => config,
+      helperReady: async () => true,
       sendMessage: async (_cfg, _chatId, text, replyTo, parseMode) => {
         messages.push(`${replyTo ?? "independent"}:${parseMode}:${text}`);
         return messages.length;

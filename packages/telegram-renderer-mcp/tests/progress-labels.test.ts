@@ -39,6 +39,7 @@ describe("safe step presentation", () => {
     expect(safeStepPresentation("WebSearch")).toMatchObject({ emoji: "🔍", label: "Searching web" });
     expect(safeStepPresentation("Skill")).toMatchObject({ emoji: "📚", label: "Reading skill" });
     expect(safeStepLabel("Task")).toBe(DELEGATING_LABEL);
+    expect(safeStepPresentation("Artifact")).toMatchObject({ emoji: "📦", label: "Creating artifact" });
   });
 
   test("maps unrelated MCP tools without leaking the server name", () => {
@@ -65,7 +66,7 @@ describe("safe step presentation", () => {
   });
 
   test("every produced label is in the fixed safe set", () => {
-    const produced = ["Read", "Edit", "Bash", "WebFetch", "TodoWrite", "Skill", "Task", "mcp__a__b", "Zzz"]
+    const produced = ["Read", "Edit", "Bash", "WebFetch", "TodoWrite", "Skill", "Artifact", "Task", "mcp__a__b", "Zzz"]
       .map(name => safeStepLabel(name))
       .filter(label => label !== null);
     for (const label of produced) expect(SAFE_STEP_LABELS).toContain(label);

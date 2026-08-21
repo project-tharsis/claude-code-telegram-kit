@@ -96,7 +96,7 @@ export interface SessionsControllerDeps {
     currentSessionId: string,
     sessionId: string
   ) => Promise<string>;
-  helperReady: () => boolean;
+  helperReady: () => Promise<boolean>;
   now: () => number;
 }
 
@@ -148,7 +148,7 @@ export function createSessionsController(deps: SessionsControllerDeps) {
 
   async function resumeSessionTrusted(rawRequest: TrustedResumeSessionRequest): Promise<ResumeSessionReceipt> {
     const request = TrustedResumeSessionRequestSchema.parse(rawRequest);
-    if (!deps.helperReady()) throw new Error("session resume is unavailable on this host");
+    if (!await deps.helperReady()) throw new Error("session resume is unavailable on this host");
     const config = authorize(request.chatId);
 
     const snapshot = deps.readSnapshot(request.chatId);

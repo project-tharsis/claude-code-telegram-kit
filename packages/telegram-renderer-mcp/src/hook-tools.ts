@@ -2,11 +2,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
+
   RecordToolFailureInputSchema,
   RecordToolInputSchema,
   RecordToolSuccessInputSchema,
   type BindTurnInput,
   type FinishTurnInput,
+
   type RecordToolFailureInput,
   type RecordToolInput,
   type RecordToolSuccessInput
@@ -14,11 +16,10 @@ import {
 import type { FinishTurnDisposition } from "./progress-disclosure.js";
 
 /**
- * These five tools exist for Claude Code `mcp_tool` hooks, not for the model. They are named
- * and described so a reader can tell them apart from the hidden legacy `send_reply` handler,
- * and the example settings deny model access to all of them. Denying access is a UX guarantee,
- * not a security boundary: every handler below independently rejects a payload whose
- * `hook_event_name` does not match the exact event that tool serves.
+ * These five tools exist for Claude Code lifecycle hooks, not for the model. The example settings
+ * deny model access to every hook tool.
+ * Every handler also rejects payloads whose `hook_event_name` does not match the exact event that
+ * tool serves; raw hook objects and outputs are never accepted.
  */
 
 const INTERNAL_PREFIX = "Internal Claude Code hook tool. Not for model use.";
@@ -89,6 +90,7 @@ export const RECORD_TOOL_TOOL = {
   }
 } as const;
 
+
 export const RECORD_TOOL_SUCCESS_TOOL = {
   name: "record_tool_success",
   description:
@@ -150,10 +152,12 @@ export const INTERNAL_HOOK_TOOLS = [
 
 export const HOOK_TOOL_NAMES: string[] = INTERNAL_HOOK_TOOLS.map(tool => tool.name);
 
+
 export interface HookDisclosure {
   /** Binds the submitted prompt as a disclosure turn, or ignores it silently. */
   bindTurn: (input: BindTurnInput) => void;
   recordTool: (input: RecordToolInput) => void;
+
   recordSuccess: (input: RecordToolSuccessInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
   finishTurn: (input: FinishTurnInput) => Promise<FinishTurnDisposition>;
@@ -186,6 +190,7 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
         case RECORD_TOOL_TOOL.name:
           disclosure.recordTool(RecordToolInputSchema.parse(arguments_));
           break;
+
         case RECORD_TOOL_SUCCESS_TOOL.name:
           disclosure.recordSuccess(RecordToolSuccessInputSchema.parse(arguments_));
           break;

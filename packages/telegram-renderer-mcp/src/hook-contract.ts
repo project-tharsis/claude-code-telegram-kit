@@ -61,6 +61,7 @@ export const RecordToolInputSchema = z.object({
   hook_event_name: z.literal("PreToolUse")
 }).strict();
 
+
 export const RecordToolSuccessInputSchema = z.object({
   ...turnKey,
   tool_use_id: identifier,
@@ -81,6 +82,7 @@ export const FinishTurnInputSchema = z.object({
 
 export type BindTurnInput = z.infer<typeof BindTurnInputSchema>;
 export type RecordToolInput = z.infer<typeof RecordToolInputSchema>;
+
 export type RecordToolSuccessInput = z.infer<typeof RecordToolSuccessInputSchema>;
 export type RecordToolFailureInput = z.infer<typeof RecordToolFailureInputSchema>;
 export type FinishTurnInput = z.infer<typeof FinishTurnInputSchema>;
