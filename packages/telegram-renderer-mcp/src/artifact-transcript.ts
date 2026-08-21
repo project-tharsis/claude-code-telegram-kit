@@ -14,6 +14,7 @@ import type { ArtifactCandidate, ArtifactTracker } from "./progress-disclosure.j
 
 const MAX_APPEND_BYTES = 4 * 1024 * 1024;
 const MAX_ARTIFACTS = 4;
+const MAX_DECLARATIONS = 128;
 const TOOL_USE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 interface FileIdentity {
@@ -35,7 +36,9 @@ function sameIdentity(identity: FileIdentity, info: Stats): boolean {
 }
 
 function parseArtifactRows(text: string, sessionId: string): ArtifactCandidate[] {
-  const pending = new Map<string, { candidate: ArtifactCandidate; success: boolean }>();
+  const pending = new Map<string, ArtifactCandidate>();
+  const successful: ArtifactCandidate[] = [];
+  let declarations = 0;
   for (const line of text.split("\n")) {
     if (!line) continue;
     let row: unknown;
@@ -57,7 +60,7 @@ function parseArtifactRows(text: string, sessionId: string): ArtifactCandidate[]
         if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
         const item = value as Record<string, unknown>;
         if (item.type !== "tool_use" || item.name !== "Artifact" || typeof item.id !== "string") continue;
-        if (!TOOL_USE_ID.test(item.id) || pending.size >= MAX_ARTIFACTS) continue;
+        if (!TOOL_USE_ID.test(item.id) || pending.has(item.id) || declarations >= MAX_DECLARATIONS) continue;
         const input = item.input;
         if (typeof input !== "object" || input === null || Array.isArray(input)) continue;
         const fields = input as Record<string, unknown>;
@@ -70,13 +73,11 @@ function parseArtifactRows(text: string, sessionId: string): ArtifactCandidate[]
           || path.length > 4_096
           || (description !== undefined && (typeof description !== "string" || description.length > 2_048))
         ) continue;
+        declarations += 1;
         pending.set(item.id, {
-          candidate: {
-            sessionId,
-            path,
-            ...(typeof description === "string" && description ? { description } : {})
-          },
-          success: false
+          sessionId,
+          path,
+          ...(typeof description === "string" && description ? { description } : {})
         });
       }
     }
@@ -87,11 +88,13 @@ function parseArtifactRows(text: string, sessionId: string): ArtifactCandidate[]
         const item = value as Record<string, unknown>;
         if (item.type !== "tool_result" || typeof item.tool_use_id !== "string") continue;
         const artifact = pending.get(item.tool_use_id);
-        if (artifact !== undefined && item.is_error !== true) artifact.success = true;
+        if (artifact === undefined) continue;
+        pending.delete(item.tool_use_id);
+        if (item.is_error !== true && successful.length < MAX_ARTIFACTS) successful.push(artifact);
       }
     }
   }
-  return Array.from(pending.values()).filter(value => value.success).map(value => value.candidate);
+  return successful;
 }
 
 export function startArtifactTranscriptTracker(

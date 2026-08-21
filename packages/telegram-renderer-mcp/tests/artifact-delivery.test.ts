@@ -112,6 +112,21 @@ describe("deterministic Artifact delivery", () => {
     expect(calls).toBe(0);
   });
 
+  test("rejects the aggregate budget before retaining another file", async () => {
+    const f = fixture();
+    const second = join(f.scratchpad, "second.txt");
+    writeFileSync(second, "second", { mode: 0o600 });
+    let calls = 0;
+    const deliver = createArtifactDeliverer({
+      root: f.root,
+      maxTotalBytes: 20,
+      fetchImpl: async () => { calls += 1; return ok(1); }
+    });
+    expect(await deliver(config, "123", "51", [candidate(f.file), candidate(second)]))
+      .toEqual({ kind: "local_rejected", messageIds: [] });
+    expect(calls).toBe(0);
+  });
+
   test("stops after an uncertain later upload without replaying confirmed files", async () => {
     const f = fixture();
     const second = join(f.scratchpad, "second.txt");

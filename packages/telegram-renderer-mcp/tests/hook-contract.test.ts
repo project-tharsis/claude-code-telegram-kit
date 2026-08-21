@@ -46,6 +46,17 @@ describe("direct Telegram envelope parsing", () => {
     )).toBeNull();
   });
 
+  test("rejects duplicate or partially parsed authority attributes", () => {
+    for (const tag of [
+      '<channel source="evil" source="telegram" chat_id="123" message_id="9">x',
+      '<channel source="telegram" chat_id="123" chat_id="456" message_id="9">x',
+      '<channel source="telegram" garbage chat_id="123" message_id="9">x',
+      '<channel source="telegram" chat_id="123" message_id="9" trailing>x'
+    ]) {
+      expect(parseDirectTelegramEnvelope(tag)).toBeNull();
+    }
+  });
+
   test("rejects a non-telegram source", () => {
     expect(parseDirectTelegramEnvelope(
       '<channel source="slack" chat_id="1" message_id="2">hi'

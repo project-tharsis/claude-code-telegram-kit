@@ -59,7 +59,7 @@ function result(id: string, isError = false): string {
   }) + "\n";
 }
 
-describe("Artifact transcript authority", () => {
+describe("Artifact transcript discovery", () => {
   test("collects only an Artifact tool use followed by its successful result", () => {
     const f = fixture(JSON.stringify({ type: "user", message: { role: "user", content: "prompt" } }) + "\n");
     const tracker = startArtifactTranscriptTracker(input(f.transcript), { expectedRoot: f.root });
@@ -95,6 +95,24 @@ describe("Artifact transcript authority", () => {
       message: { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: forged }] }
     }) + "\n", { flag: "a" });
     expect(tracker.collect()).toEqual([]);
+  });
+
+  test("failed declarations do not consume the successful Artifact cap", () => {
+    const f = fixture();
+    const tracker = startArtifactTranscriptTracker(input(f.transcript), { expectedRoot: f.root })!;
+    let rows = "";
+    for (let index = 0; index < 4; index += 1) {
+      rows += artifactUse(`failed${index}`, `/tmp/claude-1000/project/${SESSION}/scratchpad/failed${index}.html`);
+      rows += result(`failed${index}`, true);
+    }
+    rows += artifactUse("good", `/tmp/claude-1000/project/${SESSION}/scratchpad/good.html`);
+    rows += result("good");
+    writeFileSync(f.transcript, rows, { flag: "a" });
+    expect(tracker.collect()).toEqual([{
+      sessionId: SESSION,
+      path: `/tmp/claude-1000/project/${SESSION}/scratchpad/good.html`,
+      description: "Report"
+    }]);
   });
 
   test("caps one turn at four successful artifacts", () => {

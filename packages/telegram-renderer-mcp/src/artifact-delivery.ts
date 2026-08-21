@@ -99,17 +99,17 @@ function openTrustedRoot(path: string, uid: number): TrustedRoot {
   }
 }
 
-function readBounded(fd: number, expectedSize: number): Uint8Array {
+function readBounded(fd: number, expectedSize: number, maxBytes: number): Uint8Array {
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (total <= MAX_ARTIFACT_BYTES) {
-    const capacity = Math.min(64 * 1024, MAX_ARTIFACT_BYTES + 1 - total);
+  while (total <= maxBytes) {
+    const capacity = Math.min(64 * 1024, maxBytes + 1 - total);
     const buffer = new Uint8Array(capacity);
     const count = readSync(fd, buffer, 0, capacity, null);
     if (count === 0) break;
     chunks.push(buffer.subarray(0, count));
     total += count;
-    if (total > MAX_ARTIFACT_BYTES) throw new Error("artifact grew beyond the size limit");
+    if (total > maxBytes) throw new Error("artifact grew beyond the size limit");
   }
   if (total !== expectedSize) throw new Error("artifact changed while reading");
   const result = new Uint8Array(total);
@@ -137,7 +137,12 @@ function openTrustedChildDirectory(parentFd: number, name: string, uid: number):
   return fd;
 }
 
-function loadArtifact(candidate: ArtifactCandidate, root: TrustedRoot, uid: number): LoadedArtifact {
+function loadArtifact(
+  candidate: ArtifactCandidate,
+  root: TrustedRoot,
+  uid: number,
+  maxBytes: number
+): LoadedArtifact {
   const { path, sessionId } = candidate;
   if (!SESSION_ID.test(sessionId) || !isAbsolute(path) || path.includes("\0")) {
     throw new Error("invalid artifact path");
@@ -164,7 +169,7 @@ function loadArtifact(candidate: ArtifactCandidate, root: TrustedRoot, uid: numb
     || before.nlink !== 1
     || (before.mode & 0o022) !== 0
     || before.size < 1
-    || before.size > MAX_ARTIFACT_BYTES
+    || before.size > Math.min(MAX_ARTIFACT_BYTES, maxBytes)
   ) {
     throw new Error("artifact file is not trusted");
   }
@@ -182,7 +187,7 @@ function loadArtifact(candidate: ArtifactCandidate, root: TrustedRoot, uid: numb
     ) {
       throw new Error("artifact identity changed");
     }
-    const bytes = readBounded(fd, opened.size);
+    const bytes = readBounded(fd, opened.size, Math.min(MAX_ARTIFACT_BYTES, maxBytes));
     const after = fstatSync(fd);
     if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== bytes.byteLength) {
       throw new Error("artifact changed while reading");
@@ -210,9 +215,13 @@ export function createArtifactDeliverer(options: {
   root: string;
   fetchImpl?: ArtifactFetchLike;
   uid?: number;
+  maxArtifactBytes?: number;
+  maxTotalBytes?: number;
 }) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const uid = options.uid ?? process.getuid?.();
+  const maxArtifactBytes = Math.max(1, Math.min(options.maxArtifactBytes ?? MAX_ARTIFACT_BYTES, MAX_ARTIFACT_BYTES));
+  const maxTotalBytes = Math.max(1, Math.min(options.maxTotalBytes ?? MAX_ARTIFACT_TOTAL_BYTES, MAX_ARTIFACT_TOTAL_BYTES));
 
   return async (
     config: RuntimeConfig,
@@ -237,9 +246,13 @@ export function createArtifactDeliverer(options: {
     try {
       const root = openTrustedRoot(options.root, uid);
       try {
-        loaded = candidates.map(candidate => loadArtifact(candidate, root, uid));
-        const total = loaded.reduce((sum, artifact) => sum + artifact.bytes.byteLength, 0);
-        if (total > MAX_ARTIFACT_TOTAL_BYTES) return { kind: "local_rejected", messageIds: [] };
+        loaded = [];
+        let remaining = maxTotalBytes;
+        for (const candidate of candidates) {
+          const artifact = loadArtifact(candidate, root, uid, Math.min(maxArtifactBytes, remaining));
+          remaining -= artifact.bytes.byteLength;
+          loaded.push(artifact);
+        }
       } finally {
         closeSync(root.fd);
       }
