@@ -1,6 +1,6 @@
 # Telegram delivery and reset routing
 
-For a Telegram request, return one ordinary final assistant response as canonical, unescaped CommonMark/GFM. Do not call `mcp__telegram-renderer__send_reply` or the official Telegram reply tool. A deterministic Stop hook receives `last_assistant_message`, quotes the inbound message, and routes the final document through Rich Message, MarkdownV2, or plain-text fallback.
+For a Telegram request, return one ordinary final assistant response as canonical, unescaped CommonMark/GFM. Do not call the official Telegram reply tool. A deterministic Stop hook receives `last_assistant_message`, quotes the inbound message, and routes the final document through Rich Message, MarkdownV2, or plain-text fallback.
 
 Do not select a Telegram transport or pre-escape MarkdownV2. Keep the final response within one Telegram message; if it is too long, the Stop hook asks for a shorter replacement.
 

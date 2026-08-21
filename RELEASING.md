@@ -5,7 +5,7 @@ The initial project is source-only; workspace packages are not published to npm.
 ## Release checklist
 
 1. Update the root and all workspace package versions to the same SemVer.
-2. Move relevant `CHANGELOG.md` entries from `Unreleased` into the release version.
+2. Move relevant `CHANGELOG.md` entries from `Unreleased` into the dated release version; `version:check` requires that heading to match the unified SemVer.
 3. Run:
 
    ```bash

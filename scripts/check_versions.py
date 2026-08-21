@@ -39,4 +39,13 @@ if len(set(versions.values())) != 1:
     for path, version in versions.items():
         print(f"{path}: {version}", file=sys.stderr)
     raise SystemExit(1)
-print(f"version-check: {next(iter(versions.values()))}")
+version = next(iter(versions.values()))
+changelog_path = ROOT / "CHANGELOG.md"
+release_heading = re.compile(
+    rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
+    re.MULTILINE,
+)
+if not release_heading.search(changelog_path.read_text(encoding="utf-8")):
+    print(f"missing dated {version} release heading: CHANGELOG.md", file=sys.stderr)
+    raise SystemExit(1)
+print(f"version-check: {version}")

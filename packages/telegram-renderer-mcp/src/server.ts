@@ -23,7 +23,6 @@ import {
   TelegramContentTooLargeError,
   TelegramUncertainOutcomeError
 } from "./unified-delivery.js";
-import { createUnifiedToolHandler, SEND_REPLY_TOOL } from "./unified-tool.js";
 
 const configRoot = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const stateDir = process.env.TELEGRAM_STATE_DIR ?? join(configRoot, "channels", "telegram");
@@ -40,11 +39,6 @@ const deliverArtifacts = artifactRoot === undefined
   : createArtifactDeliverer({ root: artifactRoot });
 const AUTH_FAILURE_MESSAGE =
   "Claude Code authentication failed.\n\nRe-authenticate Claude Code on the host, then resend this message.";
-const handleTool = createUnifiedToolHandler({
-  loadConfig,
-  deliver,
-  react: finalizeTelegramReaction
-});
 
 const typing = createTypingHeartbeatManager({
   sendChatAction: (chatId, signal) => sendTypingAction(loadConfig(), chatId, fetch, signal)
@@ -154,11 +148,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async request => {
   const hookResult = await handleHookTool(request.params.name, request.params.arguments);
   if (hookResult !== null) return hookResult;
-  if (request.params.name === SEND_REPLY_TOOL.name) {
-    const chatId = (request.params.arguments as { chat_id?: unknown } | undefined)?.chat_id;
-    if (typeof chatId === "string") await disclosure.finalizeChat(chatId);
-  }
-  return handleTool(request.params.name, request.params.arguments);
+  return { isError: true, content: [{ type: "text", text: "unknown renderer tool" }] };
 });
 
 await server.connect(new StdioServerTransport());

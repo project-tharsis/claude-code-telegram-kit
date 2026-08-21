@@ -170,7 +170,11 @@ describe("internal hook tool schemas", () => {
       hook_event_name: "StopFailure"
     }).hook_event_name).toBe("StopFailure");
     expect(() => FinishTurnInputSchema.parse({ ...base, hook_event_name: "SubagentStop" })).toThrow();
-    expect(() => FinishTurnInputSchema.parse({ ...base, last_assistant_message: "x".repeat(100_001) })).toThrow();
+    expect(() => FinishTurnInputSchema.parse({ ...base, last_assistant_message: undefined })).toThrow();
+    expect(FinishTurnInputSchema.parse({ ...base, last_assistant_message: "x".repeat(100_001) }).last_assistant_message).toHaveLength(100_001);
+    expect(FinishTurnInputSchema.parse({ ...base, last_assistant_message: "😀".repeat(500_001) }).last_assistant_message)
+      .toHaveLength(1_000_002);
+    expect(() => FinishTurnInputSchema.parse({ ...base, last_assistant_message: "x".repeat(1_000_001) })).toThrow();
   });
 
   test("identifier fields are bounded and character-restricted", () => {

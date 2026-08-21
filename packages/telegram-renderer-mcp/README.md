@@ -10,7 +10,7 @@ Stop.last_assistant_message
 → unified renderer
 ```
 
-Claude returns canonical CommonMark/GFM as its ordinary final response. The bound turn supplies the exact chat/message identity; `finish_turn` quotes the inbound message and deterministically selects Rich Message, MarkdownV2, or plain fallback. The legacy `send_reply` handler remains direct-call compatible but is omitted from MCP discovery and denied to the model.
+Claude returns canonical CommonMark/GFM as its ordinary final response. The bound turn supplies the exact chat/message identity; `finish_turn` quotes the inbound message and deterministically selects Rich Message, MarkdownV2, or plain fallback. No renderer reply tool is callable by the model or by an undisclosed direct MCP request.
 
 ## Hook-driven tool disclosure
 

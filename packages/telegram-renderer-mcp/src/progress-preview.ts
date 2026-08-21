@@ -35,8 +35,10 @@ function positiveInteger(value: string | undefined): number | null {
 }
 
 function basename(value: string): string {
-  const parts = value.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts.at(-1) ?? value;
+  const parts = value.replace(/\\/g, "/").split("/")
+    .filter(part => part !== "" && part !== "." && part !== "..");
+  const name = parts.at(-1) ?? "";
+  return /^[A-Za-z]:$/.test(name) ? "" : name;
 }
 
 function readPreview(fields: ToolPreviewFields): string {
@@ -59,7 +61,7 @@ function previewSource(toolName: string, fields: ToolPreviewFields): string {
     case "Edit":
     case "Write":
     case "MultiEdit":
-    case "NotebookEdit": return fields.file_path ?? fields.path ?? "";
+    case "NotebookEdit": return basename(fields.file_path ?? fields.path ?? "");
     case "Grep":
     case "Glob": {
       const pattern = fields.pattern ?? "";

@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
+  MAX_HOOK_FINAL_CHARACTERS,
 
   RecordToolFailureInputSchema,
   RecordToolInputSchema,
@@ -51,7 +52,8 @@ export const BIND_TURN_TOOL = {
     required: ["session_id", "prompt_id", "prompt", "hook_event_name"],
     properties: {
       ...turnKeyProperties,
-      prompt: { type: "string", maxLength: 1000000 },
+      prompt: { type: "string", maxLength: 1_000_000 },
+      transcript_path: { type: "string", maxLength: 8_192 },
       hook_event_name: { type: "string", const: "UserPromptSubmit" }
     }
   }
@@ -136,7 +138,7 @@ export const FINISH_TURN_TOOL = {
     required: ["session_id", "prompt_id", "last_assistant_message", "hook_event_name"],
     properties: {
       ...turnKeyProperties,
-      last_assistant_message: { type: "string", maxLength: 100000 },
+      last_assistant_message: { type: "string", maxLength: MAX_HOOK_FINAL_CHARACTERS },
       hook_event_name: { type: "string", enum: ["Stop", "StopFailure"] }
     }
   }

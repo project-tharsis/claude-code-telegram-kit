@@ -19,6 +19,8 @@ class VersionCheckTests(unittest.TestCase):
         shutil.copy2(SCRIPT, self.root / "scripts" / "check_versions.py")
         self.version = "0.3.0"
         (self.root / "package.json").write_text('{"version":"0.3.0"}')
+        self.changelog = self.root / "CHANGELOG.md"
+        self.changelog.write_text("# Changelog\n\n## [Unreleased]\n\n## [0.3.0] - 2026-08-21\n")
         for name in ("shared", "renderer", "control"):
             package = self.root / "packages" / name
             (package / "src").mkdir(parents=True)
@@ -61,6 +63,20 @@ class VersionCheckTests(unittest.TestCase):
         result = self.run_check()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("bun.lock", result.stderr)
+
+    def test_rejects_a_missing_changelog_release_heading(self):
+        self.changelog.write_text("# Changelog\n\n## [Unreleased]\n")
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CHANGELOG.md", result.stderr)
+
+    def test_rejects_a_mismatched_or_undated_changelog_release_heading(self):
+        for heading in ("## [0.2.0] - 2026-08-21", "## [0.3.0]"):
+            with self.subTest(heading=heading):
+                self.changelog.write_text(f"# Changelog\n\n## [Unreleased]\n\n{heading}\n")
+                result = self.run_check()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CHANGELOG.md", result.stderr)
 
 
 if __name__ == "__main__":
