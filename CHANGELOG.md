@@ -23,9 +23,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Final Telegram delivery is now Stop-owned and deterministic: Claude returns canonical Markdown, the internal hook sends it exactly once, proven oversized local replies request one shorter replacement, and uncertain outcomes are never retried.
 - Fresh reset bootstrap is prompt-free and non-modal. A `SessionStart` command hook, exact UUID/process checks, the official Channel poller, renderer/control workers, and restored `--continue` unit state jointly prove readiness.
 - Rich delivery canonicalizes GFM through mdast before `sendRichMessage`, preserving literal markers while retaining valid emphasis, code, links, tables, and Telegram underline.
+- Rich delivery recognizes CJK-adjacent emphasis and inserts only the boundary spaces required by the downstream standard CommonMark parser.
 - Slash-control replies use concise Telegram HTML hierarchy, escaped titles, code-formatted commands/values, honest metadata-only title fallbacks, and no exposed UUID/path internals.
 - Progress remains fully visible until Telegram's 4096-character wire limit instead of folding after eight steps; shell commands use a bounded one-line block and Skill calls name the loaded Skill.
 - Each progress bubble selects one stable Claude-style spinner/completion verb pair for the turn, such as `Brewing…` → `Brewed`; Telegram marks the header with `✦`/`✓` and separates it from the tool steps.
+- Long Bash previews remove a simple leading `cd <dir> &&` wrapper, then retain the command head and target tail with a middle ellipsis.
 - Monorepo packages and both MCP server identities advance to `0.3.0`.
 
 ### Security

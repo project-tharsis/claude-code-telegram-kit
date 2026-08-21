@@ -28,6 +28,7 @@ export interface ProgressStep {
   preview?: string | undefined;
 }
 
+
 function positiveInteger(value: string | undefined): number | null {
   if (value === undefined || !/^\d+$/.test(value)) return null;
   const parsed = Number(value);
@@ -95,7 +96,9 @@ export function buildProgressStep(
   if (presentation === null) return null;
   if (mode === "safe") return { ...presentation };
   const preview = sanitizeProgressPreview(previewSource(toolName, fields), {
-    maxLength: toolName === "Skill" ? 128 : mode === "verbose" ? 40 : 28
+    maxLength: toolName === "Skill" ? 128 : mode === "verbose" ? 40 : 28,
+    truncation: toolName === "Bash" ? "middle" : "end",
+    stripLeadingCdWrapper: toolName === "Bash"
   });
   return preview ? { ...presentation, preview } : { ...presentation };
 }

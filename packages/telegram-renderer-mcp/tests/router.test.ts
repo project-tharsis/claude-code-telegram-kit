@@ -21,6 +21,12 @@ describe("Hermes-style deterministic routing", () => {
     expect(needsRichRendering("## 持仓\n\n| 项目 | 状态 |\n|---|---|\n| 早盘 | 正常 |")).toBe(true);
   });
 
+  test("keeps CJK-adjacent strong text renderable on the Rich table path", () => {
+    const content = "**#3 对比图降级。**图本身留着\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+    expect(needsRichRendering(content)).toBe(true);
+    expect(normalizeRichMarkdown(content)).toContain("**#3 对比图降级。** 图本身留着");
+  });
+
   test("routes oversized rich content to the legacy path", () => {
     const content = `| A | B |\n|---|---|\n| ${"x".repeat(32_768)} | y |`;
     expect(needsRichRendering(content)).toBe(false);
