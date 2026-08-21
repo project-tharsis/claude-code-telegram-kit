@@ -33,6 +33,7 @@ const mcp = JSON.parse(readFileSync(
   "session-control": { env?: Record<string, string> };
 } };
 const service = readFileSync(resolve(import.meta.dir, "../../../examples/claude-telegram.service"), "utf8");
+const guidance = readFileSync(resolve(import.meta.dir, "../../../examples/CLAUDE.md"), "utf8");
 
 function toolsFor(event: string): Array<{ server: string; tool: string; input: Record<string, string> }> {
   return (settings.hooks[event] ?? []).flatMap(entry =>
@@ -45,6 +46,15 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
+  test("keeps model guidance focused on delivery shape rather than answer length", () => {
+    expect(guidance).toContain("Put the complete answer in the final response.");
+    expect(guidance).toContain("Match the depth and length the user requests;");
+    expect(guidance.toLowerCase()).not.toContain("concise");
+    for (const command of ["/sessions", "/usage", "/model", "5 · Cancel", "/rename NAME", "/resume N", "/reset"]) {
+      expect(guidance).toContain(command);
+    }
+  });
+
   test("uses one exact workspace/session pair across service and sidecars", () => {
     const workspace = "/home/USER/claude-bot-workspace";
     const sessions = "/home/USER/.claude/projects/-home-USER-claude-bot-workspace";

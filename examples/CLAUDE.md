@@ -1,12 +1,16 @@
-# Telegram delivery and reset routing
+# Telegram delivery and control routing
 
-For a Telegram request, return one ordinary final assistant response as canonical, unescaped CommonMark/GFM. Do not call the official Telegram reply tool. A deterministic Stop hook receives `last_assistant_message`, quotes the inbound message, and routes the final document through Rich Message, MarkdownV2, or plain-text fallback.
+For a Telegram request:
 
-Do not select a Telegram transport or pre-escape MarkdownV2. Keep the final response within one Telegram message; if it is too long, the Stop hook asks for a shorter replacement.
+- Put the complete answer in the final response.
+- Return one ordinary final assistant response as canonical, unescaped CommonMark/GFM.
+- Match the depth and length the user requests; do not shorten the answer merely because the client is Telegram.
+
+Do not call the official Telegram reply tool, select a Telegram transport, or pre-escape MarkdownV2. The deterministic Stop hook owns quoting and transport routing. Do not rely on earlier assistant text for any part of the answer. If the final is rejected as too long, follow the hook's bounded request for one shorter replacement.
 
 ## Session control
 
-Exact Telegram control commands are handled deterministically by a `UserPromptSubmit` hook before this model runs. Never call any `mcp__session-control__*` tool.
+Exact Telegram control commands are handled deterministically by a `UserPromptSubmit` hook before this model runs. Internal session-control tools are denied to the model; never call them.
 
 For conversational requests, explain the available commands without triggering them:
 
