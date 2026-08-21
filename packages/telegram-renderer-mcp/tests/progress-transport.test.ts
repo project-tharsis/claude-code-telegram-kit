@@ -64,7 +64,7 @@ describe("progress bubble send", () => {
     const body = JSON.parse(String(calls[0]!.init.body));
     expect(body).toEqual({
       chat_id: "123",
-      text: "<b>Working…</b>\n💻 terminal\n<pre><code class=\"language-shell\">ls &lt;x&gt;</code></pre>",
+      text: "<b>✦ Working…</b>\n\n💻 terminal\n<pre><code class=\"language-shell\">ls &lt;x&gt;</code></pre>",
       parse_mode: "HTML",
       disable_notification: true,
       reply_parameters: { message_id: 9 }
@@ -116,7 +116,7 @@ describe("progress bubble edit", () => {
       expect(JSON.parse(String(init!.body))).toEqual({
         chat_id: "123",
         message_id: 55,
-        text: "<b>Done</b>\n📖 Reading auth.ts",
+        text: "<b>✓ Done</b>\n\n📖 Reading auth.ts",
         parse_mode: "HTML"
       });
       return reply(200, { ok: true, result: { message_id: 55 } });

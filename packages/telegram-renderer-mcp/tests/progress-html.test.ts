@@ -12,7 +12,8 @@ describe("Telegram progress HTML", () => {
       "```",
       "📚 Reading skill requesting-code-review"
     ].join("\n"))).toBe([
-      "<b>Working…</b>",
+      "<b>✦ Working…</b>",
+      "",
       "📖 Reading auth.ts L82-111",
       "💻 terminal",
       "<pre><code class=\"language-shell\">ls -la</code></pre>",
@@ -31,11 +32,17 @@ describe("Telegram progress HTML", () => {
       "… +2 more steps"
     ].join("\n"))).toBe([
       "<b>Failed</b>",
+      "",
       "❌ 🔧 Editing &lt;x&gt;&amp;y",
       "💻 terminal",
       "<pre><code class=\"language-shell\">echo &lt;x&gt; &amp;&amp; a&amp;b</code></pre>",
       "<i>… +2 more steps</i>"
     ].join("\n"));
+  });
+
+  test("marks a completed whimsical verb and separates it from the steps", () => {
+    expect(formatProgressHtml("Cogitated\n📖 Reading"))
+      .toBe("<b>✓ Cogitated</b>\n\n📖 Reading");
   });
 
   test("treats a command that equals a closing fence as content", () => {

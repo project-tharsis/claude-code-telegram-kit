@@ -13,7 +13,8 @@ export function formatProgressHtml(text: string): string {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (index === 0) {
-      rendered.push(`<b>${escapeHtml(line)}</b>`);
+      const marked = line === "Failed" ? line : line.endsWith("…") ? `✦ ${line}` : `✓ ${line}`;
+      rendered.push(`<b>${escapeHtml(marked)}</b>`, "");
       continue;
     }
     if (/^… \+\d+ more steps$/u.test(line)) {
