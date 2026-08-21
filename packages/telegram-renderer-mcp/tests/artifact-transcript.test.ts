@@ -152,4 +152,13 @@ describe("Artifact transcript discovery", () => {
     writeFileSync(f.transcript, "x".repeat(4 * 1024 * 1024 + 1), { flag: "a" });
     expect(tracker.collect()).toEqual([]);
   });
+
+  test("scans the bounded tail of a long turn", () => {
+    const f = fixture();
+    const tracker = startArtifactTranscriptTracker(input(f.transcript), { expectedRoot: f.root })!;
+    const path = `/tmp/claude-1000/project/${SESSION}/scratchpad/tail.html`;
+    const rows = "x".repeat(4 * 1024 * 1024) + "\n" + artifactUse("tail", path) + result("tail");
+    writeFileSync(f.transcript, rows, { flag: "a" });
+    expect(tracker.collect()).toEqual([{ sessionId: SESSION, path, description: "Report" }]);
+  });
 });

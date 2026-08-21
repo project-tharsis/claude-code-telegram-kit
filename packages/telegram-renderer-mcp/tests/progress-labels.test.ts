@@ -13,9 +13,8 @@ describe("internal sidecar tool filtering", () => {
       "mcp__telegram-renderer__send_reply",
       "mcp__telegram-renderer__bind_turn",
       "mcp__telegram-renderer__record_tool",
-      "mcp__session-control__schedule_session_reset",
-      "mcp__session-control__list_sessions",
-      "mcp__session-control__bind_command"
+      "mcp__telegram-renderer__finish_turn",
+      "mcp__session-control__dispatch_command"
     ]) {
       expect(isInternalSidecarTool(name)).toBe(true);
       expect(safeStepPresentation(name)).toBeNull();

@@ -94,20 +94,20 @@ describe("Unix control broker transport", () => {
       socket.on("data", chunk => {
         request += chunk.toString();
         if (request.endsWith("\n")) {
-          socket.end('{"status":"ok","capabilities":{"protocol":4,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"]}}\n');
+          socket.end(`{"status":"ok","capabilities":{"protocol":${HELPER_PROTOCOL_VERSION},"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"]}}\n`);
         }
       });
     });
-    const result = await callControlBroker({ protocol: 1, action: "capabilities" }, { socketPath: path });
-    expect(JSON.parse(request)).toEqual({ protocol: 1, action: "capabilities" });
+    const result = await callControlBroker({ protocol: BROKER_PROTOCOL_VERSION, action: "capabilities" }, { socketPath: path });
+    expect(JSON.parse(request)).toEqual({ protocol: BROKER_PROTOCOL_VERSION, action: "capabilities" });
     expect((result as { status: string }).status).toBe("ok");
   });
 
   test("bounds timeout and malformed responses", async () => {
     const hanging = await unixServer(() => undefined);
-    await expect(callControlBroker({ protocol: 1, action: "capabilities" }, { socketPath: hanging, timeoutMs: 20 })).rejects.toThrow("timed out");
+    await expect(callControlBroker({ protocol: BROKER_PROTOCOL_VERSION, action: "capabilities" }, { socketPath: hanging, timeoutMs: 20 })).rejects.toThrow("timed out");
     const malformed = await unixServer(socket => socket.end("{}\n{}\n"));
-    await expect(callControlBroker({ protocol: 1, action: "capabilities" }, { socketPath: malformed })).rejects.toThrow("malformed");
+    await expect(callControlBroker({ protocol: BROKER_PROTOCOL_VERSION, action: "capabilities" }, { socketPath: malformed })).rejects.toThrow("malformed");
   });
 });
 
@@ -115,13 +115,13 @@ describe("session scheduler broker contract", () => {
   test("sends bounded reset, resume, and model requests", async () => {
     const seen: unknown[] = [];
     const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-${"a".repeat(24)}` }, seen) });
-    expect(await scheduler.scheduleReset("123", "51")).toMatch(/^claude-session-reset-/);
+    expect(await scheduler.scheduleReset("123", "51", SESSION)).toMatch(/^claude-session-reset-/);
     const resume = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-resume-${"b".repeat(24)}` }, seen) });
     await resume.scheduleResume("123", "52", SESSION, SESSION);
     const model = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-model-${"c".repeat(24)}` }, seen) });
     await model.scheduleModel("123", "53", "sonnet");
     expect(seen).toEqual([
-      { protocol: BROKER_PROTOCOL_VERSION, action: "reset", chat_id: "123", message_id: "51" },
+      { protocol: BROKER_PROTOCOL_VERSION, action: "reset", chat_id: "123", message_id: "51", current_session_id: SESSION },
       { protocol: BROKER_PROTOCOL_VERSION, action: "resume", chat_id: "123", message_id: "52", current_session_id: SESSION, session_id: SESSION },
       { protocol: BROKER_PROTOCOL_VERSION, action: "model", chat_id: "123", message_id: "53", model: "sonnet" }
     ]);
@@ -129,17 +129,18 @@ describe("session scheduler broker contract", () => {
 
   test("rejects malformed identity and broker receipts", async () => {
     const schedule = createResetScheduler({ callBroker: broker({ status: "scheduled", unit: "evil.service" }) });
-    await expect(schedule("123", "51")).rejects.toThrow("rejected");
+    await expect(schedule("123", "51", SESSION)).rejects.toThrow("rejected");
     const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-reset-resume-${"a".repeat(24)}` }) });
+    await expect(scheduler.scheduleReset("123", "51", "bad")).rejects.toThrow("current session UUID");
     await expect(scheduler.scheduleResume("123", "51", "bad", SESSION)).rejects.toThrow("current session UUID");
     await expect(scheduler.scheduleModel("123", "51", "other" as "sonnet")).rejects.toThrow("model alias");
   });
 });
 
 describe("broker capability preflight", () => {
-  test("accepts protocol v4 and required actions/models", async () => {
+  test("accepts the current helper protocol and required actions/models", async () => {
     expect(await probeHelperCapabilities({ callBroker: broker(capabilities()) })).toEqual({
-      protocol: 4,
+      protocol: HELPER_PROTOCOL_VERSION,
       actions: ["reset", "resume", "model"],
       models: ["opus", "sonnet", "haiku", "inherit"]
     });

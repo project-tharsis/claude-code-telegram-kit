@@ -3,7 +3,7 @@ import {
   assertAuthorizedChat,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
-import { MAX_SESSION_INDEX, type CommandCapability, type SessionCommandName } from "./command-capability.js";
+import { MAX_SESSION_INDEX } from "./control-input.js";
 import { formatActivity, type SessionCatalogEntry } from "./session-catalog.js";
 import { escapeTelegramHtml } from "./telegram-html.js";
 import {
@@ -39,17 +39,6 @@ export const TrustedResumeSessionRequestSchema = z.object({
 export type TrustedListSessionsRequest = z.infer<typeof TrustedListSessionsRequestSchema>;
 export type TrustedResumeSessionRequest = z.infer<typeof TrustedResumeSessionRequestSchema>;
 
-export const ListSessionsRequestSchema = z.object({
-  chat_id: telegramChatId
-}).strict();
-
-export const ResumeSessionRequestSchema = z.object({
-  chat_id: telegramChatId,
-  index: z.number().int().min(1).max(MAX_SESSION_INDEX)
-}).strict();
-
-export type ListSessionsRequest = z.infer<typeof ListSessionsRequestSchema>;
-export type ResumeSessionRequest = z.infer<typeof ResumeSessionRequestSchema>;
 
 export interface ListSessionsReceipt {
   status: "listed";
@@ -65,9 +54,6 @@ export interface ResumeSessionReceipt {
 
 export interface SessionsControllerDeps {
   loadConfig: () => RuntimeConfig;
-  capabilities: {
-    take: (chatId: string, command: SessionCommandName, index?: number) => CommandCapability | null;
-  };
   scanSessions: (currentSessionId: string) => SessionCatalogEntry[];
   readSnapshot: (chatId: string) => SelectionSnapshot | null;
   writeSnapshot: (snapshot: {
@@ -208,30 +194,5 @@ export function createSessionsController(deps: SessionsControllerDeps) {
     return { status: "scheduled", ackMessageId, unit };
   }
 
-  return {
-    listSessionsTrusted,
-    resumeSessionTrusted,
-    async listSessions(rawRequest: ListSessionsRequest): Promise<ListSessionsReceipt> {
-      const request = ListSessionsRequestSchema.parse(rawRequest);
-      const capability = deps.capabilities.take(request.chat_id, "sessions");
-      if (capability === null) throw new Error("no current /sessions command is authorized");
-      return listSessionsTrusted({
-        chatId: capability.chatId,
-        messageId: capability.messageId,
-        currentSessionId: capability.sessionId
-      });
-    },
-
-    async resumeSession(rawRequest: ResumeSessionRequest): Promise<ResumeSessionReceipt> {
-      const request = ResumeSessionRequestSchema.parse(rawRequest);
-      const capability = deps.capabilities.take(request.chat_id, "resume", request.index);
-      if (capability === null) throw new Error("no current /resume N command is authorized");
-      return resumeSessionTrusted({
-        chatId: capability.chatId,
-        messageId: capability.messageId,
-        currentSessionId: capability.sessionId,
-        index: request.index
-      });
-    }
-  };
+  return { listSessionsTrusted, resumeSessionTrusted };
 }

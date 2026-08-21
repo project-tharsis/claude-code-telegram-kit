@@ -11,7 +11,6 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   assertAuthorizedChat,
   readTelegramJson,
-  TELEGRAM_SEND_TIMEOUT_MS,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 import type { ArtifactCandidate } from "./progress-disclosure.js";
@@ -19,6 +18,9 @@ import type { ArtifactCandidate } from "./progress-disclosure.js";
 export const MAX_ARTIFACTS_PER_TURN = 4;
 export const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
 export const MAX_ARTIFACT_TOTAL_BYTES = 100 * 1024 * 1024;
+const ARTIFACT_TIMEOUT_BASE_MS = 15_000;
+const ARTIFACT_TIMEOUT_PER_MIB_MS = 5_000;
+const MAX_ARTIFACT_TIMEOUT_MS = 5 * 60_000;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type ArtifactFetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -30,7 +32,7 @@ export type ArtifactDeliveryOutcome =
   | { kind: "local_rejected"; messageIds: number[] };
 
 interface LoadedArtifact {
-  bytes: Uint8Array;
+  bytes: Uint8Array<ArrayBuffer>;
   filename: string;
 }
 
@@ -99,26 +101,22 @@ function openTrustedRoot(path: string, uid: number): TrustedRoot {
   }
 }
 
-function readBounded(fd: number, expectedSize: number, maxBytes: number): Uint8Array {
-  const chunks: Uint8Array[] = [];
+function readBounded(fd: number, expectedSize: number, maxBytes: number): Uint8Array<ArrayBuffer> {
+  if (expectedSize > maxBytes) throw new Error("artifact exceeds the size limit");
+  const result = new Uint8Array(expectedSize);
   let total = 0;
-  while (total <= maxBytes) {
-    const capacity = Math.min(64 * 1024, maxBytes + 1 - total);
-    const buffer = new Uint8Array(capacity);
-    const count = readSync(fd, buffer, 0, capacity, null);
-    if (count === 0) break;
-    chunks.push(buffer.subarray(0, count));
+  while (total < expectedSize) {
+    const count = readSync(fd, result, total, expectedSize - total, null);
+    if (count === 0) throw new Error("artifact changed while reading");
     total += count;
-    if (total > maxBytes) throw new Error("artifact grew beyond the size limit");
   }
-  if (total !== expectedSize) throw new Error("artifact changed while reading");
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  if (readSync(fd, new Uint8Array(1), 0, 1, null) !== 0) throw new Error("artifact grew while reading");
   return result;
+}
+
+export function artifactUploadTimeoutMs(size: number): number {
+  const mib = Math.max(1, Math.ceil(size / (1024 * 1024)));
+  return Math.min(MAX_ARTIFACT_TIMEOUT_MS, ARTIFACT_TIMEOUT_BASE_MS + mib * ARTIFACT_TIMEOUT_PER_MIB_MS);
 }
 
 function openTrustedChildDirectory(parentFd: number, name: string, uid: number): number {
@@ -129,12 +127,16 @@ function openTrustedChildDirectory(parentFd: number, name: string, uid: number):
     throw new Error("artifact directory is not trusted");
   }
   const fd = openSync(anchoredPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  const opened = fstatSync(fd);
-  if (!opened.isDirectory() || opened.dev !== before.dev || opened.ino !== before.ino || opened.uid !== uid) {
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isDirectory() || opened.dev !== before.dev || opened.ino !== before.ino || opened.uid !== uid) {
+      throw new Error("artifact directory identity changed");
+    }
+    return fd;
+  } catch (error) {
     closeSync(fd);
-    throw new Error("artifact directory identity changed");
+    throw error;
   }
-  return fd;
 }
 
 function loadArtifact(
@@ -191,7 +193,15 @@ function loadArtifact(
       }
       const bytes = readBounded(fd, opened.size, Math.min(MAX_ARTIFACT_BYTES, maxBytes));
       const after = fstatSync(fd);
-      if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== bytes.byteLength) {
+      if (
+        !after.isFile()
+        || after.dev !== opened.dev
+        || after.ino !== opened.ino
+        || after.uid !== uid
+        || after.nlink !== 1
+        || (after.mode & 0o022) !== 0
+        || after.size !== bytes.byteLength
+      ) {
         throw new Error("artifact changed while reading");
       }
       return { bytes, filename: safeFilename(filename) };
@@ -246,66 +256,66 @@ export function createArtifactDeliverer(options: {
       return { kind: "local_rejected", messageIds: [] };
     }
 
-    let loaded: LoadedArtifact[];
-    try {
-      const root = openTrustedRoot(options.root, uid);
-      try {
-        loaded = [];
-        let remaining = maxTotalBytes;
-        for (const candidate of candidates) {
-          const artifact = loadArtifact(candidate, root, uid, Math.min(maxArtifactBytes, remaining));
-          remaining -= artifact.bytes.byteLength;
-          loaded.push(artifact);
-        }
-      } finally {
-        closeSync(root.fd);
-      }
-    } catch {
-      return { kind: "local_rejected", messageIds: [] };
-    }
-
     const messageIds: number[] = [];
-    for (const artifact of loaded) {
-      const form = new FormData();
-      form.set("chat_id", chatId);
-      form.set("reply_parameters", JSON.stringify({ message_id: replyTo }));
-      form.set("disable_notification", "true");
-      const document = new ArrayBuffer(artifact.bytes.byteLength);
-      new Uint8Array(document).set(artifact.bytes);
-      form.set("document", new Blob([document], { type: "application/octet-stream" }), artifact.filename);
-
-      let response: Response;
-      try {
-        response = await fetchImpl(`https://api.telegram.org/bot${config.token}/sendDocument`, {
-          method: "POST",
-          redirect: "error",
-          body: form,
-          signal: AbortSignal.timeout(TELEGRAM_SEND_TIMEOUT_MS)
-        });
-      } catch {
-        return { kind: "uncertain", messageIds };
-      }
-
-      let envelope: ArtifactEnvelope;
-      try {
-        envelope = await readTelegramJson(response) as ArtifactEnvelope;
-      } catch {
-        return { kind: "uncertain", messageIds };
-      }
-      const messageId = envelope.result?.message_id;
-      if (
-        response.ok
-        && envelope.ok === true
-        && typeof messageId === "number"
-        && Number.isSafeInteger(messageId)
-        && messageId >= 1
-      ) {
-        messageIds.push(messageId);
-        continue;
-      }
-      if (permanentStatus(response.status)) return { kind: "permanent", messageIds };
-      return { kind: "uncertain", messageIds };
+    let root: TrustedRoot;
+    try {
+      root = openTrustedRoot(options.root, uid);
+    } catch {
+      return { kind: "local_rejected", messageIds };
     }
-    return { kind: "success", messageIds };
+
+    let remaining = maxTotalBytes;
+    try {
+      for (const candidate of candidates) {
+        let artifact: LoadedArtifact;
+        try {
+          artifact = loadArtifact(candidate, root, uid, Math.min(maxArtifactBytes, remaining));
+        } catch {
+          return { kind: "local_rejected", messageIds };
+        }
+        remaining -= artifact.bytes.byteLength;
+
+        const form = new FormData();
+        form.set("chat_id", chatId);
+        form.set("reply_parameters", JSON.stringify({ message_id: replyTo }));
+        form.set("disable_notification", "true");
+        form.set("document", new Blob([artifact.bytes], { type: "application/octet-stream" }), artifact.filename);
+
+        let response: Response;
+        try {
+          response = await fetchImpl(`https://api.telegram.org/bot${config.token}/sendDocument`, {
+            method: "POST",
+            redirect: "error",
+            body: form,
+            signal: AbortSignal.timeout(artifactUploadTimeoutMs(artifact.bytes.byteLength))
+          });
+        } catch {
+          return { kind: "uncertain", messageIds };
+        }
+
+        let envelope: ArtifactEnvelope;
+        try {
+          envelope = await readTelegramJson(response) as ArtifactEnvelope;
+        } catch {
+          return { kind: "uncertain", messageIds };
+        }
+        const messageId = envelope.result?.message_id;
+        if (
+          response.ok
+          && envelope.ok === true
+          && typeof messageId === "number"
+          && Number.isSafeInteger(messageId)
+          && messageId >= 1
+        ) {
+          messageIds.push(messageId);
+          continue;
+        }
+        if (permanentStatus(response.status)) return { kind: "permanent", messageIds };
+        return { kind: "uncertain", messageIds };
+      }
+      return { kind: "success", messageIds };
+    } finally {
+      closeSync(root.fd);
+    }
   };
 }

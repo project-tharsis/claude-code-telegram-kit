@@ -12,7 +12,7 @@ dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmi
 
 An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
 
-The server advertises only the deterministic hook router plus the bounded list/resume compatibility tools. The legacy model-callable reset tool is removed; exact control commands never rely on model tool selection.
+The server advertises only `dispatch_command`. Legacy model-callable reset, bind, list, and resume tools are removed; exact control commands never rely on model tool selection.
 
 `/usage` reads a private service-user-owned cache written from Claude's documented `statusLine.rate_limits`; it starts no extra Claude process and calls neither the LLM nor the OAuth usage endpoint. Delivery uses Telegram-safe HTML with bold percentages, reset timestamps, and a compact ten-cell micro-bar. `/sessions` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
 
@@ -22,7 +22,7 @@ The server advertises only the deterministic hook router plus the bounded list/r
 2. Validate the exact direct envelope, live allowlist, and control-command grammar.
 3. `/reset` or `/resume N` sends a quoted 60-second confirmation challenge and performs no mutation.
 4. The exact action-bound confirmation consumes the challenge once; replay, wrong action, wrong code, and expiry fail closed.
-5. Send a quoted acceptance message, then submit one bounded Broker Protocol v1 JSON line over the private Unix socket.
+5. Send a quoted acceptance message, then submit one bounded Broker Protocol v2 JSON line over the private Unix socket. Reset and resume both carry the exact current session UUID; root never guesses rollback authority from transcript mtimes.
 6. The peer-UID-checking root broker derives the request ID, unit, helper/config paths, and fixed `systemd-run --no-block` argv; the root-owned helper verifies the exact runtime and reports completion or failure independently.
 
 The MCP does not accept command, path, unit, service, or helper arguments from the model.
@@ -40,7 +40,7 @@ TELEGRAM_COMMAND_MENU_ENABLED
 
 Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. Model status always reads the fixed root-owned, mode-`0644`, single-line `/etc/claude-code-telegram-kit/model.env` that the service loads through an optional `EnvironmentFile=` directive. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
 
-Before each confirmed privileged action, the control MCP asks the broker for its read-only capabilities with a five-second socket deadline and requires Broker Protocol v1 plus Session Control Protocol v4 with `reset`, `resume`, and `model` and the fixed model allowlist. Version skew or an unavailable broker/helper fails before acceptance delivery while read-only status/listing and rendering remain available; a repaired path is detected on the next action without restarting the MCP. The unprivileged process never receives helper/config/systemd paths and never executes `sudo` or `systemd-run`.
+Before each confirmed privileged action, the control MCP asks the broker for its read-only capabilities with a five-second socket deadline and requires Broker Protocol v2 plus Session Control Protocol v5 with `reset`, `resume`, and `model` and the fixed model allowlist. Version skew or an unavailable broker/helper fails before acceptance delivery while read-only status/listing and rendering remain available; a repaired path is detected on the next action without restarting the MCP. The unprivileged process never receives helper/config/systemd paths and never executes `sudo` or `systemd-run`.
 
 By default, the shared authority requires exactly one allowlisted chat. Multi-chat deployments must opt in with `TELEGRAM_ALLOW_MULTIPLE_CHATS=true` in both MCP server environments and `allow_multiple_chats: true` in the root config.
 
@@ -82,5 +82,8 @@ Never bypass the installer's self-verification or invoke privileged asset instal
 The local helper remains available when the bot or model is unavailable:
 
 ```bash
-sudo claude-code-session-reset --config /etc/claude-code-telegram-kit/reset.json
+sudo claude-code-session-reset \
+  --config /etc/claude-code-telegram-kit/reset.json \
+  --action reset \
+  --current-session-id <exact-current-session-uuid>
 ```

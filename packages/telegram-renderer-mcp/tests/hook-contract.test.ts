@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
@@ -12,6 +14,16 @@ const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const PROMPT = "9a1f2b3c-0000-4000-8000-0123456789ab";
 
 describe("direct Telegram envelope parsing", () => {
+  test("matches the shared cross-language envelope fixture", () => {
+    const cases = JSON.parse(readFileSync(
+      resolve(import.meta.dir, "../../shared/fixtures/telegram-envelope-cases.json"),
+      "utf8"
+    )) as Array<{ name: string; prompt: string; accepted: boolean }>;
+    for (const item of cases) {
+      expect(parseDirectTelegramEnvelope(item.prompt) !== null, item.name).toBe(item.accepted);
+    }
+  });
+
   test("accepts an exact leading channel envelope", () => {
     const parsed = parseDirectTelegramEnvelope(
       '<channel source="telegram" chat_id="123456" message_id="42" user="x" ts="1">hello</channel>'

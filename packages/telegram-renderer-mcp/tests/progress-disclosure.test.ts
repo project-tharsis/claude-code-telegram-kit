@@ -635,7 +635,7 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "t1", "Task");
     tool(h, "t2", "Read", "agent-1");
     tool(h, "t3", "Bash", "agent-1");
-    tool(h, "t4", "mcp__session-control__list_sessions", "agent-1");
+    tool(h, "t4", "mcp__session-control__dispatch_command", "agent-1");
     await h.tick();
     expect(h.sends[0]!.text).toBe(
       "Working…\n👥 Delegating\n📖 Reading\n💻 terminal"

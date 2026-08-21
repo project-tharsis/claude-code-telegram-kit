@@ -19,8 +19,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-BROKER_PROTOCOL = 1
-HELPER_PROTOCOL = 4
+BROKER_PROTOCOL = 2
+HELPER_PROTOCOL = 5
 DEFAULT_CONFIG = Path("/etc/claude-code-telegram-kit/reset.json")
 DEFAULT_HELPER = Path("/usr/local/sbin/claude-code-session-reset")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
@@ -74,7 +74,7 @@ def _request_id(action: str, request: dict[str, Any]) -> str:
     chat = request["chat_id"]
     message = request["message_id"]
     if action == "reset":
-        seed = f"{chat}:{message}"
+        seed = f"reset:{chat}:{message}:{request['current_session_id']}"
     elif action == "resume":
         seed = f"resume:{chat}:{message}:{request['current_session_id']}"
     else:
@@ -198,7 +198,9 @@ def _mutation_argv(request: dict[str, Any], helper: Path, config: Path) -> tuple
     action = request.get("action")
     base = {"protocol", "action", "chat_id", "message_id"}
     if action == "reset":
-        _exact_keys(request, base)
+        _exact_keys(request, base | {"current_session_id"})
+        if not UUID_RE.fullmatch(str(request["current_session_id"])):
+            raise ValueError("invalid session identity")
     elif action == "resume":
         _exact_keys(request, base | {"current_session_id", "session_id"})
         if not UUID_RE.fullmatch(str(request["current_session_id"])) or not UUID_RE.fullmatch(str(request["session_id"])):
@@ -219,8 +221,10 @@ def _mutation_argv(request: dict[str, Any], helper: Path, config: Path) -> tuple
         SYSTEMD_RUN, f"--unit={unit}", "--collect", "--no-block", str(helper),
         "--config", str(config), "--protocol", str(HELPER_PROTOCOL), "--action", action,
     ]
+    if action in {"reset", "resume"}:
+        argv += ["--current-session-id", request["current_session_id"]]
     if action == "resume":
-        argv += ["--current-session-id", request["current_session_id"], "--session-id", request["session_id"]]
+        argv += ["--session-id", request["session_id"]]
     if action == "model":
         argv += ["--model", request["model"]]
     argv += ["--chat-id", request["chat_id"], "--request-id", request_id]

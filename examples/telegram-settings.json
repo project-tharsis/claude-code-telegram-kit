@@ -14,10 +14,7 @@
       "mcp__telegram-renderer__record_tool_success",
       "mcp__telegram-renderer__record_tool_failure",
       "mcp__telegram-renderer__finish_turn",
-      "mcp__session-control__dispatch_command",
-      "mcp__session-control__bind_command",
-      "mcp__session-control__list_sessions",
-      "mcp__session-control__resume_session"
+      "mcp__session-control__dispatch_command"
     ]
   },
   "hooks": {

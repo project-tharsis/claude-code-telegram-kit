@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
-import { createArtifactDeliverer } from "../src/artifact-delivery.js";
+import { artifactUploadTimeoutMs, createArtifactDeliverer } from "../src/artifact-delivery.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 
@@ -124,7 +124,7 @@ describe("deterministic Artifact delivery", () => {
     expect(calls).toBe(0);
   });
 
-  test("rejects the aggregate budget before retaining another file", async () => {
+  test("keeps only one artifact in memory and stops when the remaining budget is exhausted", async () => {
     const f = fixture();
     const second = join(f.scratchpad, "second.txt");
     writeFileSync(second, "second", { mode: 0o600 });
@@ -135,8 +135,15 @@ describe("deterministic Artifact delivery", () => {
       fetchImpl: async () => { calls += 1; return ok(1); }
     });
     expect(await deliver(config, "123", "51", [candidate(f.file), candidate(second)]))
-      .toEqual({ kind: "local_rejected", messageIds: [] });
-    expect(calls).toBe(0);
+      .toEqual({ kind: "local_rejected", messageIds: [1] });
+    expect(calls).toBe(1);
+  });
+
+  test("gives document uploads a bounded size-aware timeout budget", () => {
+    expect(artifactUploadTimeoutMs(1)).toBe(20_000);
+    expect(artifactUploadTimeoutMs(5 * 1024 * 1024)).toBe(40_000);
+    expect(artifactUploadTimeoutMs(50 * 1024 * 1024)).toBe(265_000);
+    expect(artifactUploadTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(300_000);
   });
 
   test("stops after an uncertain later upload without replaying confirmed files", async () => {

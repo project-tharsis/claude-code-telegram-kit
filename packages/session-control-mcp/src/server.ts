@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createCapabilityStore } from "./command-capability.js";
+
 import { createConfirmationChallengeStore } from "./control-command.js";
 import { createControlCommandDispatcher } from "./command-dispatch.js";
 import {
@@ -30,8 +30,6 @@ import {
   writeSelectionSnapshot
 } from "./session-selection.js";
 import { createSessionsController } from "./sessions-control.js";
-import { createSessionsToolHandler, SESSIONS_TOOLS } from "./sessions-tool.js";
-
 import { DEFAULT_MODEL_ENV_FILE, readConfiguredModel } from "./model-status.js";
 import { readSubscriptionUsage } from "./subscription-usage.js";
 import { createSessionTitleService } from "./session-title-service.js";
@@ -62,7 +60,6 @@ const helperReady = async (): Promise<boolean> => {
     return false;
   }
 };
-const capabilities = createCapabilityStore({ loadConfig });
 const challenges = createConfirmationChallengeStore();
 const titleService = projectSessionsDir !== undefined && workspaceDir !== undefined
   ? createSessionTitleService({ projectSessionsDir, workspaceDir })
@@ -74,13 +71,10 @@ const controller = createResetController({
   sendMessage: (config, chatId, text, replyTo, parseMode) =>
     sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode),
   react: finalizeTelegramReaction,
-  schedule: (chatId, messageId) => scheduler.scheduleReset(chatId, messageId)
+  schedule: (chatId, messageId, currentSessionId) => scheduler.scheduleReset(chatId, messageId, currentSessionId)
 });
-
-
 const sessionsController = createSessionsController({
   loadConfig,
-  capabilities,
   scanSessions: currentSessionId =>
     projectSessionsDir === undefined
       ? []
@@ -101,10 +95,7 @@ const sessionsController = createSessionsController({
   helperReady,
   now: Date.now
 });
-const handleSessionsTool = createSessionsToolHandler({
-  controller: sessionsController,
-  capabilities
-});
+
 const dispatchControlCommand = createControlCommandDispatcher({
   loadConfig,
   challenges,
@@ -137,7 +128,6 @@ const dispatchControlCommand = createControlCommandDispatcher({
     if (titleService === null) throw new Error("session title service is unavailable");
     await titleService.renameUserSession(request.sessionId, request.title);
   },
-
   resumeSessionTrusted: request => sessionsController.resumeSessionTrusted(request),
   resetSession: request => controller(request)
 });
@@ -148,13 +138,11 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [CONTROL_COMMAND_TOOL, ...SESSIONS_TOOLS]
+  tools: [CONTROL_COMMAND_TOOL]
 }));
 server.setRequestHandler(CallToolRequestSchema, async request => {
   const routerResult = await handleControlRouterTool(request.params.name, request.params.arguments);
   if (routerResult !== null) return routerResult;
-  const sessionsResult = await handleSessionsTool(request.params.name, request.params.arguments);
-  if (sessionsResult !== null) return sessionsResult;
   return { isError: true, content: [{ type: "text", text: "unknown control tool" }] };
 });
 await server.connect(new StdioServerTransport());
