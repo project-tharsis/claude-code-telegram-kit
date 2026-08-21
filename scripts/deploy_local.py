@@ -170,12 +170,18 @@ def _safe_extract(archive: Path, destination: Path) -> None:
     max_member_size = 100 * 1024 * 1024
     max_total_size = 512 * 1024 * 1024
     total_size = 0
+    agent_guidance_link: Path | None = None
     with tarfile.open(archive, "r") as tar:
         for member in tar.getmembers():
             relative = PurePosixPath(member.name)
             if relative.is_absolute() or not relative.parts or ".." in relative.parts:
                 raise ValueError("release archive contains an unsafe path")
-            if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+            if member.issym():
+                if relative == PurePosixPath("CLAUDE.md") and member.linkname == "AGENTS.md":
+                    agent_guidance_link = destination / "CLAUDE.md"
+                    continue
+                raise ValueError("release archive contains an unsupported symbolic link")
+            if member.islnk() or not (member.isdir() or member.isfile()):
                 raise ValueError("release archive may contain only regular files and directories")
             if member.size < 0 or member.size > max_member_size:
                 raise ValueError("release archive member is too large")
@@ -205,6 +211,13 @@ def _safe_extract(archive: Path, destination: Path) -> None:
                     os.fsync(out.fileno())
             finally:
                 os.close(fd)
+    if agent_guidance_link is not None:
+        authority = destination / "AGENTS.md"
+        info = authority.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise ValueError("AGENTS.md must be a regular file")
+        os.symlink("AGENTS.md", agent_guidance_link)
+        _fsync_dir(destination)
 
 
 def install_release(repo: Path, sha: str, prefix: Path, bun: str) -> dict[str, str | None]:

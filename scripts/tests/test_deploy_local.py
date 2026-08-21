@@ -83,6 +83,8 @@ class InstallIntegrationTests(unittest.TestCase):
             (repo / "package.json").write_text('{"name":"fixture","private":true}\n')
             (repo / "bun.lock").write_text("fixture-lock\n")
             (repo / "payload.txt").write_text("archive payload\n")
+            (repo / "AGENTS.md").write_text("guidance\n")
+            (repo / "CLAUDE.md").symlink_to("AGENTS.md")
             subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-m", "fixture"], check=True, capture_output=True)
             sha = subprocess.run(
@@ -98,8 +100,29 @@ class InstallIntegrationTests(unittest.TestCase):
             current = (prefix / "current").resolve(strict=True)
             self.assertEqual(current.name, sha)
             self.assertEqual((current / "payload.txt").read_text(), "archive payload\n")
+            self.assertTrue((current / "CLAUDE.md").is_symlink())
+            self.assertEqual((current / "CLAUDE.md").readlink(), Path("AGENTS.md"))
+            self.assertEqual((current / "CLAUDE.md").read_text(), "guidance\n")
             installed = json.loads((current / ".installed.json").read_text())
             self.assertEqual(installed["commit"], sha)
+
+    def test_rejects_any_other_archive_symlink(self):
+        with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as prefix_dir:
+            repo = Path(repo_dir)
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "ci@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "CI"], check=True)
+            (repo / "package.json").write_text('{"name":"fixture","private":true}\n')
+            (repo / "bun.lock").write_text("fixture-lock\n")
+            (repo / "AGENTS.md").write_text("guidance\n")
+            (repo / "CLAUDE.md").symlink_to("../outside")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-m", "fixture"], check=True, capture_output=True)
+            sha = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+            ).stdout.strip()
+            with self.assertRaisesRegex(ValueError, "unsupported symbolic link"):
+                deploy.install_release(repo, sha, Path(prefix_dir), "/bin/true")
 
 
 if __name__ == "__main__":
