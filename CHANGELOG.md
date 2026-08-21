@@ -25,7 +25,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Rich delivery canonicalizes GFM through mdast before `sendRichMessage`, preserving literal markers while retaining valid emphasis, code, links, tables, and Telegram underline.
 - Slash-control replies use concise Telegram HTML hierarchy, escaped titles, code-formatted commands/values, honest metadata-only title fallbacks, and no exposed UUID/path internals.
 - Progress remains fully visible until Telegram's 4096-character wire limit instead of folding after eight steps; shell commands use a bounded one-line block and Skill calls name the loaded Skill.
-- Each progress bubble selects one stable Claude-style spinner/completion verb pair for the turn, such as `Brewing…` → `Brewed`.
+- Each progress bubble selects one stable Claude-style spinner/completion verb pair for the turn, such as `Brewing…` → `Brewed`; Telegram marks the header with `✦`/`✓` and separates it from the tool steps.
 - Monorepo packages and both MCP server identities advance to `0.3.0`.
 
 ### Security
