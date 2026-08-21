@@ -138,6 +138,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
     const readOnlyNamespace = command.kind === "sessions"
       || command.kind === "usage"
       || command.kind === "model-status"
+      || command.kind === "model-cancel"
       || (command.kind === "malformed" && ["sessions", "usage", "model"].includes(command.namespace));
     const destructiveNamespace = !readOnlyNamespace;
     if (destructiveNamespace && envelope.chatId.startsWith("-")) {

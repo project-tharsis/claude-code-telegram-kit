@@ -265,8 +265,19 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     })).toEqual({ handled: true });
     expect(h.modelSwitches).toEqual([]);
     expect(await h.dispatch({
-      ...input("/rename Group title", "11"),
-      prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="11">/rename Group title</channel>'
+      ...input("5 · Cancel", "11"),
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="11">5 · Cancel</channel>'
+    })).toEqual({ handled: true });
+    expect(h.sent.at(-1)).toMatchObject({
+      chatId: "-100123",
+      replyTo: "11",
+      text: "<i>Model selection closed.</i>",
+      replyMarkup: REMOVE_MODEL_REPLY_KEYBOARD
+    });
+    expect(h.modelSwitches).toEqual([]);
+    expect(await h.dispatch({
+      ...input("/rename Group title", "12"),
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="-100123" message_id="12">/rename Group title</channel>'
     })).toEqual({ handled: true });
     expect(h.renameCalls).toEqual([]);
     expect(h.sent.at(-1)!.text).toBe(PRIVATE_CONTROL_ONLY_TEXT);
