@@ -1,4 +1,8 @@
-import { safeStepLabel } from "./progress-labels.js";
+import {
+  safeStepPresentation,
+  type SafeStepLabel,
+  type StepPresentationKind
+} from "./progress-labels.js";
 import { sanitizeProgressPreview } from "./progress-preview-sanitizer.js";
 
 export type ToolDisclosureMode = "safe" | "all" | "verbose";
@@ -12,16 +16,49 @@ export interface ToolPreviewFields {
   url?: string | undefined;
   skill?: string | undefined;
   description?: string | undefined;
+  offset?: string | undefined;
+  limit?: string | undefined;
+}
+
+export interface ProgressStep {
+  emoji: string;
+  label: SafeStepLabel;
+  kind: StepPresentationKind;
+  connector: " " | " for ";
+  preview?: string | undefined;
+}
+
+function positiveInteger(value: string | undefined): number | null {
+  if (value === undefined || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
+}
+
+function basename(value: string): string {
+  const parts = value.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.at(-1) ?? value;
+}
+
+function readPreview(fields: ToolPreviewFields): string {
+  const path = fields.file_path ?? fields.path ?? "";
+  if (!path) return "";
+  const name = basename(path);
+  const offset = positiveInteger(fields.offset);
+  if (offset === null) return name;
+  const limit = positiveInteger(fields.limit);
+  const canAddLimit = limit !== null && limit - 1 <= Number.MAX_SAFE_INTEGER - offset;
+  const range = canAddLimit ? `L${offset}-${offset + limit - 1}` : `L${offset}`;
+  return `${name} ${range}`;
 }
 
 function previewSource(toolName: string, fields: ToolPreviewFields): string {
   switch (toolName) {
     case "Bash": return fields.command ?? "";
     case "Read":
+    case "NotebookRead": return readPreview(fields);
     case "Edit":
     case "Write":
     case "MultiEdit":
-    case "NotebookRead":
     case "NotebookEdit": return fields.file_path ?? fields.path ?? "";
     case "Grep":
     case "Glob": {
@@ -50,12 +87,12 @@ export function buildProgressStep(
   fields: ToolPreviewFields,
   mode: ToolDisclosureMode,
   agentId?: string
-): string | null {
-  const label = safeStepLabel(toolName, agentId);
-  if (label === null) return null;
-  if (mode === "safe") return label;
+): ProgressStep | null {
+  const presentation = safeStepPresentation(toolName, agentId);
+  if (presentation === null) return null;
+  if (mode === "safe") return { ...presentation };
   const preview = sanitizeProgressPreview(previewSource(toolName, fields), {
     maxLength: toolName === "Skill" ? 128 : mode === "verbose" ? 40 : 28
   });
-  return preview ? `${label} — ${preview}` : label;
+  return preview ? { ...presentation, preview } : { ...presentation };
 }

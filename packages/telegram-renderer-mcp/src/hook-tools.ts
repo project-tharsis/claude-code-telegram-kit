@@ -77,6 +77,8 @@ export const RECORD_TOOL_TOOL = {
       command: { type: "string", maxLength: 32768 },
       file_path: { type: "string", maxLength: 4096 },
       path: { type: "string", maxLength: 4096 },
+      offset: { type: "string", maxLength: 32 },
+      limit: { type: "string", maxLength: 32 },
       pattern: { type: "string", maxLength: 8192 },
       query: { type: "string", maxLength: 8192 },
       url: { type: "string", maxLength: 8192 },
