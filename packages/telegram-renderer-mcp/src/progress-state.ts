@@ -7,12 +7,22 @@ function telegramTextLength(value: string): number {
   return value.length;
 }
 
-/** Fixed headers. The bubble never renders model text, so these are the only variants. */
-const HEADERS = {
-  open: "Working…",
-  Stop: "Done",
-  StopFailure: "Failed"
-} as const;
+export interface TurnVerbPair {
+  active: string;
+  complete: string;
+}
+
+/** Claude Code-compatible spinner/completion pairs, selected once per turn. */
+export const TURN_VERB_PAIRS: readonly TurnVerbPair[] = [
+  { active: "Baking…", complete: "Baked" },
+  { active: "Brewing…", complete: "Brewed" },
+  { active: "Churning…", complete: "Churned" },
+  { active: "Cogitating…", complete: "Cogitated" },
+  { active: "Cooking…", complete: "Cooked" },
+  { active: "Crunching…", complete: "Crunched" },
+  { active: "Sautéing…", complete: "Sautéed" },
+  { active: "Working…", complete: "Worked" }
+];
 
 export type TurnOutcome = "Stop" | "StopFailure";
 export type StepStatus = "running" | "done" | "failed";
@@ -22,6 +32,15 @@ export interface TurnKey {
   messageId: string;
   sessionId: string;
   promptId: string;
+}
+
+export function selectTurnVerbPair(key: Pick<TurnKey, "sessionId" | "promptId">): TurnVerbPair {
+  let hash = 2_166_136_261;
+  for (const char of `${key.sessionId}/${key.promptId}`) {
+    hash ^= char.codePointAt(0)!;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return TURN_VERB_PAIRS[(hash >>> 0) % TURN_VERB_PAIRS.length]!;
 }
 
 interface StepLine {
@@ -57,13 +76,15 @@ function renderStep(line: StepLine): string {
  */
 export class TurnProgress {
   readonly key: TurnKey;
+  readonly #verbs: TurnVerbPair;
   #lines: StepLine[] = [];
   #seen = new Set<string>();
   #generation = 0;
   #outcome: TurnOutcome | null = null;
 
-  constructor(key: TurnKey) {
+  constructor(key: TurnKey, verbs: TurnVerbPair = selectTurnVerbPair(key)) {
     this.key = key;
+    this.#verbs = verbs;
   }
 
   get generation(): number {
@@ -123,7 +144,9 @@ export class TurnProgress {
 
   render(): string {
     if (!this.hasSteps) return "";
-    const header = this.#outcome === null ? HEADERS.open : HEADERS[this.#outcome];
+    const header = this.#outcome === null
+      ? this.#verbs.active
+      : this.#outcome === "Stop" ? this.#verbs.complete : "Failed";
     const visible: string[] = [];
     let used = telegramTextLength(header);
     for (let index = 0; index < this.#lines.length; index += 1) {

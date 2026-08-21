@@ -1,10 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { SafeStepLabel } from "../src/progress-labels.js";
 import type { ProgressStep } from "../src/progress-preview.js";
-import { MAX_PROGRESS_CHARACTERS, TurnProgress } from "../src/progress-state.js";
+import {
+  MAX_PROGRESS_CHARACTERS,
+  selectTurnVerbPair,
+  TURN_VERB_PAIRS,
+  TurnProgress
+} from "../src/progress-state.js";
+
+const WORKING = { active: "Working…", complete: "Worked" };
 
 function newTurn(): TurnProgress {
-  return new TurnProgress({ chatId: "123", messageId: "9", sessionId: "s", promptId: "p" });
+  return new TurnProgress({ chatId: "123", messageId: "9", sessionId: "s", promptId: "p" }, WORKING);
 }
 
 function inline(label: SafeStepLabel, preview?: string, emoji = "📖"): ProgressStep {
@@ -16,6 +23,14 @@ function command(preview?: string): ProgressStep {
 }
 
 describe("turn progress state", () => {
+  test("selects one stable Claude-compatible verb pair per turn", () => {
+    const key = { sessionId: "session", promptId: "prompt" };
+    const first = selectTurnVerbPair(key);
+    expect(selectTurnVerbPair(key)).toEqual(first);
+    expect(TURN_VERB_PAIRS).toContainEqual(first);
+    expect(first.active.endsWith("…")).toBe(true);
+    expect(first.complete.endsWith("…")).toBe(false);
+  });
   test("a turn with no tools has nothing to show", () => {
     const turn = newTurn();
     expect(turn.hasSteps).toBe(false);
@@ -107,10 +122,10 @@ describe("turn progress state", () => {
     turn.recordTool("a", inline("Reading", "a.ts"));
     turn.close("Stop");
     expect(turn.closed).toBe(true);
-    expect(turn.render()).toBe("Done\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Worked\n📖 Reading a.ts");
     expect(turn.recordTool("b", command("pwd"))).toBe(false);
     expect(turn.recordFailure("a")).toBe(false);
-    expect(turn.render()).toBe("Done\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Worked\n📖 Reading a.ts");
   });
 
   test("a failed stop uses its own header and marks unfinished work", () => {
@@ -125,7 +140,7 @@ describe("turn progress state", () => {
     turn.recordTool("a", inline("Reading", "a.ts"));
     turn.close("Stop");
     turn.close("StopFailure");
-    expect(turn.render()).toBe("Done\n📖 Reading a.ts");
+    expect(turn.render()).toBe("Worked\n📖 Reading a.ts");
   });
 
   test("the generation advances on every accepted change and only then", () => {
