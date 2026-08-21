@@ -73,7 +73,7 @@ sudo systemctl restart claude-telegram.service
 systemctl is-active claude-telegram.service
 ```
 
-The socket must read back as mode `0600` and owned by the service user. Never grant the service user `sudo`, `systemd-run`, arbitrary D-Bus, or a writable broker/helper/unit path. To restore the previous root-owned assets, run `sudo python3 scripts/install_root_assets.py rollback`, then `systemctl daemon-reload` and restart the Claude service.
+The socket must read back as mode `0600` and owned by a non-root service user. The broker permits at most 12 mutations per minute and four concurrent helper jobs. Never grant the service user `sudo`, `systemd-run`, arbitrary D-Bus, or a writable broker/helper/unit path. To restore the previous root-owned assets, run `sudo python3 scripts/install_root_assets.py rollback`, then `systemctl daemon-reload` and restart the Claude service.
 
 Never bypass the installer's self-verification or invoke privileged asset installation from a user-writable `current` symlink.
 

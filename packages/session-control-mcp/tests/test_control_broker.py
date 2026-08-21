@@ -5,9 +5,12 @@ import io
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "claude_code_control_broker.py"
 SPEC = importlib.util.spec_from_file_location("control_broker", SCRIPT)
@@ -35,6 +38,7 @@ def request(payload: dict, run: Runner):
         config_path=Path("/etc/fixed-reset.json"),
         helper=Path("/usr/local/sbin/fixed-helper"),
         run=run,
+        reserve=lambda _runner: None,
         service_uid=os.getuid(),
         verify_files=False,
     )
@@ -103,6 +107,27 @@ class ControlBrokerTests(unittest.TestCase):
                     verify_files=False,
                 )
         self.assertEqual(run.calls, [])
+
+    def test_mutation_rate_and_pending_job_budgets(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "rate.json"
+            run = Runner()
+            broker._reserve_mutation(run, state_path=state, now=100.0, burst=2, expected_uid=os.getuid())
+            broker._reserve_mutation(run, state_path=state, now=101.0, burst=2, expected_uid=os.getuid())
+            with self.assertRaisesRegex(RuntimeError, "rate"):
+                broker._reserve_mutation(run, state_path=state, now=102.0, burst=2, expected_uid=os.getuid())
+            pending = Runner(stdout="a\nb\nc\nd\n")
+            with self.assertRaisesRegex(RuntimeError, "pending"):
+                broker._reserve_mutation(pending, state_path=state, now=200.0, expected_uid=os.getuid())
+
+    def test_rejects_root_as_the_service_user(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "reset.json"
+            config.write_text('{"service_user":"rootish"}')
+            with mock.patch.object(broker, "_secure_file"), \
+                    mock.patch.object(broker.pwd, "getpwnam", return_value=SimpleNamespace(pw_uid=0)):
+                with self.assertRaisesRegex(ValueError, "unprivileged"):
+                    broker._load_service_uid(config)
 
 
 if __name__ == "__main__":

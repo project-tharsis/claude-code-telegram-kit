@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import stat
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,6 +27,10 @@ SYSTEMD_RUN = "/usr/bin/systemd-run"
 MAX_REQUEST_BYTES = 8 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 SOCKET_TIMEOUT_SECONDS = 5.0
+RATE_STATE = Path("/run/claude-code-telegram-kit/mutation-rate.json")
+RATE_WINDOW_SECONDS = 60
+RATE_BURST = 12
+MAX_PENDING_JOBS = 4
 MODELS = {"opus", "sonnet", "haiku", "inherit"}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 DIGITS_RE = re.compile(r"^[0-9]+$")
@@ -58,7 +64,10 @@ def _load_service_uid(config_path: Path) -> int:
     raw = _strict_json(config_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or not isinstance(raw.get("service_user"), str):
         raise ValueError("invalid broker config")
-    return pwd.getpwnam(raw["service_user"]).pw_uid
+    account = pwd.getpwnam(raw["service_user"])
+    if account.pw_uid == 0:
+        raise ValueError("service user must be unprivileged")
+    return account.pw_uid
 
 
 def _request_id(action: str, request: dict[str, Any]) -> str:
@@ -83,6 +92,70 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         check=False,
         env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
     )
+
+
+def _pending_jobs(run: Runner) -> int:
+    result = run([
+        "/usr/bin/systemctl", "list-units", "--type=service",
+        "--state=activating,running", "--no-legend", "--plain",
+        "claude-session-reset*.service",
+    ], 5.0)
+    if result.returncode != 0:
+        raise RuntimeError("unable to count control jobs")
+    return sum(1 for line in result.stdout.splitlines() if line.strip())
+
+
+def _reserve_mutation(
+    run: Runner,
+    *,
+    state_path: Path = RATE_STATE,
+    now: float | None = None,
+    burst: int = RATE_BURST,
+    expected_uid: int = 0,
+) -> None:
+    if _pending_jobs(run) >= MAX_PENDING_JOBS:
+        raise RuntimeError("too many pending control jobs")
+    current = time.time() if now is None else now
+    state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    parent_info = state_path.parent.lstat()
+    if not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode) or parent_info.st_uid != expected_uid or (parent_info.st_mode & 0o022) != 0:
+        raise ValueError("mutation rate directory is not secure")
+    lock_path = state_path.with_suffix(".lock")
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        lock_info = os.fstat(lock_fd)
+        if lock_info.st_uid != expected_uid or lock_info.st_nlink != 1 or stat.S_IMODE(lock_info.st_mode) != 0o600:
+            raise ValueError("mutation rate lock is not secure")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        timestamps: list[float] = []
+        try:
+            info = state_path.lstat()
+            if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != expected_uid or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError("mutation rate state is not secure")
+            raw = _strict_json(state_path.read_text())
+            values = raw.get("timestamps") if isinstance(raw, dict) and set(raw) == {"timestamps"} else None
+            if not isinstance(values, list):
+                raise ValueError("invalid mutation rate state")
+            for value in values:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value > current + 1:
+                    raise ValueError("invalid mutation rate timestamp")
+                if value > current - RATE_WINDOW_SECONDS:
+                    timestamps.append(float(value))
+        except FileNotFoundError:
+            pass
+        if len(timestamps) >= burst:
+            raise RuntimeError("control mutation rate exceeded")
+        timestamps.append(current)
+        temp = state_path.with_name(f".{state_path.name}.tmp-{os.getpid()}")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, json.dumps({"timestamps": timestamps}, separators=(",", ":")).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temp, state_path)
+    finally:
+        os.close(lock_fd)
 
 
 def _helper_capabilities(helper: Path, run: Runner, verify_files: bool = True) -> dict[str, Any]:
@@ -160,6 +233,7 @@ def process_request(
     config_path: Path = DEFAULT_CONFIG,
     helper: Path = DEFAULT_HELPER,
     run: Runner = _run,
+    reserve: Callable[[Runner], None] | None = None,
     service_uid: int | None = None,
     verify_files: bool = True,
 ) -> dict[str, Any]:
@@ -179,6 +253,7 @@ def process_request(
     if verify_files:
         _secure_file(helper, (0o755,), "reset helper")
     unit, argv = _mutation_argv(request, helper, config_path)
+    (reserve or _reserve_mutation)(run)
     result = run(argv, 10.0)
     if result.returncode != 0:
         raise RuntimeError("systemd rejected control job")
