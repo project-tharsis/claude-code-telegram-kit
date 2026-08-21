@@ -146,6 +146,7 @@ describe("supported Claude Code hook configuration", () => {
       pattern: "${tool_input.pattern}",
       query: "${tool_input.query}",
       url: "${tool_input.url}",
+      skill: "${tool_input.skill}",
       description: "${tool_input.description}",
       hook_event_name: "PreToolUse"
     });

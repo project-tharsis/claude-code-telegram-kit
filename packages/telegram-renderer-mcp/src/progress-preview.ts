@@ -10,6 +10,7 @@ export interface ToolPreviewFields {
   pattern?: string | undefined;
   query?: string | undefined;
   url?: string | undefined;
+  skill?: string | undefined;
   description?: string | undefined;
 }
 
@@ -32,8 +33,8 @@ function previewSource(toolName: string, fields: ToolPreviewFields): string {
     case "WebFetch": return fields.url ?? "";
     case "ToolSearch": return fields.query ?? "";
     case "Task":
-    case "Agent":
-    case "Skill": return fields.description ?? "";
+    case "Agent": return fields.description ?? "";
+    case "Skill": return fields.skill ?? fields.description ?? "";
     default: return toolName.startsWith("mcp__")
       ? fields.query ?? fields.description ?? ""
       : "";

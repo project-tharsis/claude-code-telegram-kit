@@ -5,7 +5,7 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
-/** Render the bounded internal progress model as Telegram-safe HTML. */
+/** Render the wire-bounded internal progress model as Telegram-safe HTML. */
 export function formatProgressHtml(text: string): string {
   if (text === "") return "";
   return text.split("\n").map((line, index) => {
@@ -21,6 +21,6 @@ export function formatProgressHtml(text: string): string {
 
     const label = display.slice(0, separator);
     const preview = display.slice(separator + 3);
-    return `${prefix}<b>${escapeHtml(label)}</b> — <code>${escapeHtml(preview)}</code>`;
+    return `${prefix}<b>${escapeHtml(label)}</b>\n<pre>${escapeHtml(preview)}</pre>`;
   }).join("\n");
 }

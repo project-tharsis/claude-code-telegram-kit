@@ -72,7 +72,7 @@ export const RECORD_TOOL_TOOL = {
       agent_id: {
         type: "string",
         pattern: "^(?:|[A-Za-z0-9_.:-]{1,128})$",
-        description: "Present when the tool ran inside a subagent; collapses to one delegating step."
+        description: "Present when the tool ran inside a subagent; nested tools remain individually disclosed."
       },
       command: { type: "string", maxLength: 32768 },
       file_path: { type: "string", maxLength: 4096 },
@@ -80,6 +80,7 @@ export const RECORD_TOOL_TOOL = {
       pattern: { type: "string", maxLength: 8192 },
       query: { type: "string", maxLength: 8192 },
       url: { type: "string", maxLength: 8192 },
+      skill: { type: "string", maxLength: 2048 },
       description: { type: "string", maxLength: 2048 },
       hook_event_name: { type: "string", const: "PreToolUse" }
     }

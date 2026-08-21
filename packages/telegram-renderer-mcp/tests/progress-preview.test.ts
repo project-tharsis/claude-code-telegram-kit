@@ -40,11 +40,16 @@ describe("progress preview modes", () => {
       .toBe("Working");
   });
 
-  test("subagent internals collapse to delegation with a bounded description", () => {
-    expect(buildProgressStep("Bash", { description: "review auth flow" }, "verbose", "agent-1"))
-      .toBe("Delegate work");
+  test("subagent internals retain granular sanitized previews", () => {
+    expect(buildProgressStep("Bash", { command: "printf secret-material" }, "verbose", "agent-1"))
+      .toBe("Run command — printf secret-material");
     expect(buildProgressStep("Task", { description: "review auth flow" }, "verbose", "agent-1"))
       .toBe("Delegate work — review auth flow");
+  });
+
+  test("shows the exact Skill tool name", () => {
+    expect(buildProgressStep("Skill", { skill: "requesting-code-review" }, "verbose"))
+      .toBe("Run skill — requesting-code-review");
   });
 
   test("invalid configured modes fail safe", () => {

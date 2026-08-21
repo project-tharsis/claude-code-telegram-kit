@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_STEP_LINES, TurnProgress } from "../src/progress-state.js";
+import { MAX_PROGRESS_CHARACTERS, TurnProgress } from "../src/progress-state.js";
 
 function newTurn(): TurnProgress {
   return new TurnProgress({ chatId: "123", messageId: "9", sessionId: "s", promptId: "p" });
@@ -38,7 +38,7 @@ describe("turn progress state", () => {
     );
   });
 
-  test("caps the bubble at eight lines and reports the overflow count", () => {
+  test("renders every step while the turn fits one Telegram message", () => {
     const turn = newTurn();
     const labels = ["Reading files", "Running commands"] as const;
     for (let index = 0; index < 12; index += 1) {
@@ -46,20 +46,20 @@ describe("turn progress state", () => {
     }
     const lines = turn.render().split("\n");
     expect(lines[0]).toBe("Working…");
-    expect(lines.length).toBe(1 + MAX_STEP_LINES + 1);
-    expect(lines[lines.length - 1]).toBe("… +4 more steps");
-    expect(lines.slice(1, -1).every(line => line.startsWith("• "))).toBe(true);
+    expect(lines).toHaveLength(13);
+    expect(lines.slice(1).every(line => line.startsWith("• "))).toBe(true);
+    expect(lines.some(line => line.includes("more steps"))).toBe(false);
   });
 
-  test("earlier lines stay stable once the cap is reached", () => {
+  test("folds only when the Telegram wire limit is reached", () => {
     const turn = newTurn();
-    for (let index = 0; index < MAX_STEP_LINES; index += 1) {
-      turn.recordTool(`t${index}`, index % 2 === 0 ? "Reading files" : "Planning");
+    for (let index = 0; index < 5_000; index += 1) {
+      turn.recordTool(`t${index}`, `Step ${index} ${"x".repeat(40)}`);
     }
-    const before = turn.render().split("\n").slice(1, 1 + MAX_STEP_LINES);
-    turn.recordTool("extra", "Running commands");
-    const after = turn.render().split("\n").slice(1, 1 + MAX_STEP_LINES);
-    expect(after).toEqual(before);
+    const rendered = turn.render();
+    expect(Array.from(rendered).length).toBeLessThanOrEqual(MAX_PROGRESS_CHARACTERS);
+    expect(rendered.split("\n").length).toBeGreaterThan(9);
+    expect(rendered.split("\n").at(-1)).toMatch(/^… \+\d+ more steps$/u);
   });
 
   test("marks a completed step by tool_use_id", () => {
@@ -118,9 +118,9 @@ describe("turn progress state", () => {
     expect(turn.generation).toBeGreaterThan(afterFirst);
   });
 
-  test("the rendered bubble never exceeds a single Telegram message", () => {
+  test("repeated identical tools stay compact within a single Telegram message", () => {
     const turn = newTurn();
     for (let index = 0; index < 5_000; index += 1) turn.recordTool(`t${index}`, "Working");
-    expect(turn.render().length).toBeLessThan(4_096);
+    expect(Array.from(turn.render()).length).toBeLessThanOrEqual(MAX_PROGRESS_CHARACTERS);
   });
 });

@@ -60,9 +60,8 @@ export function isInternalSidecarTool(toolName: string): boolean {
   return SIDECAR_SERVERS.some(server => toolName.startsWith(`mcp__${server}__`));
 }
 
-export function safeStepLabel(toolName: string, agentId?: string): SafeStepLabel | null {
+export function safeStepLabel(toolName: string, _agentId?: string): SafeStepLabel | null {
   if (isInternalSidecarTool(toolName)) return null;
-  if (agentId !== undefined && agentId !== "") return DELEGATING_LABEL;
   const known = TOOL_LABELS.get(toolName);
   if (known !== undefined) return known;
   if (toolName.startsWith("mcp__")) return "Use integration";

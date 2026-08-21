@@ -1,4 +1,9 @@
-export const MAX_STEP_LINES = 8;
+/** Telegram's hard text limit. Normal turns show every step; only the wire limit may fold. */
+export const MAX_PROGRESS_CHARACTERS = 4_096;
+
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
 
 /** Fixed headers. The bubble never renders model text, so these are the only variants. */
 const HEADERS = {
@@ -96,13 +101,30 @@ export class TurnProgress {
   render(): string {
     if (!this.hasSteps) return "";
     const header = this.#outcome === null ? HEADERS.open : HEADERS[this.#outcome];
-    const visible = this.#lines.slice(0, MAX_STEP_LINES).map(line => {
+    const lines = this.#lines.map(line => {
       const statuses = Array.from(line.toolStatuses.values());
       const icon = statuses.includes("running") ? "…" : statuses.includes("failed") ? "✕" : "✓";
       const count = statuses.length > 1 ? ` ×${statuses.length}` : "";
       return `• ${icon} ${line.display}${count}`;
     });
-    const overflow = this.#lines.length - MAX_STEP_LINES;
+    const full = [header, ...lines].join("\n");
+    if (codePointLength(full) <= MAX_PROGRESS_CHARACTERS) return full;
+
+    const visible: string[] = [];
+    let used = codePointLength(header);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      const remaining = lines.length - index - 1;
+      const footer = remaining > 0 ? `… +${remaining} more steps` : "";
+      const candidateLength = used
+        + 1 + codePointLength(line)
+        + (footer ? 1 + codePointLength(footer) : 0);
+      if (candidateLength > MAX_PROGRESS_CHARACTERS) break;
+      visible.push(line);
+      used += 1 + codePointLength(line);
+    }
+
+    const overflow = lines.length - visible.length;
     if (overflow > 0) visible.push(`… +${overflow} more steps`);
     return [header, ...visible].join("\n");
   }
