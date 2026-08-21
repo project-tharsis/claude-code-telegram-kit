@@ -140,13 +140,28 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.sent.at(-1)?.text).toContain("claude-opus-5");
     expect(h.sent.at(-1)?.parseMode).toBe("HTML");
     expect(h.sent.at(-1)?.replyMarkup).toEqual(MODEL_REPLY_KEYBOARD);
+    expect(MODEL_REPLY_KEYBOARD.keyboard).toEqual([
+      [{ text: "1 · Opus" }, { text: "2 · Sonnet" }],
+      [{ text: "3 · Haiku" }, { text: "4 · Inherit" }],
+      [{ text: "5 · Cancel" }]
+    ]);
 
-    expect(await h.dispatch(input("2 · Sonnet", "10"))).toEqual({ handled: true });
-    expect(h.modelSwitches).toEqual([{ chatId: "123", messageId: "10", model: "sonnet" }]);
-    expect(h.sent.at(-1)).toMatchObject({ chatId: "123", replyTo: "10" });
+    expect(await h.dispatch(input("5 · Cancel", "10"))).toEqual({ handled: true });
+    expect(h.modelSwitches).toEqual([]);
+    expect(h.sent.at(-1)).toMatchObject({
+      chatId: "123",
+      replyTo: "10",
+      text: "<i>Model selection closed.</i>",
+      replyMarkup: REMOVE_MODEL_REPLY_KEYBOARD
+    });
+    expect(h.reactions.at(-1)).toEqual(["123", "10", "success"]);
+
+    expect(await h.dispatch(input("2 · Sonnet", "11"))).toEqual({ handled: true });
+    expect(h.modelSwitches).toEqual([{ chatId: "123", messageId: "11", model: "sonnet" }]);
+    expect(h.sent.at(-1)).toMatchObject({ chatId: "123", replyTo: "11" });
     expect(h.sent.at(-1)?.replyMarkup).toEqual(REMOVE_MODEL_REPLY_KEYBOARD);
     expect(h.sent.at(-1)?.parseMode).toBe("HTML");
-    expect(h.reactions.at(-1)).toEqual(["123", "10", "success"]);
+    expect(h.reactions.at(-1)).toEqual(["123", "11", "success"]);
   });
 
   test("renames the exact current session without the LLM", async () => {

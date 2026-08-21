@@ -204,6 +204,23 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
       return { handled: true };
     }
 
+    if (command.kind === "model-cancel") {
+      try {
+        await deps.sendMessage(
+          config,
+          envelope.chatId,
+          "<i>Model selection closed.</i>",
+          envelope.messageId,
+          "HTML",
+          REMOVE_MODEL_REPLY_KEYBOARD
+        );
+        await bestEffortReact(deps, config, envelope.chatId, envelope.messageId, "success");
+      } catch {
+        await bestEffortFailure(deps, config, envelope.chatId, envelope.messageId);
+      }
+      return { handled: true };
+    }
+
     if (command.kind === "model-switch") {
       try {
         await deps.sendMessage(

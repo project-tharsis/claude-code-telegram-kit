@@ -17,7 +17,7 @@ MAX_STDIN_BYTES = 4_500_000
 MAX_ENVELOPE_TAG_CHARS = 1_024
 CHANNEL_OPEN = "<channel"
 CONTROL_NAMESPACE = re.compile(r"^/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)")
-MODEL_REPLY_CHOICE = re.compile(r"^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$")
+MODEL_REPLY_CHOICE = re.compile(r"^(?:[1-4] · (?:Opus|Sonnet|Haiku|Inherit)|5 · Cancel)$")
 ATTRIBUTE = re.compile(r'\s+([a-z_][a-z0-9_]{0,31})="([^"<>]{0,256})"', re.IGNORECASE)
 BLOCK = {
     "decision": "block",
