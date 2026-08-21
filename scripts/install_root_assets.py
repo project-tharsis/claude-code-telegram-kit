@@ -154,7 +154,9 @@ def install_release(
     if verify_self and _git_show(repo, commit, SELF_PATH) != Path(__file__).read_bytes():
         raise RuntimeError("installer does not match the requested commit")
     service_user.encode("ascii")
-    pwd.getpwnam(service_user)
+    account = pwd.getpwnam(service_user)
+    if account.pw_uid == 0:
+        raise ValueError("service user must be unprivileged")
     _secure_state_root(state_root, owner_uid)
     rendered = [(asset, _render(asset, _git_show(repo, commit, asset.source), service_user)) for asset in ASSETS]
     destinations = [_destination(asset, root_prefix) for asset, _data in rendered]

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 SCRIPT = Path(__file__).parents[1] / "install_root_assets.py"
@@ -90,6 +91,14 @@ class RootAssetInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "mismatch"):
                 self.install()
         self.assertFalse((self.state / "installed.json").exists())
+
+    def test_rejects_root_service_user(self):
+        with mock.patch.object(root_assets.pwd, "getpwnam", return_value=SimpleNamespace(pw_uid=0)):
+            with self.assertRaisesRegex(ValueError, "unprivileged"):
+                root_assets.install_release(
+                    self.repo, self.commit, "root", state_root=self.state,
+                    root_prefix=self.root, owner_uid=self.uid, owner_gid=self.gid, verify_self=True,
+                )
 
 
 if __name__ == "__main__":
