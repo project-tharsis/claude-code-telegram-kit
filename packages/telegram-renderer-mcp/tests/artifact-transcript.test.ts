@@ -115,6 +115,14 @@ describe("Artifact transcript discovery", () => {
     }]);
   });
 
+  test("dedupes the same successful Artifact path across tool IDs", () => {
+    const f = fixture();
+    const tracker = startArtifactTranscriptTracker(input(f.transcript), { expectedRoot: f.root })!;
+    const path = `/tmp/claude-1000/project/${SESSION}/scratchpad/report.html`;
+    writeFileSync(f.transcript, artifactUse("a", path) + result("a") + artifactUse("b", path) + result("b"), { flag: "a" });
+    expect(tracker.collect()).toEqual([{ sessionId: SESSION, path, description: "Report" }]);
+  });
+
   test("caps one turn at four successful artifacts", () => {
     const f = fixture();
     const tracker = startArtifactTranscriptTracker(input(f.transcript), { expectedRoot: f.root })!;

@@ -153,48 +153,52 @@ function loadArtifact(
   }
 
   const sessionFd = openTrustedChildDirectory(root.fd, sessionId, uid);
-  let scratchpadFd: number | undefined;
-  try {
-    scratchpadFd = openTrustedChildDirectory(sessionFd, "scratchpad", uid);
-  } finally {
-    closeSync(sessionFd);
-  }
+  const scratchpadFd = (() => {
+    try {
+      return openTrustedChildDirectory(sessionFd, "scratchpad", uid);
+    } finally {
+      closeSync(sessionFd);
+    }
+  })();
 
-  const anchoredPath = `/proc/self/fd/${scratchpadFd}/${filename}`;
-  const before = lstatSync(anchoredPath);
-  if (
-    !before.isFile()
-    || before.isSymbolicLink()
-    || before.uid !== uid
-    || before.nlink !== 1
-    || (before.mode & 0o022) !== 0
-    || before.size < 1
-    || before.size > Math.min(MAX_ARTIFACT_BYTES, maxBytes)
-  ) {
-    throw new Error("artifact file is not trusted");
-  }
-
-  const fd = openSync(anchoredPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const opened = fstatSync(fd);
+    const anchoredPath = `/proc/self/fd/${scratchpadFd}/${filename}`;
+    const before = lstatSync(anchoredPath);
     if (
-      !opened.isFile()
-      || opened.dev !== before.dev
-      || opened.ino !== before.ino
-      || opened.uid !== uid
-      || opened.nlink !== 1
-      || opened.size !== before.size
+      !before.isFile()
+      || before.isSymbolicLink()
+      || before.uid !== uid
+      || before.nlink !== 1
+      || (before.mode & 0o022) !== 0
+      || before.size < 1
+      || before.size > Math.min(MAX_ARTIFACT_BYTES, maxBytes)
     ) {
-      throw new Error("artifact identity changed");
+      throw new Error("artifact file is not trusted");
     }
-    const bytes = readBounded(fd, opened.size, Math.min(MAX_ARTIFACT_BYTES, maxBytes));
-    const after = fstatSync(fd);
-    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== bytes.byteLength) {
-      throw new Error("artifact changed while reading");
+
+    const fd = openSync(anchoredPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(fd);
+      if (
+        !opened.isFile()
+        || opened.dev !== before.dev
+        || opened.ino !== before.ino
+        || opened.uid !== uid
+        || opened.nlink !== 1
+        || opened.size !== before.size
+      ) {
+        throw new Error("artifact identity changed");
+      }
+      const bytes = readBounded(fd, opened.size, Math.min(MAX_ARTIFACT_BYTES, maxBytes));
+      const after = fstatSync(fd);
+      if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== bytes.byteLength) {
+        throw new Error("artifact changed while reading");
+      }
+      return { bytes, filename: safeFilename(filename) };
+    } finally {
+      closeSync(fd);
     }
-    return { bytes, filename: safeFilename(filename) };
   } finally {
-    closeSync(fd);
     closeSync(scratchpadFd);
   }
 }

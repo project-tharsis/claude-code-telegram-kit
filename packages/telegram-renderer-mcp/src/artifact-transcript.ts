@@ -38,6 +38,7 @@ function sameIdentity(identity: FileIdentity, info: Stats): boolean {
 function parseArtifactRows(text: string, sessionId: string): ArtifactCandidate[] {
   const pending = new Map<string, ArtifactCandidate>();
   const successful: ArtifactCandidate[] = [];
+  const successfulPaths = new Set<string>();
   let declarations = 0;
   for (const line of text.split("\n")) {
     if (!line) continue;
@@ -90,7 +91,14 @@ function parseArtifactRows(text: string, sessionId: string): ArtifactCandidate[]
         const artifact = pending.get(item.tool_use_id);
         if (artifact === undefined) continue;
         pending.delete(item.tool_use_id);
-        if (item.is_error !== true && successful.length < MAX_ARTIFACTS) successful.push(artifact);
+        if (
+          item.is_error !== true
+          && successful.length < MAX_ARTIFACTS
+          && !successfulPaths.has(artifact.path)
+        ) {
+          successfulPaths.add(artifact.path);
+          successful.push(artifact);
+        }
       }
     }
   }

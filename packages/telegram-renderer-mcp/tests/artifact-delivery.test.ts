@@ -4,6 +4,7 @@ import {
   linkSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -85,6 +86,17 @@ describe("deterministic Artifact delivery", () => {
     expect(await deliver(config, "123", "9007199254740993", [candidate(join(f.scratchpad, "missing.txt"))]))
       .toEqual({ kind: "local_rejected", messageIds: [] });
     expect(calls).toBe(0);
+  });
+
+  test("does not leak directory descriptors across repeated missing artifacts", async () => {
+    const f = fixture();
+    const deliver = createArtifactDeliverer({ root: f.root, fetchImpl: async () => ok(1) });
+    const before = readdirSync("/proc/self/fd").length;
+    for (let index = 0; index < 100; index += 1) {
+      expect(await deliver(config, "123", "51", [candidate(join(f.scratchpad, `missing-${index}.txt`))]))
+        .toEqual({ kind: "local_rejected", messageIds: [] });
+    }
+    expect(readdirSync("/proc/self/fd").length).toBe(before);
   });
 
   test("rejects paths outside the root, nested paths, symlinks, hardlinks, and writable files", async () => {
