@@ -10,7 +10,7 @@ afterEach(async () => {
 });
 
 describe("control stdio MCP server", () => {
-  test("handshakes and exposes only the deterministic router and bounded session tools", async () => {
+  test("handshakes and exposes only the deterministic router", async () => {
     const transport = new StdioClientTransport({
       command: execPath,
       args: ["run", resolve(import.meta.dir, "../src/server.ts")]
@@ -21,23 +21,12 @@ describe("control stdio MCP server", () => {
 
     const result = await client.listTools();
 
-    expect(result.tools.map(tool => tool.name)).toEqual([
-      "dispatch_command",
-      "list_sessions",
-      "resume_session",
-      "bind_command"
-    ]);
+    expect(result.tools.map(tool => tool.name)).toEqual(["dispatch_command"]);
     const router = result.tools[0]!;
     expect(router.description).toContain("before the LLM");
-    const resume = result.tools.find(tool => tool.name === "resume_session")!;
-    expect(Object.keys(resume.inputSchema.properties!).sort()).toEqual(["chat_id", "index"]);
-    expect(resume.annotations?.destructiveHint).toBe(true);
-
-    const binder = result.tools.find(tool => tool.name === "bind_command")!;
-    expect(binder.description).toContain("Internal Claude Code hook tool");
   }, 20_000);
 
-  test("fails a resume closed when no current command capability exists", async () => {
+  test("rejects removed legacy session tools", async () => {
     const transport = new StdioClientTransport({
       command: execPath,
       args: ["run", resolve(import.meta.dir, "../src/server.ts")]
@@ -52,5 +41,6 @@ describe("control stdio MCP server", () => {
     });
 
     expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: "unknown control tool" }]);
   }, 20_000);
 });

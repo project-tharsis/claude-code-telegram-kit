@@ -32,6 +32,7 @@ const mcp = JSON.parse(readFileSync(
   "telegram-renderer": { env?: Record<string, string> };
   "session-control": { env?: Record<string, string> };
 } };
+const service = readFileSync(resolve(import.meta.dir, "../../../examples/claude-telegram.service"), "utf8");
 
 function toolsFor(event: string): Array<{ server: string; tool: string; input: Record<string, string> }> {
   return (settings.hooks[event] ?? []).flatMap(entry =>
@@ -44,9 +45,21 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
+  test("uses one exact workspace/session pair across service and sidecars", () => {
+    const workspace = "/home/USER/claude-bot-workspace";
+    const sessions = "/home/USER/.claude/projects/-home-USER-claude-bot-workspace";
+    expect(service).toContain(`Environment=CLAUDE_WORKSPACE_DIR=${workspace}`);
+    expect(service).toContain(`Environment=CLAUDE_PROJECT_SESSIONS_DIR=${sessions}`);
+    expect(mcp.mcpServers["telegram-renderer"].env?.CLAUDE_PROJECT_SESSIONS_DIR).toBe(sessions);
+    expect(mcp.mcpServers["session-control"].env).toMatchObject({
+      CLAUDE_WORKSPACE_DIR: workspace,
+      CLAUDE_PROJECT_SESSIONS_DIR: sessions
+    });
+  });
+
   test("gives the renderer only the fixed transcript root, never model credentials or auth mode", () => {
     const env = mcp.mcpServers["telegram-renderer"].env ?? {};
-    expect(env.CLAUDE_PROJECT_SESSIONS_DIR).toMatch(/^\/home\/USER\/\.claude\/projects\//);
+    expect(env.CLAUDE_PROJECT_SESSIONS_DIR).toBe("/home/USER/.claude/projects/-home-USER-claude-bot-workspace");
     expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
     expect(env).not.toHaveProperty("CLAUDE_CODE_AUTH_PREFLIGHT");
   });
@@ -55,6 +68,7 @@ describe("supported Claude Code hook configuration", () => {
     const env = mcp.mcpServers["session-control"].env ?? {};
     expect(env.TELEGRAM_COMMAND_MENU_ENABLED).toBe("true");
     expect(env.CLAUDE_WORKSPACE_DIR).toBe("/home/USER/claude-bot-workspace");
+    expect(env.CLAUDE_PROJECT_SESSIONS_DIR).toBe("/home/USER/.claude/projects/-home-USER-claude-bot-workspace");
     expect(env).not.toHaveProperty("CLAUDE_SESSION_RESET_HELPER");
     expect(env).not.toHaveProperty("CLAUDE_SESSION_RESET_CONFIG");
     expect(env).not.toHaveProperty("CLAUDE_SESSION_RESET_UNIT_PREFIX");
@@ -72,13 +86,11 @@ describe("supported Claude Code hook configuration", () => {
     expect(settings.permissions.allow).not.toContain("mcp__telegram-renderer__send_reply");
     expect(settings.permissions.deny).toContain("mcp__telegram-renderer__send_reply");
     expect(settings.permissions.deny).toContain("mcp__plugin_telegram_telegram__reply");
-    for (const tool of [
-      "dispatch_command",
-      "bind_command",
-      "list_sessions",
-      "resume_session"
-    ]) {
+    for (const tool of ["dispatch_command"]) {
       expect(settings.permissions.deny).toContain(`mcp__session-control__${tool}`);
+    }
+    for (const removed of ["bind_command", "list_sessions", "resume_session"]) {
+      expect(settings.permissions.deny).not.toContain(`mcp__session-control__${removed}`);
     }
     expect(settings.permissions.allow.some(tool => tool.startsWith("mcp__session-control__"))).toBe(false);
     expect(settings.permissions.ask.some(tool => tool.startsWith("mcp__session-control__"))).toBe(false);

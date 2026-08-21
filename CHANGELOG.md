@@ -15,8 +15,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - One-time `/model` reply keyboard, root-owned `ANTHROPIC_MODEL` persistence, exact process-environment readback, and optional per-chat Telegram command menus.
 - Hermes-style tool progress with configurable `safe`/`all`/`verbose` disclosure, full parent/subagent step visibility, bounded code/path/query previews, credential redaction, sustained typing, deterministic completion state, and no tool-output leakage.
 - Deterministic `/usage` from Claude's documented private `statusLine.rate_limits` snapshot, plus quoted runtime authentication-failure delivery from the exact trusted transcript append.
-- Successful Claude `Artifact` results can send up to four silent quoted Telegram documents after the canonical final text. Discovery is bound to the exact session transcript append and fixed session scratchpad; no model-facing registration or file-send tool exists.
-- Broker Protocol v1 and systemd socket activation for `capabilities`, `reset`, `resume`, and `model`, with example socket/template units, service hardening, and an exact-commit root-asset installer with atomic backup/readback/rollback.
+- Successful Claude `Artifact` results can send up to four quoted documents after the canonical final text. Discovery scans the bounded transcript tail. Files are sent one at a time with size-aware timeouts; no registration or file-send tool exists.
+- Broker Protocol v2 and Session Control Protocol v5 add exact current-session identity to reset, plus systemd socket activation, service hardening, and an exact-commit root-asset installer with rollback.
 
 ### Changed
 
@@ -31,7 +31,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - The unprivileged control MCP no longer executes `sudo`, `systemd-run`, caller-selected helper/config paths, service names, unit names, or arbitrary privileged argv. It can only write bounded requests to a mode-`0600`, non-root-service-user-owned Unix socket.
 - The root broker verifies `SO_PEERCRED`, strict JSON types/keys, fixed paths and argv, socket deadlines, helper capabilities, 12 mutations per minute, and at most four concurrent helper jobs. UID `0` service identities are rejected.
-- Root helper operations use absolute `/usr/bin/systemctl`, finite bounded timeouts, exact old/new session and worker health proofs, and root-owned idempotency receipts with a 30-day/4096-entry bound.
+- Root helper operations use absolute `/usr/bin/systemctl`, bounded timeouts, and exact supplied old/new session identities; rollback authority is never inferred from transcript mtimes.
+- Root idempotency receipts expire after 30 days and fail closed at 4096 entries.
+- The dead `bind_command`, `list_sessions`, and `resume_session` MCP surfaces are removed; `dispatch_command` is the sole deterministic control router.
 - Artifact delivery anchors every directory and file through trusted directory descriptors, requires same-UID private regular files, rejects links/writable/nested/oversized paths, bounds reads and aggregate memory, and never retries an unknown upload outcome.
 - The legacy model-facing `schedule_session_reset` surface is removed. Confirmed `/reset` remains exclusively on the deterministic pre-LLM path.
 - Telegram authority parsing accepts only exact direct Channel envelopes, rejects malformed or duplicate authority attributes, and keeps recipient allowlisting independent from transcript discovery.
@@ -41,7 +43,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Runtime auth failures now stop typing/progress and produce one quoted recovery message without credential preflight, storage, background polling, or expiry-warning policy.
 - Model switching and rollback wait for the Claude CLI, official poller, renderer, and control workers instead of treating systemd `active` as readiness.
 - Renderer sends quote the inbound message by default across Rich, MarkdownV2, plain-text fallback, controls, and Artifact documents.
-- User-facing sends use a 10-second timeout; reactions retain the 3-second bound. Only typed uncertain outcomes preserve `👀`; proven local/permanent failures finalize `👎`.
+- Text and control sends use a 10-second timeout; Artifact documents use a bounded size-aware budget and reactions retain the 3-second bound. Only typed uncertain outcomes preserve `👀`; proven local/permanent failures finalize `👎`.
 - Rich capability `404` responses use a 30-minute cooldown rather than permanently disabling Rich delivery for the process.
 - The official `plugin:telegram:telegram` Channel source binds correctly while prefix/suffix variants continue to fail closed.
 - Control commands no longer create progress bubbles that a reset/restart cannot close, and subagent disclosure no longer exposes underlying commands or private paths.
@@ -51,7 +53,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - The `0.2.0` direct helper environment (`CLAUDE_SESSION_RESET_HELPER` and `CLAUDE_SESSION_RESET_CONFIG`) is no longer part of the unprivileged MCP configuration.
 - Deploy the exact `v0.3.0` user release, then run `scripts/install_root_assets.py` from that exact tagged checkout to install the root broker/helper, socket/template units, and Claude service hardening. Verify the root manifest and destination hashes before restart.
-- Enable `claude-code-control.socket`, reload systemd, restart the Claude service, and verify Broker Protocol capabilities plus `NoNewPrivileges=yes`, an empty effective capability set, one official poller, and both sidecars.
+- Enable `claude-code-control.socket`, reload systemd, restart the Claude service, and verify Broker Protocol v2 / Session Control Protocol v5 capabilities plus `NoNewPrivileges=yes`, an empty effective capability set, one official poller, and both sidecars.
 - Roll back root assets before the user release when returning to `0.2.0`; otherwise its direct privileged control path is correctly blocked by `NoNewPrivileges`.
 
 ## [0.2.0] - 2026-08-18

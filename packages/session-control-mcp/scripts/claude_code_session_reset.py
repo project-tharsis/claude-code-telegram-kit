@@ -29,7 +29,7 @@ from typing import Any, Callable
 DEFAULT_CONFIG_PATH = Path("/etc/claude-code-telegram-kit/reset.json")
 # Wire protocol between the unprivileged control MCP and this root helper. The MCP refuses to
 # schedule anything until --capabilities reports exactly this protocol and these actions.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 SUPPORTED_ACTIONS = ("reset", "resume", "model")
 SUPPORTED_MODELS = ("opus", "sonnet", "haiku", "inherit")
 MODEL_ENV_ROOT = Path("/etc/claude-code-telegram-kit")
@@ -847,13 +847,6 @@ def _read_canonical_unit(config: ResetConfig) -> str:
     return unit
 
 
-def _latest_session_id(config: ResetConfig) -> str:
-    candidates = [p for p in config.project_sessions.glob("*.jsonl") if UUID_RE.fullmatch(p.stem)]
-    if not candidates:
-        raise RuntimeError("no previous Claude Code session exists")
-    return max(candidates, key=lambda p: p.stat().st_mtime).stem
-
-
 def _process_rows() -> dict[int, tuple[int, str]]:
     rows: dict[int, tuple[int, str]] = {}
     for child in Path("/proc").iterdir():
@@ -1013,12 +1006,14 @@ def _recover_old(config: ResetConfig, original_unit: str, old_session: str) -> b
 def reset_session(
     config: ResetConfig,
     *,
+    current_session_id: str,
     chat_id: str | None,
     request_id: str | None,
     timeout: float,
 ) -> dict[str, Any]:
     if os.geteuid() != 0:
         raise PermissionError("session reset helper must run as root")
+    validate_selected_session(config, current_session_id)
     token: str | None = None
     if (request_id is None) != (chat_id is None):
         raise ValueError("request_id and chat_id must be provided together")
@@ -1058,7 +1053,7 @@ def reset_session(
                 }
 
         original_unit = _read_canonical_unit(config)
-        old_session = _latest_session_id(config)
+        old_session = current_session_id
         new_session = str(uuid.uuid4())
         phase = "prepare_receipt"
         try:
@@ -1507,7 +1502,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--protocol", type=int, default=PROTOCOL_VERSION)
     parser.add_argument("--action", choices=SUPPORTED_ACTIONS, default="reset")
     parser.add_argument("--session-id", help="exact resume target; only valid with --action resume")
-    parser.add_argument("--current-session-id", help="exact currently active session; only valid with --action resume")
+    parser.add_argument("--current-session-id", help="exact currently active session; required with reset or resume")
     parser.add_argument("--model", choices=SUPPORTED_MODELS, help="fixed model alias; only valid with --action model")
     parser.add_argument("--chat-id")
     parser.add_argument("--request-id")
@@ -1528,8 +1523,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "reset":
             if args.session_id is not None:
                 raise ValueError("--session-id is only valid with --action resume")
-            if args.current_session_id is not None:
-                raise ValueError("--current-session-id is only valid with --action resume")
+            if args.current_session_id is None:
+                raise ValueError("--action reset requires --current-session-id")
+            _validate_uuid(args.current_session_id)
         if args.action == "resume":
             if args.session_id is None:
                 raise ValueError("--action resume requires --session-id")
@@ -1542,7 +1538,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.model is None:
                 raise ValueError("--action model requires --model")
             if args.session_id is not None or args.current_session_id is not None:
-                raise ValueError("session IDs are only valid with --action resume")
+                raise ValueError("session IDs are only valid with reset or resume")
             if args.chat_id is None or args.request_id is None:
                 raise ValueError("--action model requires --chat-id and --request-id")
         config = load_config(Path(args.config))
@@ -1567,8 +1563,12 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
             )
         else:
+            current_session_id = args.current_session_id
+            if not isinstance(current_session_id, str):
+                raise ValueError("--action reset requires --current-session-id")
             result = reset_session(
                 config,
+                current_session_id=current_session_id,
                 chat_id=args.chat_id,
                 request_id=args.request_id,
                 timeout=args.timeout,

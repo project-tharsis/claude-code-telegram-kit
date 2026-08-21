@@ -185,7 +185,7 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.reactions).toEqual([["123", "9", "success"]]);
 
     expect(await h.dispatch(input("/reset confirm 222222", "10"))).toEqual({ handled: true });
-    expect(h.resets).toEqual([{ chat_id: "123", message_id: "10", confirmation: CONFIRMATION }]);
+    expect(h.resets).toEqual([{ chat_id: "123", message_id: "10", current_session_id: SESSION, confirmation: CONFIRMATION }]);
 
     await h.dispatch(input("/reset confirm 222222", "11"));
     expect(h.resets).toHaveLength(1);

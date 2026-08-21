@@ -18,7 +18,7 @@ MAX_ENVELOPE_TAG_CHARS = 1_024
 CHANNEL_OPEN = "<channel"
 CONTROL_NAMESPACE = re.compile(r"^/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)")
 MODEL_REPLY_CHOICE = re.compile(r"^[1-4] · (?:Opus|Sonnet|Haiku|Inherit)$")
-ATTRIBUTE = re.compile(r'([a-z_][a-z0-9_]{0,31})="([^"<>]{0,256})"', re.IGNORECASE)
+ATTRIBUTE = re.compile(r'\s+([a-z_][a-z0-9_]{0,31})="([^"<>]{0,256})"', re.IGNORECASE)
 BLOCK = {
     "decision": "block",
     "reason": "Handled by deterministic Telegram session control.",
@@ -41,7 +41,19 @@ def _direct_telegram_body(prompt: Any) -> str | None:
     tag = trimmed[len(CHANNEL_OPEN):close]
     if not tag or not tag[0].isspace():
         return None
-    attributes = {match.group(1).lower(): match.group(2) for match in ATTRIBUTE.finditer(tag)}
+    attributes: dict[str, str] = {}
+    cursor = 0
+    while cursor < len(tag):
+        if tag[cursor:].isspace():
+            break
+        match = ATTRIBUTE.match(tag, cursor)
+        if match is None:
+            return None
+        key = match.group(1).lower()
+        if key in attributes:
+            return None
+        attributes[key] = match.group(2)
+        cursor = match.end()
     if attributes.get("source") not in {"telegram", "plugin:telegram:telegram"}:
         return None
     chat_id = attributes.get("chat_id", "")

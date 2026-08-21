@@ -3,9 +3,9 @@ import {
   parseDirectTelegramEnvelope
 } from "@project-tharsis/claude-code-telegram-shared";
 import {
-  BindCommandInputSchema,
-  type BindCommandInput
-} from "./command-capability.js";
+  ControlHookInputSchema,
+  type ControlHookInput
+} from "./control-input.js";
 import { parseControlCommand } from "./control-command.js";
 import type { ControlDispatchResult } from "./command-dispatch.js";
 
@@ -49,7 +49,7 @@ const BLOCK_RECEIPT: CallToolResult = {
   }]
 };
 
-function isControlPrompt(input: BindCommandInput): boolean {
+function isControlPrompt(input: ControlHookInput): boolean {
   try {
     const envelope = parseDirectTelegramEnvelope(input.prompt);
     return envelope !== null && parseControlCommand(envelope.body).kind !== "other";
@@ -59,14 +59,14 @@ function isControlPrompt(input: BindCommandInput): boolean {
 }
 
 export function createControlRouterToolHandler(
-  dispatch: (input: BindCommandInput) => Promise<ControlDispatchResult>
+  dispatch: (input: ControlHookInput) => Promise<ControlDispatchResult>
 ) {
   return async (name: string, arguments_: unknown): Promise<CallToolResult | null> => {
     if (name !== CONTROL_COMMAND_TOOL.name) return null;
 
-    let input: BindCommandInput;
+    let input: ControlHookInput;
     try {
-      input = BindCommandInputSchema.parse(arguments_);
+      input = ControlHookInputSchema.parse(arguments_);
     } catch {
       return EMPTY_RECEIPT;
     }

@@ -46,15 +46,15 @@ def request(payload: dict, run: Runner):
 
 class ControlBrokerTests(unittest.TestCase):
     def test_capabilities_uses_only_the_fixed_helper(self):
-        caps = {"protocol": 4, "actions": ["reset", "resume", "model"], "models": ["opus", "sonnet", "haiku", "inherit"], "helper": "claude-code-session-reset"}
+        caps = {"protocol": broker.HELPER_PROTOCOL, "actions": ["reset", "resume", "model"], "models": ["opus", "sonnet", "haiku", "inherit"], "helper": "claude-code-session-reset"}
         run = Runner(json.dumps(caps))
-        result = request({"protocol": 1, "action": "capabilities"}, run)
+        result = request({"protocol": broker.BROKER_PROTOCOL, "action": "capabilities"}, run)
         self.assertEqual(result, {"status": "ok", "capabilities": caps})
         self.assertEqual(run.calls, [(["/usr/local/sbin/fixed-helper", "--capabilities"], 5.0)])
 
     def test_reset_builds_one_fixed_no_shell_systemd_command(self):
         run = Runner()
-        result = request({"protocol": 1, "action": "reset", "chat_id": "123", "message_id": "51"}, run)
+        result = request({"protocol": broker.BROKER_PROTOCOL, "action": "reset", "chat_id": "123", "message_id": "51", "current_session_id": SESSION}, run)
         argv, timeout = run.calls[0]
         self.assertEqual(timeout, 10.0)
         self.assertEqual(argv[0], "/usr/bin/systemd-run")
@@ -64,39 +64,40 @@ class ControlBrokerTests(unittest.TestCase):
 
     def test_resume_and_model_carry_only_allowlisted_values(self):
         resume = Runner()
-        request({"protocol": 1, "action": "resume", "chat_id": "123", "message_id": "51", "current_session_id": SESSION, "session_id": SESSION}, resume)
+        request({"protocol": broker.BROKER_PROTOCOL, "action": "resume", "chat_id": "123", "message_id": "51", "current_session_id": SESSION, "session_id": SESSION}, resume)
         self.assertIn("--current-session-id", resume.calls[0][0])
         model = Runner()
-        request({"protocol": 1, "action": "model", "chat_id": "123", "message_id": "52", "model": "sonnet"}, model)
+        request({"protocol": broker.BROKER_PROTOCOL, "action": "model", "chat_id": "123", "message_id": "52", "model": "sonnet"}, model)
         self.assertIn("sonnet", model.calls[0][0])
 
     def test_rejects_malformed_capability_shapes_and_root_path_flags(self):
         for payload in (
-            '{"protocol":4,"protocol":4,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"],"helper":"x"}',
-            '{"protocol":4,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"],"helper":"x","extra":true}',
+            '{"protocol":5,"protocol":5,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"],"helper":"x"}',
+            '{"protocol":5,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"],"helper":"x","extra":true}',
         ):
             run = Runner(stdout=payload)
             with self.assertRaises(ValueError):
-                request({"protocol": 1, "action": "capabilities"}, run)
+                request({"protocol": broker.BROKER_PROTOCOL, "action": "capabilities"}, run)
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             broker.main(["--helper", "/tmp/other"])
 
     def test_rejects_wrong_peer_extra_keys_paths_and_invalid_values(self):
         run = Runner()
         with self.assertRaises(PermissionError):
-            broker.process_request(b'{"protocol":1,"action":"capabilities"}', os.getuid() + 1, run=run, service_uid=os.getuid(), verify_files=False)
+            broker.process_request(b'{"protocol":2,"action":"capabilities"}', os.getuid() + 1, run=run, service_uid=os.getuid(), verify_files=False)
         bad = [
-            {"protocol": 1, "action": "reset", "chat_id": "123", "message_id": "51", "command": "id"},
-            {"protocol": 1, "action": "model", "chat_id": "123", "message_id": "51", "model": "other"},
-            {"protocol": 1, "action": "resume", "chat_id": "123", "message_id": "51", "current_session_id": "bad", "session_id": SESSION},
-            {"protocol": 1, "action": "reset", "chat_id": "-1", "message_id": "51"},
-            {"protocol": 1, "action": "reset", "chat_id": "١٢٣", "message_id": "51"},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "reset", "chat_id": "123", "message_id": "51", "current_session_id": SESSION, "command": "id"},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "model", "chat_id": "123", "message_id": "51", "model": "other"},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "resume", "chat_id": "123", "message_id": "51", "current_session_id": "bad", "session_id": SESSION},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "reset", "chat_id": "-1", "message_id": "51", "current_session_id": SESSION},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "reset", "chat_id": "١٢٣", "message_id": "51", "current_session_id": SESSION},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "reset", "chat_id": "123", "message_id": "51", "current_session_id": "bad"},
         ]
         for payload in bad:
             with self.assertRaises((ValueError, KeyError)):
                 request(payload, run)
         for raw in (
-            b'{"protocol":1,"protocol":1,"action":"capabilities"}',
+            b'{"protocol":2,"protocol":2,"action":"capabilities"}',
             b'{"protocol":true,"action":"capabilities"}',
         ):
             with self.assertRaises(ValueError):

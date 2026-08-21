@@ -153,17 +153,25 @@ export function startArtifactTranscriptTracker(
           const current = fstatSync(fd);
           if (!trustedFile(current, uid) || !sameIdentity(identity, current) || current.size < offset) return [];
           const growth = current.size - offset;
-          if (growth < 1 || growth > MAX_APPEND_BYTES) return [];
-          const bytes = Buffer.alloc(growth);
+          if (growth < 1) return [];
+          const readOffset = growth > MAX_APPEND_BYTES ? current.size - MAX_APPEND_BYTES : offset;
+          const readLength = current.size - readOffset;
+          const bytes = Buffer.alloc(readLength);
           let read = 0;
-          while (read < growth) {
-            const count = readSync(fd, bytes, read, growth - read, offset + read);
+          while (read < readLength) {
+            const count = readSync(fd, bytes, read, readLength - read, readOffset + read);
             if (count <= 0) return [];
             read += count;
           }
           const after = fstatSync(fd);
           if (!trustedFile(after, uid) || !sameIdentity(identity, after) || after.size !== current.size) return [];
-          return parseArtifactRows(new TextDecoder().decode(bytes), input.session_id);
+          let text = new TextDecoder().decode(bytes);
+          if (readOffset !== offset) {
+            const firstNewline = text.indexOf("\n");
+            if (firstNewline === -1) return [];
+            text = text.slice(firstNewline + 1);
+          }
+          return parseArtifactRows(text, input.session_id);
         } catch {
           return [];
         } finally {

@@ -9,6 +9,7 @@ import {
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
 const TEST_TOKEN = `123456789:${"A".repeat(32)}`;
+const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const config: RuntimeConfig = {
   token: TEST_TOKEN,
   allowedChatIds: new Set(["123456789"])
@@ -19,6 +20,7 @@ describe("reset control plane", () => {
     expect(() => ResetRequestSchema.parse({
       chat_id: "123456789",
       message_id: "9007199254740993",
+      current_session_id: SESSION,
       confirmation: CONFIRMATION
     })).toThrow();
   });
@@ -36,14 +38,15 @@ describe("reset control plane", () => {
         events.push(`react:${chatId}:${messageId}:${state}`);
         return true;
       },
-      schedule: async chatId => {
-        events.push(`schedule:${chatId}`);
+      schedule: async (chatId, _messageId, currentSessionId) => {
+        events.push(`schedule:${chatId}:${currentSessionId}`);
         return "claude-session-reset-test";
       }
     });
     const request = ResetRequestSchema.parse({
       chat_id: "123456789",
       message_id: "51",
+      current_session_id: SESSION,
       confirmation: CONFIRMATION
     });
 
@@ -56,7 +59,7 @@ describe("reset control plane", () => {
     });
     expect(events[0]).toBe(`ack:123456789:51:HTML:${RESET_ACCEPTED_TEXT}`);
     expect(events[1]).toBe("react:123456789:51:success");
-    expect(events[2]).toBe("schedule:123456789");
+    expect(events[2]).toBe(`schedule:123456789:${SESSION}`);
   });
 
   test("keeps scheduling after the confirmed ACK when reaction finalization fails", async () => {
@@ -75,6 +78,7 @@ describe("reset control plane", () => {
     const receipt = await controller({
       chat_id: "123456789",
       message_id: "51",
+      current_session_id: SESSION,
       confirmation: CONFIRMATION
     });
 
@@ -95,7 +99,7 @@ describe("reset control plane", () => {
       }
     });
 
-    await expect(controller({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION })).rejects.toThrow(
+    await expect(controller({ chat_id: "123456789", message_id: "51", current_session_id: SESSION, confirmation: CONFIRMATION })).rejects.toThrow(
       "ACK delivery failed"
     );
     expect(scheduleCalls).toBe(0);
@@ -111,7 +115,7 @@ describe("reset control plane", () => {
       schedule: async () => "unexpected"
     });
 
-    await expect(controller({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION }))
+    await expect(controller({ chat_id: "123456789", message_id: "51", current_session_id: SESSION, confirmation: CONFIRMATION }))
       .rejects.toThrow("unavailable");
     expect(ackCalls).toBe(0);
   });
@@ -126,7 +130,7 @@ describe("reset control plane", () => {
       schedule: async () => "unexpected"
     });
 
-    await expect(controller({ chat_id: "999", message_id: "51", confirmation: CONFIRMATION })).rejects.toThrow(
+    await expect(controller({ chat_id: "999", message_id: "51", current_session_id: SESSION, confirmation: CONFIRMATION })).rejects.toThrow(
       "chat is not authorized"
     );
     expect(ackCalls).toBe(0);
@@ -149,7 +153,7 @@ describe("reset control plane", () => {
       schedule: async () => { throw new Error("systemd rejected"); }
     });
 
-    await expect(controller({ chat_id: "123456789", message_id: "51", confirmation: CONFIRMATION })).rejects.toThrow(
+    await expect(controller({ chat_id: "123456789", message_id: "51", current_session_id: SESSION, confirmation: CONFIRMATION })).rejects.toThrow(
       "reset scheduler failed"
     );
     expect(messages).toHaveLength(2);

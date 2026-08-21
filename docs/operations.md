@@ -45,7 +45,7 @@ Keep `examples/reset.json` root-owned when installed under `/etc/claude-code-tel
 
 The system service must include `EnvironmentFile=-/etc/claude-code-telegram-kit/model.env` and a fixed `CLAUDE_TITLE_CLI` path to the same reviewed Claude executable used by `ExecStart`. Do not create the model file manually: `/model <alias>` owns it through the root helper, and `inherit` removes it atomically.
 
-Set both `CLAUDE_PROJECT_SESSIONS_DIR` and `CLAUDE_WORKSPACE_DIR` in the `session-control` MCP environment to the one exact Claude project/session directory pair. Do not derive either path from a model argument or inbound message.
+Set `CLAUDE_WORKSPACE_DIR` and `CLAUDE_PROJECT_SESSIONS_DIR` in the Claude service environment because command hooks inherit the service environment. Pass the same exact values into the `session-control` MCP, and pass the same `CLAUDE_PROJECT_SESSIONS_DIR` into the renderer MCP. Do not derive any of these paths from a model argument or inbound message.
 
 ## Install the root broker and helper
 
@@ -55,7 +55,7 @@ Follow the exact-commit/digest procedure in `packages/session-control-mcp/README
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 
-The helper receipt must report protocol `4` with `reset`, `resume`, and `model`, plus `opus`, `sonnet`, `haiku`, and `inherit`. Install the broker and both systemd units from the same SHA by the procedure in the package README. The socket must be mode `0600`, owned by the exact service user, and enabled before the Claude service starts.
+The helper receipt must report protocol `5` with `reset`, `resume`, and `model`, plus `opus`, `sonnet`, `haiku`, and `inherit`. Install the broker and both systemd units from the same SHA by the procedure in the package README. The socket must be mode `0600`, owned by the exact service user, and enabled before the Claude service starts.
 
 A fresh reset also requires the SessionStart receipt writer, installed from the same merged SHA:
 
@@ -130,7 +130,9 @@ When the model or Telegram channel cannot process `/reset`:
 
 ```bash
 sudo claude-code-session-reset \
-  --config /etc/claude-code-telegram-kit/reset.json
+  --config /etc/claude-code-telegram-kit/reset.json \
+  --action reset \
+  --current-session-id <exact-current-session-uuid>
 ```
 
 The helper preserves old transcripts and restores the previous session if fresh startup fails.

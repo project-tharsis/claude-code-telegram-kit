@@ -15,6 +15,7 @@ const telegramMessageId = z.string()
 export const ResetRequestSchema = z.object({
   chat_id: z.string().regex(/^\d+$/),
   message_id: telegramMessageId,
+  current_session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
   confirmation: z.literal(CONFIRMATION)
 }).strict();
 
@@ -42,7 +43,7 @@ export interface ResetControllerDeps {
     messageId: string,
     state: "success" | "failure"
   ) => Promise<boolean>;
-  schedule: (chatId: string, messageId: string) => Promise<string>;
+  schedule: (chatId: string, messageId: string, currentSessionId: string) => Promise<string>;
 }
 
 export function createResetController(deps: ResetControllerDeps) {
@@ -69,7 +70,7 @@ export function createResetController(deps: ResetControllerDeps) {
 
     let unit: string;
     try {
-      unit = await deps.schedule(request.chat_id, request.message_id);
+      unit = await deps.schedule(request.chat_id, request.message_id, request.current_session_id);
     } catch {
       try {
         await deps.sendMessage(config, request.chat_id, RESET_SCHEDULER_FAILED_TEXT, undefined, "HTML");

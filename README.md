@@ -39,7 +39,7 @@ sha=$(git rev-parse HEAD)
 python3 scripts/deploy_local.py install --repo . --ref "$sha" --bun "$(command -v bun)"
 ```
 
-Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and `PROJECT` with your own fixed paths. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the final table should use Rich Message, and the inbound reaction should become `👍` without a model-facing reply tool call.
+Then copy [`examples/.mcp.json`](examples/.mcp.json), [`examples/telegram-settings.json`](examples/telegram-settings.json), and [`examples/CLAUDE.md`](examples/CLAUDE.md) into your Claude project, replacing `USER` and, if you choose a different workspace, updating the exact workspace/session-directory pair consistently in the service and both MCP environments. Merge [`examples/access-ux.json`](examples/access-ux.json) into the official Channel's `access.json` to enable the initial `👀` acknowledgement. Send a message that uses tools, then a GFM table: Telegram should show one silent progress bubble, the final table should use Rich Message, and the inbound reaction should become `👍` without a model-facing reply tool call.
 
 The renderer package remains self-contained, but automatic final delivery requires the supplied Hook configuration. `/model`, `/reset`, and `/resume N` additionally need the root helper, installed separately from the same exact commit by the procedure in the [session-control README](packages/session-control-mcp/README.md).
 
@@ -118,10 +118,13 @@ Keep Telegram credentials and allowlists under Claude's state directory, and kee
 The local recovery authority is:
 
 ```bash
-sudo claude-code-session-reset --config /etc/claude-code-telegram-kit/reset.json
+sudo claude-code-session-reset \
+  --config /etc/claude-code-telegram-kit/reset.json \
+  --action reset \
+  --current-session-id <exact-current-session-uuid>
 ```
 
-The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/sessions`, and `/model` status execute immediately; `/model <alias>` performs an allowlisted verified restart, while `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
+The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/sessions`, and `/model` status execute immediately. `/model <alias>` and the exact one-time keyboard labels intentionally switch immediately because the operation is allowlisted, private-chat only, reversible, and verified after restart; `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
 
 ## Development
 

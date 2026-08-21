@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "claude_code_control_guard.py"
+FIXTURE_PATH = Path(__file__).resolve().parents[2] / "shared" / "fixtures" / "telegram-envelope-cases.json"
 spec = importlib.util.spec_from_file_location("claude_code_control_guard", MODULE_PATH)
 assert spec is not None and spec.loader is not None
 guard = importlib.util.module_from_spec(spec)
@@ -22,6 +23,13 @@ def payload(body: str, *, source: str = "plugin:telegram:telegram"):
 
 
 class GuardTests(unittest.TestCase):
+    def test_matches_the_shared_direct_envelope_fixture(self):
+        cases = json.loads(FIXTURE_PATH.read_text())
+        for case in cases:
+            value = {"hook_event_name": "UserPromptSubmit", "prompt": case["prompt"]}
+            with self.subTest(case=case["name"]):
+                self.assertEqual(guard.should_block(value), case["accepted"])
+
     def test_blocks_exact_and_malformed_control_namespaces(self):
         for body in (
             "/sessions",

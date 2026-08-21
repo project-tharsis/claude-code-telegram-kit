@@ -15,7 +15,7 @@ import type {
   TrustedListSessionsRequest,
   TrustedResumeSessionRequest
 } from "./sessions-control.js";
-import type { BindCommandInput } from "./command-capability.js";
+import type { ControlHookInput } from "./control-input.js";
 import {
   MODEL_REPLY_KEYBOARD,
   REMOVE_MODEL_REPLY_KEYBOARD
@@ -119,7 +119,7 @@ function alreadyNotified(error: unknown): boolean {
  * allowlist, while destructive actions additionally require a short-lived one-shot challenge.
  */
 export function createControlCommandDispatcher(deps: ControlCommandDispatcherDeps) {
-  return async (input: BindCommandInput): Promise<ControlDispatchResult> => {
+  return async (input: ControlHookInput): Promise<ControlDispatchResult> => {
     const envelope = parseDirectTelegramEnvelope(input.prompt);
     if (envelope === null) return { handled: false };
 
@@ -294,6 +294,7 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
         await deps.resetSession({
           chat_id: envelope.chatId,
           message_id: envelope.messageId,
+          current_session_id: confirmed.sessionId,
           confirmation: CONFIRMATION
         });
       } catch (error) {
