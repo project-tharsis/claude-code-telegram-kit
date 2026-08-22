@@ -5,21 +5,19 @@ import {
   MAX_HOOK_FINAL_CHARACTERS,
 
   RecordToolFailureInputSchema,
-  MessageDisplayInputSchema,
   RecordToolInputSchema,
   RecordToolSuccessInputSchema,
   type BindTurnInput,
   type FinishTurnInput,
 
   type RecordToolFailureInput,
-  type MessageDisplayInput,
   type RecordToolInput,
   type RecordToolSuccessInput
 } from "./hook-contract.js";
 import type { FinishTurnDisposition } from "./progress-disclosure.js";
 
 /**
- * These six tools exist for Claude Code lifecycle hooks, not for the model. The example settings
+ * These five tools exist for Claude Code lifecycle hooks, not for the model. The example settings
  * deny model access to every hook tool.
  * Every handler also rejects payloads whose `hook_event_name` does not match the exact event that
  * tool serves; raw hook objects and outputs are never accepted.
@@ -28,7 +26,6 @@ import type { FinishTurnDisposition } from "./progress-disclosure.js";
 const INTERNAL_PREFIX = "Internal Claude Code hook tool. Not for model use.";
 
 const IDENTIFIER_PATTERN = "^[A-Za-z0-9_.:-]{1,128}$";
-const OPTIONAL_IDENTIFIER_PATTERN = "^(?:|[A-Za-z0-9_.:-]{1,128})$";
 const UUID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 
 const turnKeyProperties = {
@@ -77,7 +74,7 @@ export const RECORD_TOOL_TOOL = {
       tool_name: { type: "string", pattern: IDENTIFIER_PATTERN },
       agent_id: {
         type: "string",
-        pattern: OPTIONAL_IDENTIFIER_PATTERN,
+        pattern: "^(?:|[A-Za-z0-9_.:-]{1,128})$",
         description: "Present when the tool ran inside a subagent; nested tools remain individually disclosed."
       },
       command: { type: "string", maxLength: 32768 },
@@ -130,36 +127,6 @@ export const RECORD_TOOL_FAILURE_TOOL = {
   }
 } as const;
 
-export const MESSAGE_DISPLAY_TOOL = {
-  name: "record_message_display",
-  description: `${INTERNAL_PREFIX} Wired to MessageDisplay. Buffers bounded assistant display deltas until a later tool proves they were interim commentary.`,
-  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-  inputSchema: {
-    type: "object", additionalProperties: false,
-    required: ["session_id", "prompt_id", "turn_id", "message_id", "index", "final", "delta", "hook_event_name"],
-    properties: {
-      ...turnKeyProperties,
-      agent_id: { type: "string", pattern: OPTIONAL_IDENTIFIER_PATTERN },
-      turn_id: { type: "string", pattern: IDENTIFIER_PATTERN },
-      message_id: { type: "string", pattern: IDENTIFIER_PATTERN },
-      index: {
-        oneOf: [
-          { type: "integer", minimum: 0, maximum: 127 },
-          { type: "string", pattern: "^(?:0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$" }
-        ]
-      },
-      final: {
-        oneOf: [
-          { type: "boolean" },
-          { type: "string", enum: ["true", "false"] }
-        ]
-      },
-      delta: { type: "string", maxLength: 8_000 },
-      hook_event_name: { type: "string", const: "MessageDisplay" }
-    }
-  }
-} as const;
-
 export const FINISH_TURN_TOOL = {
   name: "finish_turn",
   description:
@@ -182,7 +149,6 @@ export const INTERNAL_HOOK_TOOLS = [
   RECORD_TOOL_TOOL,
   RECORD_TOOL_SUCCESS_TOOL,
   RECORD_TOOL_FAILURE_TOOL,
-  MESSAGE_DISPLAY_TOOL,
   FINISH_TURN_TOOL
 ] as const;
 
@@ -196,7 +162,6 @@ export interface HookDisclosure {
 
   recordSuccess: (input: RecordToolSuccessInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
-  recordMessageDisplay?: (input: MessageDisplayInput) => void;
   finishTurn: (input: FinishTurnInput) => Promise<FinishTurnDisposition>;
 }
 
@@ -233,9 +198,6 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
           break;
         case RECORD_TOOL_FAILURE_TOOL.name:
           disclosure.recordFailure(RecordToolFailureInputSchema.parse(arguments_));
-          break;
-        case MESSAGE_DISPLAY_TOOL.name:
-          disclosure.recordMessageDisplay?.(MessageDisplayInputSchema.parse(arguments_));
           break;
         case FINISH_TURN_TOOL.name:
           if (await disclosure.finishTurn(FinishTurnInputSchema.parse(arguments_)) === "retry") {

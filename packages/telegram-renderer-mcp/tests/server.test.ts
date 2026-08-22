@@ -26,7 +26,6 @@ describe("stdio MCP server", () => {
       "record_tool",
       "record_tool_success",
       "record_tool_failure",
-      "record_message_display",
       "finish_turn"
     ]);
     for (const tool of result.tools) {
