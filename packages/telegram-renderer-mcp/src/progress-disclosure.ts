@@ -10,7 +10,6 @@ import {
   type RecordToolInput,
   type RecordToolSuccessInput
 } from "./hook-contract.js";
-import type { MessageDisplayInput } from "./hook-contract.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
 import { selectTurnVerbPair, TurnProgress, type TurnVerbPair } from "./progress-state.js";
 import { MAX_UNIFIED_CONTENT_CHARACTERS } from "./unified-contract.js";
@@ -19,7 +18,7 @@ import type {
   ProgressSendOutcome,
   CommentarySendOutcome
 } from "./progress-transport.js";
-import type { CommentaryBlock, CommentaryBuffer } from "./commentary-display.js";
+import type { CommentaryBlock, CommentaryTracker } from "./commentary-transcript.js";
 import { sanitizeCommentary } from "./commentary-sanitizer.js";
 
 /** Long enough to coalesce a parallel tool burst, short enough to still read as progress. */
@@ -60,7 +59,7 @@ export interface TurnDisclosureDeps {
     input: BindTurnInput,
     onFailure: () => Promise<void>
   ) => CancelScheduled;
-  startCommentaryBuffer?: (input: BindTurnInput) => CommentaryBuffer | null;
+  startCommentaryTracking?: (input: BindTurnInput) => CommentaryTracker | null;
   deliverCommentary?: (
     config: RuntimeConfig,
     chatId: string,
@@ -119,7 +118,7 @@ interface Turn {
   finalDeliveryAttempted: boolean;
   finalDeliveryRetries: number;
   artifactTracker: ArtifactTracker | null;
-  commentaryBuffer: CommentaryBuffer | null;
+  commentaryTracker: CommentaryTracker | null;
   commentaryKeys: Set<string>;
   pendingCommentaryBoundaries: number;
   commentaryAbandoned: boolean;
@@ -161,8 +160,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancelAuthWatch = null;
     turn.artifactTracker?.close();
     turn.artifactTracker = null;
-    turn.commentaryBuffer?.close();
-    turn.commentaryBuffer = null;
+    turn.commentaryTracker?.close();
+    turn.commentaryTracker = null;
     turn.commentaryAbandoned = true;
     turn.artifacts = [];
     turn.state = "abandoned";
@@ -276,7 +275,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       if (turn.commentaryKeys.has(block.key)) return false;
       // Reservation happens before any transport I/O, including rejected text.
       turn.commentaryKeys.add(block.key);
-      turn.commentaryBuffer?.reserve(block.key);
+      turn.commentaryTracker?.reserve(block.key);
       return true;
     });
     for (const block of fresh) {
@@ -403,7 +402,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           finalDeliveryAttempted: false,
           finalDeliveryRetries: 0,
           artifactTracker: null,
-          commentaryBuffer: null,
+          commentaryTracker: null,
           commentaryKeys: new Set(),
           pendingCommentaryBoundaries: 0,
           commentaryAbandoned: false,
@@ -420,8 +419,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             turn.artifactTracker = null;
           }
         }
-        if (deps.startCommentaryBuffer !== undefined) {
-          try { turn.commentaryBuffer = deps.startCommentaryBuffer(input); } catch { turn.commentaryBuffer = null; }
+        if (input.transcript_path !== undefined && deps.startCommentaryTracking !== undefined) {
+          try { turn.commentaryTracker = deps.startCommentaryTracking(input); } catch { turn.commentaryTracker = null; }
         }
         if (
           input.transcript_path !== undefined
@@ -455,15 +454,6 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       }
     },
 
-    recordMessageDisplay(input: MessageDisplayInput): void {
-      try {
-        if (input.agent_id !== undefined) return;
-        lookup(input.session_id, input.prompt_id)?.commentaryBuffer?.add(input);
-      } catch {
-        // Display buffering is presentation only.
-      }
-    },
-
     async recordTool(input: RecordToolInput): Promise<void> {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
@@ -481,7 +471,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             else turn.progress.recordFailure(input.tool_use_id);
           }
         };
-        const blocks = turn.commentaryBuffer?.collectBeforeTool(input.tool_use_id) ?? [];
+        const blocks = turn.commentaryTracker?.collectBeforeTool(input.tool_use_id) ?? [];
         const freshBlocks = blocks.filter(block => !turn.commentaryKeys.has(block.key));
         if (freshBlocks.length === 0 && turn.pendingCommentaryBoundaries === 0) {
           record();
