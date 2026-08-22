@@ -21,9 +21,9 @@ function ok(result: unknown): Response {
 describe("per-chat Telegram command menu", () => {
   test("advertises only implemented deterministic controls plus official commands", () => {
     expect(TELEGRAM_BOT_MENU_COMMANDS.map(item => item.command)).toEqual([
-      "start", "help", "status", "usage", "sessions", "model", "reset"
+      "start", "help", "status", "usage", "resume", "model", "reset"
     ]);
-    expect(TELEGRAM_BOT_MENU_COMMANDS.map(item => item.command)).not.toContain("resume");
+    expect(TELEGRAM_BOT_MENU_COMMANDS.map(item => item.command)).not.toContain("sessions");
   });
 
   test("sets and reads back one private-chat scope without polling", async () => {

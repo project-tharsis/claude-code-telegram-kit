@@ -13,7 +13,7 @@ This kit removes that trip. Anthropic's official [Telegram Channel](https://code
 
 ## What it does
 
-- Deterministic Telegram controls expose `/usage`, `/sessions`, `/model`, `/rename`, `/reset`, and `/resume N`. Privileged lifecycle changes act on the systemd-managed Claude Code process while official pairing, attachments, and permission relay stay intact.
+- Deterministic Telegram controls expose `/usage`, `/resume`, `/resume N`, `/model`, `/rename`, and `/reset` (`/sessions` remains a compatibility alias). Privileged lifecycle changes act on the systemd-managed Claude Code process while official pairing, attachments, and permission relay stay intact.
 - Final delivery distinguishes confirmed, rejected, and unknown outcomes. An unknown outcome is never retried.
 - CommonMark/GFM canonicalization is deterministic; transport routing is explicit and capability-gated across Rich Message, MarkdownV2, and plain text.
 - No fork of the official plugin, and no second `getUpdates` consumer.
@@ -161,7 +161,7 @@ sudo claude-code-session-reset \
   --current-session-id <exact-current-session-uuid>
 ```
 
-The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/sessions`, and `/model` status execute immediately. `/model <alias>` and the four exact model labels switch immediately because the operation is allowlisted, private-chat only, reversible, and verified after restart; `5 · Cancel` only removes the keyboard. `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
+The optional Telegram control router runs as a deterministic UserPromptSubmit hook before the LLM. `/usage`, `/resume`, and `/model` status execute immediately; `/sessions` remains an unadvertised compatibility alias for `/resume`. `/model <alias>` and the four exact model labels switch immediately because the operation is allowlisted, private-chat only, reversible, and verified after restart; `5 · Cancel` only removes the keyboard. `/reset` and `/resume N` require a second exact, single-use confirmation command within 60 seconds. It cannot recover a Claude process that is already unable to receive messages; keep the local helper available as the break-glass path.
 
 ## Development
 

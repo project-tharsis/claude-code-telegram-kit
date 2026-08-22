@@ -14,7 +14,7 @@ Exact Telegram control commands are handled deterministically by a `UserPromptSu
 
 For conversational requests, explain the available commands without triggering them:
 
-- `/sessions` lists recent sessions immediately.
+- `/resume` lists recent sessions immediately; `/resume N` selects one through confirmation. `/sessions` remains a compatibility alias.
 - `/usage` shows the current subscription-window snapshot immediately.
 - `/model` shows the selector; an exact model label switches immediately, while `5 · Cancel` only closes the selector.
 - `/rename NAME` permanently sets the current session title immediately.

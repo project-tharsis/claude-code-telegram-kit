@@ -89,6 +89,14 @@ class RootAssetInstallerTests(unittest.TestCase):
         for asset in root_assets.ASSETS[1:]:
             self.assertFalse((self.root / asset.destination.lstrip("/")).exists())
 
+    def test_activation_tmpfiles_repairs_control_socket_parent_and_isolates_env(self):
+        policy = (SCRIPT.parents[1] / "examples/claude-code-telegram-kit-tmpfiles.conf").read_text()
+        self.assertIn("d /run/claude-code-telegram-kit 0755 root root", policy)
+        self.assertNotIn("d /run/claude-code-telegram-kit 0700", policy)
+        self.assertIn("d /run/claude-code-telegram-activation 0700 root root", policy)
+        drop_in = (SCRIPT.parents[1] / "examples/claude-telegram-activation.conf").read_text()
+        self.assertIn("/run/claude-code-telegram-activation/activation.env", drop_in)
+
     def test_rejects_non_exact_commit_and_restores_on_failed_readback(self):
         with self.assertRaises(ValueError):
             root_assets.install_release(
