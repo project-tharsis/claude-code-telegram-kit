@@ -24,6 +24,14 @@ const MAX_TOOL_NAME = 40;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const GENERIC_ERROR = "Session title generation failed";
+export type SessionTitleGenerationPhase = "generate" | "parse";
+export type SessionTitleGenerationReason = "timeout" | "command_failed" | "invalid_output";
+export class SessionTitleGenerationError extends Error {
+  constructor(public readonly phase: SessionTitleGenerationPhase, public readonly reason: SessionTitleGenerationReason, public readonly retryable: boolean) {
+    super(GENERIC_ERROR);
+    this.name = "SessionTitleGenerationError";
+  }
+}
 const GENERIC_TITLES = new Set([
   "session", "new session", "untitled", "untitled conversation", "conversation", "chat", "assistant", "hello", "test"
 ]);
@@ -123,7 +131,7 @@ async function defaultRunner(argv: string[], options: { timeoutMs: number }): Pr
       readBounded(child.stdout),
       readBounded(child.stderr)
     ]);
-    if (timedOut) throw new Error(GENERIC_ERROR);
+    if (timedOut) throw new SessionTitleGenerationError("generate", "timeout", true);
     return { exitCode, stdout, stderr };
   } finally {
     clearTimeout(timer);
@@ -182,15 +190,16 @@ export async function generateSessionTitle(
     const run = options.run ?? defaultRunner;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const timeoutResult = new Promise<TitleCommandResult>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error(GENERIC_ERROR)), timeoutMs);
+      timeout = setTimeout(() => reject(new SessionTitleGenerationError("generate", "timeout", true)), timeoutMs);
     });
     const result = await Promise.race([run(argv, { timeoutMs }), timeoutResult])
       .finally(() => { if (timeout !== undefined) clearTimeout(timeout); });
-    if (result.exitCode !== 0 || typeof result.stdout !== "string") throw new Error(GENERIC_ERROR);
+    if (result.exitCode !== 0 || typeof result.stdout !== "string") throw new SessionTitleGenerationError("generate", "command_failed", true);
     const title = parseTitle(result.stdout);
-    if (!title) throw new Error(GENERIC_ERROR);
+    if (!title) throw new SessionTitleGenerationError("parse", "invalid_output", true);
     return title;
-  } catch {
-    throw new Error(GENERIC_ERROR);
+  } catch (error) {
+    if (error instanceof SessionTitleGenerationError) throw error;
+    throw new SessionTitleGenerationError("generate", "command_failed", true);
   }
 }

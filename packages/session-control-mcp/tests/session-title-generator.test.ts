@@ -102,4 +102,13 @@ describe("generateSessionTitle", () => {
     await expect(generateSessionTitle(context, { run: async () => ({ exitCode: 2, stdout: "", stderr: "private details" }) })).rejects.toThrow(generic);
     await expect(generateSessionTitle(context, { timeoutMs: 5, run: () => new Promise(() => {}) })).rejects.toThrow(generic);
   });
+
+  test("classifies pre-mutation failures without retaining command payloads", async () => {
+    await expect(generateSessionTitle(context, { run: async () => ({ exitCode: 2, stdout: "", stderr: "token=secret" }) }))
+      .rejects.toMatchObject({ phase: "generate", retryable: true, reason: "command_failed" });
+    await expect(generateSessionTitle(context, { run: async () => ({ exitCode: 0, stdout: "not-json", stderr: "private" }) }))
+      .rejects.toMatchObject({ phase: "parse", retryable: true, reason: "invalid_output" });
+    await expect(generateSessionTitle(context, { run: async () => { throw new Error("spawn failed with private path"); } }))
+      .rejects.toMatchObject({ phase: "generate", retryable: true, reason: "command_failed" });
+  });
 });
