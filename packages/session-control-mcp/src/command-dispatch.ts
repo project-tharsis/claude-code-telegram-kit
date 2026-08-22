@@ -30,7 +30,7 @@ export const RESUME_CHALLENGE_PREFIX =
 export const CONTROL_CONFIRMATION_INVALID_TEXT =
   "<b>Confirmation expired</b>\n<i>Send the original command again.</i>";
 export const CONTROL_COMMAND_USAGE_TEXT =
-  "<b>Command not recognized</b>\nUse <code>/usage</code>, <code>/sessions</code>, <code>/model</code>, <code>/rename NAME</code>, <code>/reset</code>, or <code>/resume N</code>.";
+  "<b>Command not recognized</b>\nUse <code>/usage</code>, <code>/resume</code>, <code>/resume N</code>, <code>/model</code>, <code>/rename NAME</code>, or <code>/reset</code>.";
 export const PRIVATE_CONTROL_ONLY_TEXT =
   "<b>Private chat only</b>\n<i>Rename, model switch, reset, and resume are disabled in groups.</i>";
 export const SUBSCRIPTION_USAGE_UNAVAILABLE_TEXT =

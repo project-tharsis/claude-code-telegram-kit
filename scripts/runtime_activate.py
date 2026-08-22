@@ -23,7 +23,7 @@ CONTROL_GROUP = "/system.slice/claude-telegram.service"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 ROOT_LOCK = Path("/run/lock/claude-code-telegram-kit/root/runtime-activate.lock")
 SHARED_LOCK = Path("/run/lock/claude-code-telegram-kit/shared/deploy-activation.lock")
-ACTIVATION_ENV = Path("/run/claude-code-telegram-kit/activation.env")
+ACTIVATION_ENV = Path("/run/claude-code-telegram-activation/activation.env")
 RECEIPT_DIR = Path("/var/lib/claude-code-telegram-kit/activation")
 MAX_JSON_BYTES = 64 * 1024
 

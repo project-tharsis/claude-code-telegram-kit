@@ -89,7 +89,8 @@ export function parseControlCommand(input: string): ParsedControlCommand {
   const command = COMMAND_PATTERN.exec(input);
   if (command) {
     switch (command[1]) {
-      case "sessions": return { kind: "sessions" };
+      case "sessions":
+      case "resume": return { kind: "sessions" };
       case "usage": return { kind: "usage" };
       case "reset": return { kind: "reset" };
       default: return { kind: "malformed", namespace: "resume" };

@@ -13,7 +13,7 @@ export const TELEGRAM_BOT_MENU_COMMANDS = [
   { command: "help", description: "What this bot can do" },
   { command: "status", description: "Check your pairing status" },
   { command: "usage", description: "Show Claude subscription usage" },
-  { command: "sessions", description: "List recent Claude sessions" },
+  { command: "resume", description: "List or resume recent sessions" },
   { command: "model", description: "Show or switch Claude model" },
   { command: "reset", description: "Start a confirmed fresh session" }
 ] as const;

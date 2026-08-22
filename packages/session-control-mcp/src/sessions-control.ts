@@ -138,12 +138,12 @@ export function createSessionsController(deps: SessionsControllerDeps) {
     const config = authorize(request.chatId);
 
     const snapshot = deps.readSnapshot(request.chatId);
-    if (snapshot === null) throw new Error("session selection expired; send /sessions again");
+    if (snapshot === null) throw new Error("session selection expired; send /resume again");
     if (snapshot.chatId !== request.chatId) throw new Error("session selection does not match this chat");
 
     // The UUID comes from the user-private snapshot and from nowhere else.
     const sessionId = resolveSelection(snapshot, request.index);
-    if (sessionId === null) throw new Error("session selection expired; send /sessions again");
+    if (sessionId === null) throw new Error("session selection expired; send /resume again");
     if (sessionId === request.currentSessionId || sessionId === snapshot.sessionId) {
       throw new Error("cannot resume the current session");
     }

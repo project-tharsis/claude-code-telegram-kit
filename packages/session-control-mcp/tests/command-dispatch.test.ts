@@ -114,10 +114,15 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
     expect(h.lists).toEqual([]);
   });
 
-  test("handles /sessions directly with exact hook-bound identity", async () => {
+  test("handles /resume and legacy /sessions directly with exact hook-bound identity", async () => {
     const h = harness();
-    expect(await h.dispatch(input("/sessions"))).toEqual({ handled: true });
-    expect(h.lists).toEqual([{ chatId: "123", messageId: "9", currentSessionId: SESSION }]);
+    for (const command of ["/resume", "/sessions"]) {
+      expect(await h.dispatch(input(command))).toEqual({ handled: true });
+    }
+    expect(h.lists).toEqual([
+      { chatId: "123", messageId: "9", currentSessionId: SESSION },
+      { chatId: "123", messageId: "9", currentSessionId: SESSION }
+    ]);
   });
 
   test("handles read-only /usage directly without a confirmation or LLM", async () => {

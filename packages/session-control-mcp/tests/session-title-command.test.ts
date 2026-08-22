@@ -37,7 +37,7 @@ describe("session title command hook", () => {
   test("runs on Stop and only the title backstop controls", () => {
     const { payload } = fixture();
     expect(shouldEnsureSessionTitle({ ...payload, hook_event_name: "Stop" })).toBe(true);
-    for (const body of ["/sessions", "/reset", "/reset confirm ABC234"]) {
+    for (const body of ["/resume", "/sessions", "/reset", "/reset confirm ABC234"]) {
       expect(shouldEnsureSessionTitle({ ...payload, hook_event_name: "UserPromptSubmit", prompt: telegram(body) })).toBe(true);
     }
     for (const body of ["hello", "/usage", "/model", "/rename Manual title", "/resume 1"]) {
