@@ -53,6 +53,13 @@ describe("commentary transcript provenance", () => {
     h.tracker.close();
   });
 
+  test("PreToolUse proves continuation before its tool row is flushed", () => {
+    const h = setup();
+    appendFileSync(h.path, textRow("flushed commentary"));
+    expect(h.tracker.collectBeforeTool("not-yet-flushed").map(block => block.text)).toEqual(["flushed commentary"]);
+    h.tracker.close();
+  });
+
   test("collects completed assistant text from an earlier row before the proving tool row", () => {
     const h = setup();
     appendFileSync(h.path, textRow("between tools") + toolRow("next-tool"));
