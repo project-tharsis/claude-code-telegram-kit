@@ -46,12 +46,15 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
-  test("keeps model guidance focused on delivery shape rather than answer length", () => {
-    expect(guidance).toContain("Put the complete answer in the final response.");
-    expect(guidance).toContain("Match the depth and length the user requests;");
-    expect(guidance.toLowerCase()).not.toContain("concise");
-    for (const command of ["/sessions", "/usage", "/model", "5 · Cancel", "/rename NAME", "/resume N", "/reset"]) {
-      expect(guidance).toContain(command);
+  test("keeps model guidance transport-transparent and free of runtime inventory", () => {
+    expect(guidance).toContain("ordinary Claude Code TUI session");
+    expect(guidance).toContain("Use normal assistant text, tool calls, and final responses");
+    expect(guidance).toContain("The deterministic harness owns delivery and control routing");
+    expect(guidance).toContain("inspect the deployed artifact and live runtime state");
+    expect(guidance).not.toContain("Put the complete answer in the final response");
+    expect(guidance).not.toContain("Do not rely on earlier assistant text");
+    for (const command of ["/sessions", "/resume", "/usage", "/model", "/reset"]) {
+      expect(guidance).not.toContain(command);
     }
   });
 
