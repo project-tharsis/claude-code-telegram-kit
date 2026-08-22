@@ -6,6 +6,7 @@ import {
   handleSessionTitleCommand,
   shouldEnsureSessionTitle
 } from "../src/session-title-command.js";
+import type { SessionTitleState } from "../src/session-title-state.js";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
@@ -59,6 +60,23 @@ describe("session title command hook", () => {
       projectSessionsDir,
       assistantText: "Final answer"
     }]);
+  });
+
+  test("delegates failed state but skips a claimed state", async () => {
+    const { payload, workspaceDir, projectSessionsDir } = fixture();
+    const seen: string[] = [];
+    let state: SessionTitleState = {
+      version: 1, sessionId: SESSION, status: "failed", attempts: 1, updatedAt: 1
+    };
+    const options = {
+      workspaceDir, projectSessionsDir,
+      readState: () => state,
+      ensure: async () => { seen.push("called"); }
+    };
+    await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, options);
+    state = { version: 1, sessionId: SESSION, status: "claimed", attempts: 1, updatedAt: 2 };
+    await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, options);
+    expect(seen).toEqual(["called"]);
   });
 
   test("rejects traversal and transcript identity mismatch", async () => {
