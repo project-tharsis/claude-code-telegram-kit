@@ -74,7 +74,8 @@ function harness(options: {
         ? options.finalOutcome(content, finalDeliveries.length - 1)
         : options.finalOutcome ?? "delivered";
     },
-    startCommentaryTracking: () => options.commentary === undefined ? null : ({
+    startCommentaryBuffer: () => options.commentary === undefined ? null : ({
+      add: () => undefined,
       collectBeforeTool: () => {
         commentaryPolls += 1;
         return commentaryPolls < 2 ? [] : [{ key: "row-1", text: options.commentary! }];

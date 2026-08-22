@@ -133,7 +133,7 @@ describe("supported Claude Code hook configuration", () => {
       tool.name,
       new Set(Object.keys(tool.inputSchema.properties))
     ]));
-    for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure"]) {
+    for (const event of ["UserPromptSubmit", "MessageDisplay", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure"]) {
       for (const hook of toolsFor(event).filter(item => item.server === "telegram-renderer")) {
         expect(declared.has(hook.tool), `${event}:${hook.tool}`).toBe(true);
         for (const key of Object.keys(hook.input)) {

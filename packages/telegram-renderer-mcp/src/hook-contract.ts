@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const MAX_HOOK_FINAL_CHARACTERS = 1_000_000;
+export const MAX_MESSAGE_DISPLAY_DELTA_CHARACTERS = 8_000;
 
 export {
   parseDirectTelegramEnvelope,
@@ -45,6 +46,13 @@ function requiredTemplateText(maxLength: number) {
     .transform(value => (value === "" ? undefined : value));
 }
 
+const templateIndex = z.union([
+  z.number().int().min(0).max(127),
+  z.string().regex(/^(?:0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$/, "invalid display index")
+]).transform(value => typeof value === "number" ? value : Number(value));
+const templateBoolean = z.union([z.boolean(), z.literal("true"), z.literal("false").transform(() => false)])
+  .transform(value => value === true || value === "true");
+
 const turnKey = {
   session_id: uuid,
   prompt_id: identifier
@@ -88,6 +96,17 @@ export const RecordToolFailureInputSchema = z.object({
   hook_event_name: z.literal("PostToolUseFailure")
 }).strict();
 
+export const MessageDisplayInputSchema = z.object({
+  ...turnKey,
+  agent_id: optionalIdentifier,
+  turn_id: identifier,
+  message_id: identifier,
+  index: templateIndex,
+  final: templateBoolean,
+  delta: boundedText(MAX_MESSAGE_DISPLAY_DELTA_CHARACTERS),
+  hook_event_name: z.literal("MessageDisplay")
+}).strict();
+
 export const FinishTurnInputSchema = z.object({
   ...turnKey,
   last_assistant_message: requiredTemplateText(MAX_HOOK_FINAL_CHARACTERS),
@@ -99,4 +118,5 @@ export type RecordToolInput = z.infer<typeof RecordToolInputSchema>;
 
 export type RecordToolSuccessInput = z.infer<typeof RecordToolSuccessInputSchema>;
 export type RecordToolFailureInput = z.infer<typeof RecordToolFailureInputSchema>;
+export type MessageDisplayInput = z.infer<typeof MessageDisplayInputSchema>;
 export type FinishTurnInput = z.infer<typeof FinishTurnInputSchema>;

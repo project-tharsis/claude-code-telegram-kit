@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BIND_TURN_TOOL, createHookToolHandler, HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS, RECORD_TOOL_TOOL } from "../src/hook-tools.js";
-import { RecordToolInputSchema } from "../src/hook-contract.js";
+import { MessageDisplayInputSchema, RecordToolInputSchema } from "../src/hook-contract.js";
 import { createTurnDisclosure } from "../src/progress-disclosure.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 
@@ -16,6 +16,9 @@ function recorder() {
     },
     recordTool: (input: unknown) => {
       calls.push({ kind: "tool", input });
+    },
+    recordMessageDisplay: (input: unknown) => {
+      calls.push({ kind: "display", input });
     },
 
     recordSuccess: (input: unknown) => {
@@ -35,7 +38,7 @@ function recorder() {
 describe("internal hook tool declarations", () => {
   test("advertise only the internal hook tools", () => {
     expect(HOOK_TOOL_NAMES).toEqual([
-      "bind_turn", "record_tool", "record_tool_success", "record_tool_failure", "finish_turn"
+      "bind_turn", "record_tool", "record_tool_success", "record_tool_failure", "record_message_display", "finish_turn"
     ]);
     expect(HOOK_TOOL_NAMES).not.toContain("send_reply");
 
@@ -75,6 +78,22 @@ describe("internal hook tool declarations", () => {
       agent_id: "",
       hook_event_name: "PreToolUse"
     }).agent_id).toBeUndefined();
+    expect(MessageDisplayInputSchema.parse({
+      session_id: SESSION,
+      prompt_id: "p1",
+      turn_id: "turn-1",
+      message_id: "message-1",
+      index: "0",
+      final: "true",
+      delta: "hello",
+      hook_event_name: "MessageDisplay"
+    })).toMatchObject({ index: 0, final: true });
+    for (const index of ["00", "128", "999"]) {
+      expect(() => MessageDisplayInputSchema.parse({
+        session_id: SESSION, prompt_id: "p1", turn_id: "turn-1", message_id: "message-1",
+        index, final: "true", delta: "hello", hook_event_name: "MessageDisplay"
+      })).toThrow();
+    }
   });
 });
 
@@ -123,6 +142,16 @@ describe("internal hook tool handler", () => {
       prompt: "<channel source=\"telegram\" chat_id=\"1\" message_id=\"2\">hi",
       hook_event_name: "UserPromptSubmit"
     });
+    await handle("record_message_display", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      turn_id: "turn-1",
+      message_id: "message-1",
+      index: "0",
+      final: "true",
+      delta: "interim",
+      hook_event_name: "MessageDisplay"
+    });
     await handle("record_tool", {
       session_id: SESSION,
       prompt_id: "p1",
@@ -149,7 +178,7 @@ describe("internal hook tool handler", () => {
       last_assistant_message: "",
       hook_event_name: "Stop"
     });
-    expect(calls.map(call => call.kind)).toEqual(["bind", "tool", "success", "failure", "finish"]);
+    expect(calls.map(call => call.kind)).toEqual(["bind", "display", "tool", "success", "failure", "finish"]);
   });
 
   test("returns a non-blocking empty receipt so no hook output enters the transcript", async () => {
