@@ -8,7 +8,7 @@ import {
   parseDirectTelegramEnvelope
 } from "@project-tharsis/claude-code-telegram-shared";
 import { parseControlCommand } from "./control-command.js";
-import { readSessionTitleState } from "./session-title-state.js";
+import { readSessionTitleState, type SessionTitleState } from "./session-title-state.js";
 
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -78,6 +78,7 @@ function resolveAuthority(payload: HookPayload, roots: {
 
 export interface SessionTitleCommandOptions {
   ensure?: (authority: { sessionId: string; workspaceDir: string; projectSessionsDir: string; assistantText?: string }) => Promise<unknown>;
+  readState?: (sessionId: string) => SessionTitleState | null;
   workspaceDir?: string;
   projectSessionsDir?: string;
 }
@@ -91,7 +92,10 @@ export async function handleSessionTitleCommand(
     workspaceDir: options.workspaceDir ?? process.env.CLAUDE_WORKSPACE_DIR,
     projectSessionsDir: options.projectSessionsDir ?? process.env.CLAUDE_PROJECT_SESSIONS_DIR
   });
-  if (options.ensure === undefined && readSessionTitleState({ sessionId: authority.sessionId }) !== null) return;
+  if (options.ensure === undefined || options.readState !== undefined) {
+    const state = (options.readState ?? (sessionId => readSessionTitleState({ sessionId })))(authority.sessionId);
+    if (state !== null && state.status !== "failed") return;
+  }
   if (options.ensure !== undefined) {
     await options.ensure(authority);
     return;
