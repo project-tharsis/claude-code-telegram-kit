@@ -23,13 +23,41 @@ const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 type Status = "claimed" | "auto_applied" | "failed" | "user_locked";
+export type SessionTitleFailurePhase = "generate" | "parse" | "rename" | "readback" | "lock";
+export type SessionTitleFailureReason = "timeout" | "command_failed" | "invalid_output" | "rename_failed" | "readback_failed" | "lock_failed" | "state_failed";
+
+const FAILURE_REASONS_BY_PHASE: Record<SessionTitleFailurePhase, readonly SessionTitleFailureReason[]> = {
+  generate: ["timeout", "command_failed"],
+  parse: ["invalid_output"],
+  rename: ["rename_failed"],
+  readback: ["readback_failed", "state_failed"],
+  lock: ["lock_failed", "state_failed"]
+};
+
+export function isRetryableTitleFailure(
+  phase: SessionTitleFailurePhase,
+  reason: SessionTitleFailureReason
+): boolean {
+  return (phase === "generate" && (reason === "timeout" || reason === "command_failed"))
+    || (phase === "parse" && reason === "invalid_output");
+}
+
+function isValidFailureTuple(
+  phase: SessionTitleFailurePhase,
+  reason: SessionTitleFailureReason
+): boolean {
+  return FAILURE_REASONS_BY_PHASE[phase].includes(reason);
+}
 
 export interface SessionTitleState {
   version: 1;
   sessionId: string;
   status: Status;
-  attempts: 1;
+  attempts: 1 | 2;
   title?: string;
+  phase?: SessionTitleFailurePhase;
+  reason?: SessionTitleFailureReason;
+  retryAt?: number;
   updatedAt: number;
 }
 
@@ -115,18 +143,38 @@ function validateState(value: unknown, sessionId: string): SessionTitleState {
   const keys = Object.keys(record);
   const allowed = record.status === "auto_applied" || record.status === "user_locked"
     ? ["version", "sessionId", "status", "attempts", "title", "updatedAt"]
-    : ["version", "sessionId", "status", "attempts", "updatedAt"];
-  if (keys.some(key => !allowed.includes(key)) || allowed.some(key => !(key in record))) {
+    : record.status === "failed"
+      ? ["version", "sessionId", "status", "attempts", "phase", "reason", "retryAt", "updatedAt"]
+      : ["version", "sessionId", "status", "attempts", "updatedAt"];
+  const diagnosticKeys = ["phase", "reason", "retryAt"];
+  const required = record.status === "failed" && ("phase" in record || "reason" in record || "retryAt" in record)
+    ? allowed.filter(key => key !== "retryAt")
+    : allowed.filter(key => !diagnosticKeys.includes(key));
+  if (keys.some(key => !allowed.includes(key)) || required.some(key => !(key in record))) {
     throw new Error("invalid title state schema");
   }
   if (record.version !== STATE_VERSION || record.sessionId !== sessionId ||
       (record.status !== "claimed" && record.status !== "auto_applied" && record.status !== "failed" && record.status !== "user_locked") ||
-      record.attempts !== 1 || typeof record.updatedAt !== "number" || !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) {
+      (record.attempts !== 1 && record.attempts !== 2) || typeof record.updatedAt !== "number" || !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) {
     throw new Error("invalid title state schema");
   }
   if (record.status === "auto_applied" || record.status === "user_locked") {
     if (typeof record.title !== "string") throw new Error("invalid title state schema");
     assertTitle(record.title);
+  }
+  if (record.status === "failed" && (record.phase !== undefined || record.reason !== undefined || record.retryAt !== undefined)) {
+    if (typeof record.phase !== "string" || !["generate", "parse", "rename", "readback", "lock"].includes(record.phase) ||
+        typeof record.reason !== "string" || !["timeout", "command_failed", "invalid_output", "rename_failed", "readback_failed", "lock_failed", "state_failed"].includes(record.reason) ||
+        (record.retryAt !== undefined && (typeof record.retryAt !== "number" || !Number.isSafeInteger(record.retryAt) || record.retryAt < 0))) {
+      throw new Error("invalid title state schema");
+    }
+    const phase = record.phase as SessionTitleFailurePhase;
+    const reason = record.reason as SessionTitleFailureReason;
+    if (!isValidFailureTuple(phase, reason)
+        || (record.retryAt !== undefined && !isRetryableTitleFailure(phase, reason))
+        || (record.attempts === 2 && record.retryAt !== undefined)) {
+      throw new Error("invalid title state schema");
+    }
   }
   return record as unknown as SessionTitleState;
 }
@@ -169,8 +217,11 @@ function writeAll(fd: number, bytes: Buffer): void {
 }
 
 function canonicalState(state: SessionTitleState): Buffer {
-  const value: Record<string, unknown> = { version: 1, sessionId: state.sessionId, status: state.status, attempts: 1 };
+  const value: Record<string, unknown> = { version: 1, sessionId: state.sessionId, status: state.status, attempts: state.attempts };
   if (state.title !== undefined) value.title = state.title;
+  if (state.phase !== undefined) value.phase = state.phase;
+  if (state.reason !== undefined) value.reason = state.reason;
+  if (state.retryAt !== undefined) value.retryAt = state.retryAt;
   value.updatedAt = state.updatedAt;
   const bytes = Buffer.from(JSON.stringify(value));
   if (bytes.length > MAX_BYTES) throw new Error("title state exceeds size limit");
@@ -217,14 +268,19 @@ export function claimAutoTitle(options: SessionTitleStateOptions): boolean {
   });
 }
 
-function transition(options: SessionTitleStateOptions, status: "auto_applied" | "failed", title?: string): boolean {
+function transition(options: SessionTitleStateOptions & { phase?: SessionTitleFailurePhase; reason?: SessionTitleFailureReason; retryAt?: number }, status: "auto_applied" | "failed", title?: string): boolean {
   if (status === "auto_applied") { if (title === undefined) throw new Error("applied title is required"); assertTitle(title); }
   return withDirectory(options, (directory, dirfd, expectedUid) => {
     const path = statePath(directory, options.sessionId);
     const current = readLeaf(join(`/proc/self/fd/${dirfd}`, `${options.sessionId}.json`), expectedUid, options.sessionId);
     if (current === null || current.status !== "claimed") return false;
-    const next: SessionTitleState = { version: 1, sessionId: options.sessionId, status, attempts: 1, updatedAt: Date.now() };
+    const next: SessionTitleState = { version: 1, sessionId: options.sessionId, status, attempts: current.attempts, updatedAt: Date.now() };
     if (title !== undefined) next.title = title;
+    if (status === "failed" && options.phase !== undefined && options.reason !== undefined) {
+      next.phase = options.phase;
+      next.reason = options.reason;
+      if (current.attempts === 1 && options.retryAt !== undefined) next.retryAt = options.retryAt;
+    }
     replaceLeaf(directory, dirfd, path, next);
     return true;
   });
@@ -234,8 +290,20 @@ export function completeAutoTitle(options: SessionTitleStateOptions & { title: s
   return transition(options, "auto_applied", options.title);
 }
 
-export function failAutoTitle(options: SessionTitleStateOptions): boolean {
+export function failAutoTitle(options: SessionTitleStateOptions & { phase?: SessionTitleFailurePhase; reason?: SessionTitleFailureReason; retryAt?: number }): boolean {
   return transition(options, "failed");
+}
+
+export function retryAutoTitle(options: SessionTitleStateOptions, now = Date.now()): boolean {
+  return withDirectory(options, (directory, dirfd, expectedUid) => {
+    const current = readLeaf(join(`/proc/self/fd/${dirfd}`, `${options.sessionId}.json`), expectedUid, options.sessionId);
+    if (current === null || current.status !== "failed" || current.attempts !== 1
+        || current.phase === undefined || current.reason === undefined
+        || !isRetryableTitleFailure(current.phase, current.reason)
+        || current.retryAt === undefined || current.retryAt > now) return false;
+    replaceLeaf(directory, dirfd, statePath(directory, options.sessionId), { version: 1, sessionId: options.sessionId, status: "claimed", attempts: 2, updatedAt: Date.now() });
+    return true;
+  });
 }
 
 export function lockUserTitle(options: SessionTitleStateOptions & { title: string }): boolean {

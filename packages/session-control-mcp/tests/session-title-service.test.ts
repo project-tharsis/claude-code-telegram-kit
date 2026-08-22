@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSessionTitleService } from "../src/session-title-service.js";
 import { readSessionTitleState } from "../src/session-title-state.js";
+import { SessionTitleGenerationError } from "../src/session-title-generator.js";
 import type { SessionTitleContext } from "../src/session-catalog.js";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
@@ -101,6 +102,94 @@ describe("session title service", () => {
     await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("already_attempted");
     expect(generated).toBe(1);
     expect(readSessionTitleState({ directory, sessionId: SESSION })?.status).toBe("failed");
+  });
+
+  test("retries one proven pre-mutation failure after persisted backoff", async () => {
+    const directory = stateDir();
+    let generated = 0;
+    let clock = 1_000;
+    let current = context();
+    const service = createSessionTitleService({
+      projectSessionsDir: "/sessions", workspaceDir: "/workspace", stateDirectory: directory, isAuthorizedChat: () => true, retryDelayMs: 10, now: () => clock,
+      readContext: () => current,
+      generate: async () => {
+        generated += 1;
+        if (generated === 1) throw new SessionTitleGenerationError("parse", "invalid_output", true);
+        return "Recovered Title";
+      },
+      rename: async (_id, title) => { current = { ...current, customTitle: title }; }
+    });
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("failed");
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("retry_scheduled");
+    clock = 1_010;
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("applied");
+    expect(generated).toBe(2);
+  });
+
+  test("does not consume the safe retry while context is unauthorized", async () => {
+    const directory = stateDir();
+    let generated = 0;
+    let clock = 1_000;
+    let authorized = true;
+    let current = context();
+    const service = createSessionTitleService({
+      projectSessionsDir: "/sessions", workspaceDir: "/workspace", stateDirectory: directory,
+      isAuthorizedChat: () => authorized, retryDelayMs: 10, now: () => clock,
+      readContext: () => current,
+      generate: async () => {
+        generated += 1;
+        if (generated === 1) throw new SessionTitleGenerationError("generate", "command_failed", true);
+        return "Recovered Later";
+      },
+      rename: async (_id, title) => { current = { ...current, customTitle: title }; }
+    });
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("failed");
+    clock = 1_010;
+    authorized = false;
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("no_context");
+    expect(readSessionTitleState({ directory, sessionId: SESSION })).toMatchObject({ status: "failed", attempts: 1 });
+    authorized = true;
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("applied");
+    expect(generated).toBe(2);
+  });
+
+  test("stops permanently after the one safe retry also fails", async () => {
+    const directory = stateDir();
+    let generated = 0;
+    let clock = 2_000;
+    const service = createSessionTitleService({
+      projectSessionsDir: "/sessions", workspaceDir: "/workspace", stateDirectory: directory,
+      isAuthorizedChat: () => true, retryDelayMs: 1, now: () => clock,
+      readContext: () => context(),
+      generate: async () => {
+        generated += 1;
+        throw new SessionTitleGenerationError("generate", "command_failed", true);
+      },
+      rename: async () => undefined
+    });
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("failed");
+    clock = 2_001;
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("failed");
+    clock = 3_000;
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("already_attempted");
+    expect(generated).toBe(2);
+    expect(readSessionTitleState({ directory, sessionId: SESSION })).toMatchObject({ status: "failed", attempts: 2 });
+  });
+
+  test("never retries after rename ambiguity", async () => {
+    const directory = stateDir();
+    let generated = 0;
+    const service = createSessionTitleService({
+      projectSessionsDir: "/sessions", workspaceDir: "/workspace", stateDirectory: directory, isAuthorizedChat: () => true, retryDelayMs: 1,
+      readContext: () => context(),
+      generate: async () => { generated += 1; return "Mutation Ambiguous"; },
+      rename: async () => { throw new Error("rename outcome unknown"); }
+    });
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("failed");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("already_attempted");
+    expect(generated).toBe(1);
+    expect(readSessionTitleState({ directory, sessionId: SESSION })).toMatchObject({ phase: "rename", reason: "rename_failed" });
   });
 
   test("a title appearing during generation wins before title mutation", async () => {

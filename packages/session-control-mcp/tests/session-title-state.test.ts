@@ -7,6 +7,7 @@ import {
   completeAutoTitle,
   defaultSessionTitleStateDirectory,
   failAutoTitle,
+  retryAutoTitle,
   lockUserTitle,
   readSessionTitleState,
   withSessionTitleLock
@@ -60,6 +61,40 @@ function options(directory: string, sessionId = id()): { directory: string; sess
     expect("title" in saved).toBe(false);
   });
 
+  test("persists bounded failure diagnostics and permits one due retry", () => {
+    const directory = root();
+    const state = options(directory);
+    claimAutoTitle(state);
+    expect(failAutoTitle({ ...state, phase: "generate", reason: "timeout", retryAt: Date.now() - 1 })).toBe(true);
+    expect(readSessionTitleState(state)).toMatchObject({ status: "failed", attempts: 1, phase: "generate", reason: "timeout" });
+    expect(retryAutoTitle(state)).toBe(true);
+    expect(readSessionTitleState(state)).toMatchObject({ status: "claimed", attempts: 2 });
+    expect(retryAutoTitle(state)).toBe(false);
+  });
+
+  test("a second pre-mutation failure is terminal and cannot re-arm retry", () => {
+    const directory = root();
+    const state = options(directory);
+    claimAutoTitle(state);
+    expect(failAutoTitle({ ...state, phase: "generate", reason: "timeout", retryAt: Date.now() - 1 })).toBe(true);
+    expect(retryAutoTitle(state)).toBe(true);
+    expect(failAutoTitle({ ...state, phase: "parse", reason: "invalid_output", retryAt: Date.now() + 10_000 })).toBe(true);
+    expect(readSessionTitleState(state)).toMatchObject({
+      status: "failed", attempts: 2, phase: "parse", reason: "invalid_output"
+    });
+    expect(readSessionTitleState(state)).not.toHaveProperty("retryAt");
+    expect(retryAutoTitle(state)).toBe(false);
+  });
+
+  test("accepts legacy failed records as terminal", () => {
+    const directory = root();
+    const state = options(directory);
+    claimAutoTitle(state);
+    failAutoTitle(state);
+    expect(retryAutoTitle(state)).toBe(false);
+    expect(readSessionTitleState(state)).toMatchObject({ status: "failed", attempts: 1 });
+  });
+
   test("user lock atomically overwrites any valid prior state", () => {
     const directory = root();
     const state = options(directory);
@@ -105,7 +140,18 @@ function options(directory: string, sessionId = id()): { directory: string; sess
     const state = options(directory);
     claimAutoTitle(state);
     expect(() => readSessionTitleState({ ...state, expectedUid: 999999 })).toThrow();
-    writeFileSync(join(directory, `${id()}.json`), JSON.stringify({ version: 1, sessionId: id(), status: "claimed", attempts: 2, updatedAt: 1 }));
+    writeFileSync(join(directory, `${id()}.json`), JSON.stringify({ version: 1, sessionId: id(), status: "claimed", attempts: 2, retryAt: 1, updatedAt: 1 }));
+    expect(() => readSessionTitleState(state)).toThrow();
+  });
+
+  test("rejects incomplete diagnostics and impossible phase/reason retry tuples", () => {
+    const directory = root();
+    const state = options(directory);
+    const path = join(directory, `${id()}.json`);
+    claimAutoTitle(state);
+    writeFileSync(path, JSON.stringify({ version: 1, sessionId: id(), status: "failed", attempts: 1, retryAt: 1, updatedAt: 1 }));
+    expect(() => readSessionTitleState(state)).toThrow();
+    writeFileSync(path, JSON.stringify({ version: 1, sessionId: id(), status: "failed", attempts: 1, phase: "generate", reason: "rename_failed", retryAt: 1, updatedAt: 1 }));
     expect(() => readSessionTitleState(state)).toThrow();
   });
 

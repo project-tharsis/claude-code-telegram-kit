@@ -15,6 +15,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Example Claude guidance now requires one complete canonical final while preserving the depth and length the user requests; it no longer treats Telegram as a reason to shorten answers.
 - README prerequisites now precede installation, model guidance is identified as behavior rather than authority, and the Telegram-only rationale leads with the delivery primitives that make the target load-bearing.
 
+### Fixed
+
+- Automatic session-title failures now persist bounded phase/reason diagnostics in private `0600` state. A first proven pre-mutation generation/parse failure may retry once after persisted backoff; second-attempt, legacy, rename, readback, lock, and ambiguous failures remain terminal.
+
 ## [0.3.0] - 2026-08-21
 
 ### Added

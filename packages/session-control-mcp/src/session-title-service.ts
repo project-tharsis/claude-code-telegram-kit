@@ -7,17 +7,22 @@ import {
   completeAutoTitle,
   defaultSessionTitleStateDirectory,
   failAutoTitle,
+  isRetryableTitleFailure,
   lockUserTitle,
   readSessionTitleState,
+  retryAutoTitle,
+  type SessionTitleFailurePhase,
+  type SessionTitleFailureReason,
   withSessionTitleLock
 } from "./session-title-state.js";
 import {
   generateSessionTitle,
   type SessionTitleContext as GeneratorTitleContext
 } from "./session-title-generator.js";
+import { SessionTitleGenerationError } from "./session-title-generator.js";
 import { renameSessionWithClaude } from "./session-title-rename.js";
 
-export type EnsureTitleResult = "applied" | "existing" | "no_context" | "already_attempted" | "failed";
+export type EnsureTitleResult = "applied" | "existing" | "no_context" | "already_attempted" | "retry_scheduled" | "failed";
 
 export interface SessionTitleServiceOptions {
   projectSessionsDir: string;
@@ -27,6 +32,8 @@ export interface SessionTitleServiceOptions {
   readContext?: (sessionId: string) => TranscriptTitleContext;
   generate?: (context: GeneratorTitleContext) => Promise<string>;
   rename?: (sessionId: string, title: string, workspaceDir: string) => Promise<void>;
+  retryDelayMs?: number;
+  now?: () => number;
 }
 
 function normalizeManualTitle(raw: string): string {
@@ -58,6 +65,8 @@ export function createSessionTitleService(options: SessionTitleServiceOptions) {
   });
   const stateOptions = (sessionId: string) => ({ directory: stateDirectory, sessionId });
   const isAuthorizedChat = options.isAuthorizedChat ?? (() => false);
+  const retryDelayMs = Math.max(1, Math.min(options.retryDelayMs ?? 1_000, 60_000));
+  const now = options.now ?? Date.now;
 
   async function ensureAutoTitle(
     sessionId: string,
@@ -66,7 +75,13 @@ export function createSessionTitleService(options: SessionTitleServiceOptions) {
     try {
       return await withSessionTitleLock(stateOptions(sessionId), async () => {
       const state = readSessionTitleState(stateOptions(sessionId));
-      if (state !== null) return "already_attempted";
+      let retryDue = false;
+      if (state?.status === "failed" && state.phase !== undefined && state.reason !== undefined
+          && state.retryAt !== undefined && state.attempts === 1
+          && isRetryableTitleFailure(state.phase, state.reason)) {
+        if (state.retryAt > now()) return "retry_scheduled";
+        retryDue = true;
+      } else if (state !== null) return "already_attempted";
 
       const before = readContext(sessionId);
       const assistantText = override.assistantText?.trim() || before.assistantText;
@@ -83,8 +98,11 @@ export function createSessionTitleService(options: SessionTitleServiceOptions) {
       if (before.userPrompt === null || (!assistantText && before.toolNames.length === 0)) {
         return "no_context";
       }
-      if (!claimAutoTitle(stateOptions(sessionId))) return "already_attempted";
+      if (retryDue) {
+        if (!retryAutoTitle(stateOptions(sessionId), now())) return "already_attempted";
+      } else if (!claimAutoTitle(stateOptions(sessionId))) return "already_attempted";
 
+      let phase: SessionTitleFailurePhase = "generate";
       try {
         const title = await generate({
           userPrompt: before.userPrompt,
@@ -101,15 +119,22 @@ export function createSessionTitleService(options: SessionTitleServiceOptions) {
           return "existing";
         }
 
+        phase = "rename";
         await rename(sessionId, title, options.workspaceDir);
+        phase = "readback";
         const readback = readContext(sessionId);
         if (readback.customTitle !== title) throw new Error("session title readback failed");
         if (!completeAutoTitle({ ...stateOptions(sessionId), title })) {
           throw new Error("session title state transition failed");
         }
         return "applied";
-      } catch {
-        failAutoTitle(stateOptions(sessionId));
+      } catch (error) {
+        if (error instanceof SessionTitleGenerationError && error.retryable) {
+          failAutoTitle({ ...stateOptions(sessionId), phase: error.phase, reason: error.reason, retryAt: now() + retryDelayMs });
+        } else {
+          const reason: SessionTitleFailureReason = phase === "rename" ? "rename_failed" : phase === "readback" ? "readback_failed" : "command_failed";
+          failAutoTitle({ ...stateOptions(sessionId), phase, reason });
+        }
         return "failed";
       }
       }, 30_000);
