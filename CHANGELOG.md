@@ -12,7 +12,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Example Claude guidance now requires one complete canonical final while preserving the depth and length the user requests; it no longer treats Telegram as a reason to shorten answers.
+- Exact-SHA local installation and rollback now report `activation_required` after the atomic `current` switch; the fixed root-owned activator restarts only the configured service and verifies the selected SHA before declaring it active.
+- Root assets now include `/usr/local/sbin/claude-runtime-activate`, its mode-0600 fixed configuration, and a systemd EnvironmentFile drop-in. Activation never mutates service-user release pointers: it injects a root-owned SHA/generation attestation, requires a new stable poller/renderer/control generation carrying that attestation, and writes an exclusive mode-0600 receipt. Failed activation requires an explicit unprivileged rollback followed by activation of the restored SHA.
 - README prerequisites now precede installation, model guidance is identified as behavior rather than authority, and the Telegram-only rationale leads with the delivery primitives that make the target load-bearing.
 
 ### Fixed
