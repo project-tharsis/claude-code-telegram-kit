@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Completed assistant commentary that precedes a later tool call now travels on a dedicated silent Telegram rail. Each commentary boundary seals the preceding tool-progress bubble, opens a new segment for later tools, and leaves canonical final delivery Stop-owned and exactly once.
+
 ### Changed
 
 - Example Claude guidance now requires one complete canonical final while preserving the depth and length the user requests; it no longer treats Telegram as a reason to shorten answers.

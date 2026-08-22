@@ -28,6 +28,7 @@ interface Harness {
     content: string;
     artifacts: readonly ArtifactCandidate[];
   }>;
+  commentaries: string[];
   typingStarts: string[];
   typingStops: { count: number };
   delays: number[];
@@ -44,10 +45,13 @@ function harness(options: {
   ) => FinalDeliveryOutcome | Promise<FinalDeliveryOutcome>);
   config?: RuntimeConfig;
   artifacts?: readonly ArtifactCandidate[];
+  commentary?: string;
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
   const finalDeliveries: Harness["finalDeliveries"] = [];
+  const commentaries: string[] = [];
+  let commentaryPolls = 0;
   const typingStarts: string[] = [];
   const typingStops = { count: 0 };
   const delays: number[] = [];
@@ -69,6 +73,18 @@ function harness(options: {
       return typeof options.finalOutcome === "function"
         ? options.finalOutcome(content, finalDeliveries.length - 1)
         : options.finalOutcome ?? "delivered";
+    },
+    startCommentaryTracking: () => options.commentary === undefined ? null : ({
+      collectBeforeTool: () => {
+        commentaryPolls += 1;
+        return commentaryPolls < 2 ? [] : [{ key: "row-1", text: options.commentary! }];
+      },
+      reserve: () => undefined,
+      close: () => undefined
+    }),
+    deliverCommentary: async (_config, _chatId, _messageId, content) => {
+      commentaries.push(content);
+      return "delivered";
     },
     send: async (_config, chatId, replyTo, text) => {
       sends.push({ chatId, replyTo, text });
@@ -92,6 +108,7 @@ function harness(options: {
     sends,
     edits,
     finalDeliveries,
+    commentaries,
     typingStarts,
     typingStops,
     delays,
@@ -139,6 +156,19 @@ async function finish(
 }
 
 describe("turn disclosure lifecycle", () => {
+  test("a later tool proves preceding assistant text is commentary before the next bubble", async () => {
+    const h = harness({ commentary: "I found the relevant files." });
+    bind(h);
+    tool(h, "t1", "Read");
+    await h.tick();
+    tool(h, "t2", "Bash");
+    await finish(h, "Stop", "done");
+    expect(h.commentaries).toEqual(["I found the relevant files."]);
+    expect(h.sends).toHaveLength(2);
+    expect(h.edits).toHaveLength(1);
+    expect(h.edits[0]!.text).toContain("Cogitated");
+  });
+
   test("Stop auto-delivers the final assistant Markdown exactly once", async () => {
     const h = harness();
     bind(h);

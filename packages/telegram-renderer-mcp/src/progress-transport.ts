@@ -5,6 +5,7 @@ import {
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 import { formatProgressHtml } from "./progress-html.js";
+import { toMarkdownV2 } from "./markdown.js";
 
 export type ProgressFetchLike = (
   input: string | URL | Request,
@@ -19,6 +20,35 @@ export type ProgressSendOutcome =
   | { kind: "sent"; messageId: number }
   | { kind: "uncertain" }
   | { kind: "rejected" };
+
+export type CommentarySendOutcome = "delivered" | "uncertain" | "rejected";
+export const EPHEMERAL_PRESENTATION_TIMEOUT_MS = 500;
+export const INTERIM_COMMENTARY_TIMEOUT_MS = EPHEMERAL_PRESENTATION_TIMEOUT_MS;
+
+export async function sendInterimCommentary(
+  config: RuntimeConfig,
+  chatId: string,
+  replyToMessageId: string,
+  text: string,
+  fetchImpl: ProgressFetchLike = fetch
+): Promise<CommentarySendOutcome> {
+  assertAuthorizedChat(config, chatId);
+  const quoted = Number(replyToMessageId);
+  if (!/^\d+$/.test(replyToMessageId) || !Number.isSafeInteger(quoted) || quoted < 1) return "rejected";
+  const rendered = toMarkdownV2(text);
+  if (rendered.length > 4_096) return "rejected";
+  const attempt = await call("sendMessage", {
+    chat_id: chatId,
+    text: rendered,
+    parse_mode: "MarkdownV2",
+    disable_notification: true,
+    reply_parameters: { message_id: quoted }
+  }, config, fetchImpl, INTERIM_COMMENTARY_TIMEOUT_MS);
+  if (attempt === null) return "uncertain";
+  const messageId = positiveMessageId((attempt.envelope.result as { message_id?: unknown } | undefined)?.message_id);
+  if (attempt.envelope.ok === true && messageId !== null) return "delivered";
+  return attempt.status === 400 ? "rejected" : "uncertain";
+}
 
 /**
  * `transient` keeps the bubble identity for a later catch-up edit. `gone` is the only class
@@ -124,7 +154,7 @@ export async function sendProgressBubble(
     parse_mode: "HTML",
     disable_notification: true,
     reply_parameters: { message_id: quoted }
-  }, config, fetchImpl);
+  }, config, fetchImpl, EPHEMERAL_PRESENTATION_TIMEOUT_MS);
   if (attempt === null) return { kind: "uncertain" };
 
   const messageId = positiveMessageId((attempt.envelope.result as { message_id?: unknown } | undefined)?.message_id);
@@ -148,7 +178,7 @@ export async function editProgressBubble(
     message_id: messageId,
     text: formatProgressHtml(text),
     parse_mode: "HTML"
-  }, config, fetchImpl);
+  }, config, fetchImpl, EPHEMERAL_PRESENTATION_TIMEOUT_MS);
   if (attempt === null) return { kind: "transient" };
 
   const { status, envelope } = attempt;
