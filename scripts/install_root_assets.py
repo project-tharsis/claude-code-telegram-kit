@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
 import os
@@ -35,6 +36,10 @@ ASSETS = (
     Asset("packages/session-control-mcp/scripts/claude_code_session_receipt.py", "/usr/local/sbin/claude-session-start-receipt", 0o755),
     Asset("packages/session-control-mcp/scripts/claude_code_control_guard.py", "/usr/local/sbin/claude-control-command-guard", 0o755),
     Asset("packages/session-control-mcp/scripts/claude_code_usage_snapshot.py", "/usr/local/sbin/claude-usage-snapshot", 0o755),
+    Asset("scripts/runtime_activate.py", "/usr/local/sbin/claude-runtime-activate", 0o755),
+    Asset("examples/claude-runtime-activation.json", "/etc/claude-code-telegram-kit/activation.json", 0o600, True),
+    Asset("examples/claude-telegram-activation.conf", "/etc/systemd/system/claude-telegram.service.d/30-runtime-activation.conf", 0o644),
+    Asset("examples/claude-code-telegram-kit-tmpfiles.conf", "/usr/lib/tmpfiles.d/claude-code-telegram-kit.conf", 0o644, True),
     Asset("examples/claude-code-control.socket", "/etc/systemd/system/claude-code-control.socket", 0o644, True),
     Asset("examples/claude-code-control@.service", "/etc/systemd/system/claude-code-control@.service", 0o644),
     Asset("examples/claude-telegram-hardening.conf", "/etc/systemd/system/claude-telegram.service.d/20-control-broker.conf", 0o644),
@@ -53,12 +58,13 @@ def _git_show(repo: Path, commit: str, source: str) -> bytes:
     return result.stdout
 
 
-def _render(asset: Asset, data: bytes, service_user: str) -> bytes:
+def _render(asset: Asset, data: bytes, service_user: str, service_group: str) -> bytes:
     if not asset.render_user:
         return data
-    rendered = data.replace(b"USER", service_user.encode("ascii"))
-    if b"USER" in rendered:
-        raise ValueError("unresolved service user placeholder")
+    rendered = data.replace(b"SERVICE_GROUP", service_group.encode("ascii"))
+    rendered = rendered.replace(b"USER", service_user.encode("ascii"))
+    if b"USER" in rendered or b"SERVICE_GROUP" in rendered:
+        raise ValueError("unresolved service account placeholder")
     return rendered
 
 
@@ -157,8 +163,13 @@ def install_release(
     account = pwd.getpwnam(service_user)
     if account.pw_uid == 0:
         raise ValueError("service user must be unprivileged")
+    service_group = grp.getgrgid(account.pw_gid).gr_name
+    service_group.encode("ascii")
     _secure_state_root(state_root, owner_uid)
-    rendered = [(asset, _render(asset, _git_show(repo, commit, asset.source), service_user)) for asset in ASSETS]
+    rendered = [
+        (asset, _render(asset, _git_show(repo, commit, asset.source), service_user, service_group))
+        for asset in ASSETS
+    ]
     destinations = [_destination(asset, root_prefix) for asset, _data in rendered]
     backup = _backup(destinations, state_root, owner_uid, owner_gid)
     try:

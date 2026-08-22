@@ -14,19 +14,59 @@
 git fetch origin
 sha=<40-character-commit-sha>
 git cat-file -e "$sha^{commit}"
+
+# Install the activator, its fixed config, and the systemd EnvironmentFile drop-in
+# from the same exact SHA before first use or whenever root assets change.
+sudo python3 scripts/install_root_assets.py install \
+  --repo . \
+  --commit "$sha" \
+  --service-user USER
+sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/claude-code-telegram-kit.conf
+sudo systemctl daemon-reload
+
 python3 scripts/deploy_local.py install \
   --repo . \
   --ref "$sha" \
   --bun "$(command -v bun)"
 python3 scripts/deploy_local.py status
+# The install output must say activation_required=true.
+sudo /usr/local/sbin/claude-runtime-activate "$sha"
 ```
+
+The root activator accepts only the exact SHA. Its fixed root-owned configuration names the
+service account (the installer renders `USER` to that account); it does not accept unit, path,
+argv, or runtime-role overrides. Before restart it writes a root-owned activation generation
+containing the requested SHA. The fixed systemd drop-in injects that generation into the new
+process tree. Readiness requires a new systemd `MainPID`, `ActiveState=active`,
+`SubState=running`, the fixed service cgroup, and exactly one official Channel poller, renderer
+MCP, and session-control MCP whose process environments carry that same SHA and generation.
+The core role PID set must be stable for two observations; unrelated transient hook processes are
+ignored. `current` is descriptor-anchored and revalidated throughout activation.
+
+Activation never changes the service-user-owned `current` or `previous` symlinks. On failure it
+writes no success receipt. Rollback is an explicit two-step operator action:
+
+```bash
+python3 scripts/deploy_local.py rollback
+python3 scripts/deploy_local.py status  # read the restored exact current SHA
+sudo /usr/local/sbin/claude-runtime-activate <restored-40-character-sha>
+```
+
+`deploy_local.py` and the root activator share a root-owned runtime lock, so a normal release
+switch cannot race activation. The activation receipt is root-owned mode `0600` and contains only
+the exact SHA, generation, old/new MainPID, and the three bounded role PIDs.
 
 Inspect the installation receipt:
 
 ```bash
 readlink -f ~/.local/share/claude-code-telegram-kit/current
 python3 -m json.tool ~/.local/share/claude-code-telegram-kit/current/.installed.json
+sudo find /var/lib/claude-code-telegram-kit/activation -maxdepth 1 -type f -name 'activation-*.json' -printf '%T@ %p\n' | sort -nr | head -1
 ```
+
+Read the exact activation receipt path returned by `claude-runtime-activate` with
+`sudo python3 -m json.tool <receipt-path>` and verify `release_sha`, `generation`,
+`old_main_pid`, `new_main_pid`, and the three role PIDs before calling the feature active.
 
 ## Configure Claude Code
 
@@ -37,6 +77,8 @@ Copy and adapt:
 - `examples/CLAUDE.md`
 - `examples/claude-telegram.service`
 - `examples/claude-telegram-hardening.conf`
+- `examples/claude-telegram-activation.conf`
+- `examples/claude-code-telegram-kit-tmpfiles.conf`
 - `examples/claude-code-control.socket`
 - `examples/claude-code-control@.service`
 - `examples/reset.json`
@@ -120,7 +162,7 @@ sudo python3 scripts/install_root_assets.py rollback
 sudo systemctl daemon-reload
 python3 scripts/deploy_local.py rollback
 python3 scripts/deploy_local.py status
-sudo systemctl restart claude-telegram.service
+sudo /usr/local/sbin/claude-runtime-activate "$(python3 scripts/deploy_local.py status | python3 -c 'import json,sys; print(json.load(sys.stdin)["current"])')"
 ```
 
 Reinstall the root broker, helper, and unit files from the previous reviewed commit if they changed. Restore the previous Claude unit before disabling the broker socket; otherwise `NoNewPrivileges` correctly prevents the old `sudo systemd-run` path. Repeat destination readback after rollback.

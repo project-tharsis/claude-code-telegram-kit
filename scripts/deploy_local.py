@@ -19,6 +19,7 @@ from typing import Any
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_PREFIX = Path.home() / ".local" / "share" / "claude-code-telegram-kit"
+ACTIVATION_LOCK = Path("/run/lock/claude-code-telegram-kit/shared/deploy-activation.lock")
 
 
 def _secure_prefix(prefix: Path) -> Path:
@@ -32,6 +33,29 @@ def _secure_prefix(prefix: Path) -> Path:
     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
         raise ValueError("install prefix must be owned by the current user and not group/world writable")
     return expanded.resolve(strict=True)
+
+
+def _lock_activation(*, expected_uid: int = 0) -> int | None:
+    try:
+        before = ACTIVATION_LOCK.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode) or before.st_uid != expected_uid
+            or stat.S_IMODE(before.st_mode) != 0o660 or before.st_nlink != 1):
+        raise ValueError("shared activation lock is not a secure root-owned mode-0660 file")
+    fd = os.open(ACTIVATION_LOCK, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("shared activation lock changed during validation")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("runtime activation is active") from exc
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def _lock_prefix(prefix: Path) -> int:
@@ -254,8 +278,9 @@ def install_release(repo: Path, sha: str, prefix: Path, bun: str) -> dict[str, s
     else:
         _verify_release(target, sha)
 
-    activation = activate_release(prefix, target)
+    activation: dict[str, Any] = activate_release(prefix, target)
     activation["commit"] = sha
+    activation["activation_required"] = True
     return activation
 
 
@@ -288,16 +313,23 @@ def main() -> int:
 
     args = parser.parse_args()
     prefix = _secure_prefix(args.prefix)
-    lock_fd = _lock_prefix(prefix)
+    activation_fd = _lock_activation()
+    lock_fd = -1
     try:
+        lock_fd = _lock_prefix(prefix)
+        receipt: dict[str, Any]
         if args.command == "install":
-            receipt: dict[str, Any] = install_release(args.repo, args.ref, prefix, args.bun)
+            receipt = install_release(args.repo, args.ref, prefix, args.bun)
         elif args.command == "rollback":
             receipt = rollback(prefix)
+            receipt["activation_required"] = True
         else:
             receipt = status(prefix)
     finally:
-        os.close(lock_fd)
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        if activation_fd is not None:
+            os.close(activation_fd)
     print(json.dumps(receipt, separators=(",", ":")))
     return 0
 

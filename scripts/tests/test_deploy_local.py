@@ -1,10 +1,12 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "deploy_local.py"
 spec = importlib.util.spec_from_file_location("deploy_local", MODULE_PATH)
@@ -26,6 +28,19 @@ class RefTests(unittest.TestCase):
 
 
 class ActivationTests(unittest.TestCase):
+    def test_shared_root_lock_blocks_deploy_while_activation_is_running(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "shared.lock"
+            path.write_text("")
+            path.chmod(0o660)
+            with mock.patch.object(deploy, "ACTIVATION_LOCK", path):
+                first = deploy._lock_activation(expected_uid=os.getuid())
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "activation is active"):
+                        deploy._lock_activation(expected_uid=os.getuid())
+                finally:
+                    os.close(first)
+
     def test_activate_and_rollback_swap_current_and_previous(self):
         with tempfile.TemporaryDirectory() as td:
             prefix = Path(td)

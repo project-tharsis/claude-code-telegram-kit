@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import grp
 import importlib.util
 import os
 import pwd
@@ -34,7 +35,10 @@ class RootAssetInstallerTests(unittest.TestCase):
         for asset in root_assets.ASSETS:
             path = self.repo / asset.source
             path.parent.mkdir(parents=True, exist_ok=True)
-            content = "SocketUser=USER\n" if asset.render_user else f"asset:{asset.source}\n"
+            if asset.source.endswith("claude-code-telegram-kit-tmpfiles.conf"):
+                content = "d /run/example 0750 root SERVICE_GROUP -\n# USER\n"
+            else:
+                content = "SocketUser=USER\n" if asset.render_user else f"asset:{asset.source}\n"
             path.write_text(content)
         installer = self.repo / root_assets.SELF_PATH
         installer.parent.mkdir(parents=True, exist_ok=True)
@@ -74,6 +78,10 @@ class RootAssetInstallerTests(unittest.TestCase):
         socket_text = (self.root / "etc/systemd/system/claude-code-control.socket").read_text()
         self.assertIn(f"SocketUser={self.user}", socket_text)
         self.assertNotIn("SocketUser=USER", socket_text)
+        group = grp.getgrgid(self.gid).gr_name
+        tmpfiles_text = (self.root / "usr/lib/tmpfiles.d/claude-code-telegram-kit.conf").read_text()
+        self.assertIn(f"root {group}", tmpfiles_text)
+        self.assertNotIn("SERVICE_GROUP", tmpfiles_text)
 
         rolled = root_assets.rollback_release(state_root=self.state, owner_uid=self.uid, owner_gid=self.gid)
         self.assertEqual(rolled["rolled_back"], self.commit)
