@@ -11,12 +11,15 @@ import {
   type RecordToolSuccessInput
 } from "./hook-contract.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
-import { TurnProgress } from "./progress-state.js";
+import { selectTurnVerbPair, TurnProgress, type TurnVerbPair } from "./progress-state.js";
 import { MAX_UNIFIED_CONTENT_CHARACTERS } from "./unified-contract.js";
 import type {
   ProgressEditOutcome,
-  ProgressSendOutcome
+  ProgressSendOutcome,
+  CommentarySendOutcome
 } from "./progress-transport.js";
+import type { CommentaryBlock, CommentaryTracker } from "./commentary-transcript.js";
+import { sanitizeCommentary } from "./commentary-sanitizer.js";
 
 /** Long enough to coalesce a parallel tool burst, short enough to still read as progress. */
 export const PROGRESS_DEBOUNCE_MS = 1_500;
@@ -56,6 +59,13 @@ export interface TurnDisclosureDeps {
     input: BindTurnInput,
     onFailure: () => Promise<void>
   ) => CancelScheduled;
+  startCommentaryTracking?: (input: BindTurnInput) => CommentaryTracker | null;
+  deliverCommentary?: (
+    config: RuntimeConfig,
+    chatId: string,
+    messageId: string,
+    content: string
+  ) => Promise<CommentarySendOutcome>;
   sendAuthFailure?: (
     config: RuntimeConfig,
     chatId: string,
@@ -93,6 +103,11 @@ interface Turn {
   chatId: string;
   quoteMessageId: string;
   progress: TurnProgress;
+  seenToolUseIds: Set<string>;
+  toolSegments: Map<string, number>;
+  segments: Map<number, TurnProgress>;
+  segmentNumber: number;
+  verbs: TurnVerbPair;
   bubbleMessageId: number | null;
   state: BubbleState;
   replacementUsed: boolean;
@@ -103,6 +118,11 @@ interface Turn {
   finalDeliveryAttempted: boolean;
   finalDeliveryRetries: number;
   artifactTracker: ArtifactTracker | null;
+  commentaryTracker: CommentaryTracker | null;
+  commentaryKeys: Set<string>;
+  pendingCommentaryBoundaries: number;
+  commentaryAbandoned: boolean;
+  pendingStatuses: Map<string, "done" | "failed">;
   artifacts: ArtifactCandidate[] | null;
   chain: Promise<void>;
 }
@@ -140,6 +160,9 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancelAuthWatch = null;
     turn.artifactTracker?.close();
     turn.artifactTracker = null;
+    turn.commentaryTracker?.close();
+    turn.commentaryTracker = null;
+    turn.commentaryAbandoned = true;
     turn.artifacts = [];
     turn.state = "abandoned";
   }
@@ -245,6 +268,49 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     return turns.get(turnKey(sessionId, promptId));
   }
 
+
+  async function emitCommentary(turn: Turn, blocks: CommentaryBlock[]): Promise<void> {
+    if (turn.commentaryAbandoned || deps.deliverCommentary === undefined) return;
+    const fresh = blocks.filter(block => {
+      if (turn.commentaryKeys.has(block.key)) return false;
+      // Reservation happens before any transport I/O, including rejected text.
+      turn.commentaryKeys.add(block.key);
+      turn.commentaryTracker?.reserve(block.key);
+      return true;
+    });
+    for (const block of fresh) {
+      if (turn.commentaryAbandoned) return;
+      const content = sanitizeCommentary(block.text);
+      if (!content) continue;
+      let config: RuntimeConfig;
+      try { config = deps.loadConfig(); assertAuthorizedChat(config, turn.chatId); } catch { continue; }
+      try { await deps.deliverCommentary(config, turn.chatId, turn.quoteMessageId, content); } catch { /* display only */ }
+    }
+  }
+
+  async function beginSegment(turn: Turn, blocks: CommentaryBlock[]): Promise<void> {
+    turn.cancel?.();
+    turn.cancel = null;
+    const old = turn.progress;
+    old.close("Stop");
+    await flush(turn);
+    if (turn.commentaryAbandoned) return;
+    // The preceding bubble is sealed permanently at this boundary.
+    turn.bubbleMessageId = null;
+    turn.state = "none";
+    turn.lastSentText = null;
+    turn.replacementUsed = false;
+    turn.segmentNumber += 1;
+    turn.progress = new TurnProgress({
+      chatId: turn.chatId,
+      messageId: turn.quoteMessageId,
+      sessionId: turn.progress.key.sessionId,
+      promptId: turn.progress.key.promptId
+    }, turn.verbs);
+    turn.segments.set(turn.segmentNumber, turn.progress);
+    await emitCommentary(turn, blocks);
+  }
+
   async function finalize(turn: Turn, outcome: "Stop" | "StopFailure"): Promise<void> {
     turn.cancelTyping?.();
     turn.cancelTyping = null;
@@ -253,6 +319,20 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     if (outcome === "Stop") {
       turn.cancelAuthWatch?.();
       turn.cancelAuthWatch = null;
+    }
+    // A PreToolUse boundary may be sealing the previous segment asynchronously. Let that
+    // ordering settle for one bounded drain before closing the current segment.
+    let preTimeout: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        turn.chain,
+        new Promise<void>(resolve => {
+          preTimeout = setTimeout(resolve, FINAL_DRAIN_TIMEOUT_MS);
+          preTimeout.unref?.();
+        })
+      ]);
+    } finally {
+      if (preTimeout !== null) clearTimeout(preTimeout);
     }
     turn.progress.close(outcome);
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -266,6 +346,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       ]);
     } finally {
       if (timeout !== null) clearTimeout(timeout);
+      turn.commentaryAbandoned = true;
     }
   }
 
@@ -306,6 +387,11 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             sessionId: input.session_id,
             promptId: input.prompt_id
           }),
+          seenToolUseIds: new Set(),
+          toolSegments: new Map(),
+          segments: new Map(),
+          segmentNumber: 0,
+          verbs: selectTurnVerbPair({ sessionId: input.session_id, promptId: input.prompt_id }),
           bubbleMessageId: null,
           state: "none",
           replacementUsed: false,
@@ -316,9 +402,15 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           finalDeliveryAttempted: false,
           finalDeliveryRetries: 0,
           artifactTracker: null,
+          commentaryTracker: null,
+          commentaryKeys: new Set(),
+          pendingCommentaryBoundaries: 0,
+          commentaryAbandoned: false,
+          pendingStatuses: new Map(),
           artifacts: null,
           chain: Promise.resolve()
         };
+        turn.segments.set(0, turn.progress);
         turns.set(key, turn);
         if (input.transcript_path !== undefined && deps.startArtifactTracking !== undefined) {
           try {
@@ -326,6 +418,9 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           } catch {
             turn.artifactTracker = null;
           }
+        }
+        if (input.transcript_path !== undefined && deps.startCommentaryTracking !== undefined) {
+          try { turn.commentaryTracker = deps.startCommentaryTracking(input); } catch { turn.commentaryTracker = null; }
         }
         if (
           input.transcript_path !== undefined
@@ -359,13 +454,43 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       }
     },
 
-    recordTool(input: RecordToolInput): void {
+    async recordTool(input: RecordToolInput): Promise<void> {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
-        if (turn === undefined) return;
+        if (turn === undefined || turn.seenToolUseIds.has(input.tool_use_id)) return;
+        turn.seenToolUseIds.add(input.tool_use_id);
         const display = buildProgressStep(input.tool_name, input, deps.mode, input.agent_id);
         if (display === null) return;
-        if (turn.progress.recordTool(input.tool_use_id, display)) touch(turn);
+        const record = () => {
+          turn.toolSegments.set(input.tool_use_id, turn.segmentNumber);
+          if (turn.progress.recordTool(input.tool_use_id, display)) touch(turn);
+          const pending = turn.pendingStatuses.get(input.tool_use_id);
+          if (pending !== undefined) {
+            turn.pendingStatuses.delete(input.tool_use_id);
+            if (pending === "done") turn.progress.recordSuccess(input.tool_use_id);
+            else turn.progress.recordFailure(input.tool_use_id);
+          }
+        };
+        const blocks = turn.commentaryTracker?.collectBeforeTool(input.tool_use_id) ?? [];
+        const freshBlocks = blocks.filter(block => !turn.commentaryKeys.has(block.key));
+        if (freshBlocks.length === 0 && turn.pendingCommentaryBoundaries === 0) {
+          record();
+          return;
+        }
+        const ownsBoundary = freshBlocks.length > 0;
+        if (ownsBoundary) turn.pendingCommentaryBoundaries += 1;
+        const run = async (): Promise<void> => {
+          try {
+            if (turn.commentaryAbandoned || lookup(input.session_id, input.prompt_id) !== turn) return;
+            const pending = freshBlocks.filter(block => !turn.commentaryKeys.has(block.key));
+            if (pending.length > 0) await beginSegment(turn, pending);
+            if (!turn.commentaryAbandoned) record();
+          } finally {
+            if (ownsBoundary) turn.pendingCommentaryBoundaries -= 1;
+          }
+        };
+        turn.chain = turn.chain.then(run, run).catch(() => undefined);
+        await turn.chain;
       } catch {
         // Never surface a disclosure failure to the agent.
       }
@@ -376,7 +501,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
-        if (turn.progress.recordSuccess(input.tool_use_id)) touch(turn);
+        const segment = turn.toolSegments.get(input.tool_use_id);
+        if (segment === undefined) { turn.pendingStatuses.set(input.tool_use_id, "done"); return; }
+        const progress = turn.segments.get(segment);
+        if (progress?.recordSuccess(input.tool_use_id) && segment === turn.segmentNumber) touch(turn);
       } catch {
         // Never surface a disclosure failure to the agent.
       }
@@ -386,7 +514,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
-        if (turn.progress.recordFailure(input.tool_use_id)) touch(turn);
+        const segment = turn.toolSegments.get(input.tool_use_id);
+        if (segment === undefined) { turn.pendingStatuses.set(input.tool_use_id, "failed"); return; }
+        const progress = turn.segments.get(segment);
+        if (progress?.recordFailure(input.tool_use_id) && segment === turn.segmentNumber) touch(turn);
       } catch {
         // Never surface a disclosure failure to the agent.
       }

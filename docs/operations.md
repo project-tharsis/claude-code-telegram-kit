@@ -94,21 +94,22 @@ Verify from the real destination:
 2. a GFM table is delivered by the same Stop hook as native Rich Message;
 3. a direct message receives `👀`, then a confirmed reply replaces it with `👍`;
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
-5. a multi-tool turn creates one silent progress bubble with bold tool labels, escaped monospace previews, mobile-width truncation, redacted credentials, and success/failure state;
-6. typing remains visible across a long turn and stops before the final reply;
-7. with either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`, an exact runtime `authentication_failed` event stops sustained typing/progress and sends one quoted auth explanation;
-8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot as bold percentages and compact micro-bars without an extra Claude process or model turn;
-9. `/sessions` returns at most ten HTML-escaped, UUID-free entries, stores a private snapshot, and renders missing native titles as `Conversation with Claudio` or `Control-only session` without reading prompt text;
-10. `/model` reports the latest actual model and bot override; `/model sonnet` persists a root-owned override, restarts the same `--continue` session, verifies the process environment, and rolls back on failed health;
+5. a multi-tool turn without commentary creates one silent progress bubble with bold tool labels, escaped monospace previews, mobile-width truncation, redacted credentials, and success/failure state;
+6. completed assistant commentary followed by another tool seals the preceding bubble, sends one silent quoted commentary message, then opens a new progress segment without changing the inbound reaction before final delivery;
+7. typing remains visible across a long turn and stops before the final reply;
+8. with either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`, an exact runtime `authentication_failed` event stops sustained typing/progress and sends one quoted auth explanation;
+9. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot as bold percentages and compact micro-bars without an extra Claude process or model turn;
+10. `/sessions` returns at most ten HTML-escaped, UUID-free entries, stores a private snapshot, and renders missing native titles as `Conversation with Claudio` or `Control-only session` without reading prompt text;
+11. `/model` reports the latest actual model and bot override; `/model sonnet` persists a root-owned override, restarts the same `--continue` session, verifies the process environment, and rolls back on failed health;
    `/model` also renders a compact 2×2 one-time model keyboard plus `5 · Cancel`; selecting `2 · Sonnet` switches deterministically, while Cancel only removes the keyboard;
-11. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
-12. `/reset` uses a one-shot confirmation, sends typographic accepted/completion messages without any session identifier, and leaves no synthetic LLM seed;
-13. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
-14. when command-menu sync is enabled, `getMyCommands` for the allowlisted chat-specific scope returns exactly `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`; the official `all_private_chats` scope remains untouched.
-15. `/usr/bin/flock` is present and executable; the first meaningful Stop creates at most one `0600` per-session title-state record, makes one isolated Haiku call, appends a verified `custom-title` through the official zero-turn `/rename` local-command path and exact readback, and never exposes credentials, prompt bodies, UUIDs, paths, or tool inputs in Telegram;
-16. `/rename NAME` writes the exact current session, returns escaped HTML, marks `USER_LOCKED`, and survives later Stops, `/sessions`, `/reset`, and resume without automatic overwrite.
-17. `systemctl show claude-telegram.service -p NoNewPrivileges` returns `yes`; `sudo` from a process with the same service hardening fails, while Broker Protocol `capabilities` succeeds through the private socket.
-18. a successful Claude `Artifact` tool call sends one quoted silent document after the canonical final text; failed/unmatched, wrong-session, symlink, hardlink, writable, oversized, and uncertain files never replay or expose a path.
+12. `/resume N` uses a one-shot confirmation, reaches the selected session, restores the unit to `--continue`, and retains rollback;
+13. `/reset` uses a one-shot confirmation, sends typographic accepted/completion messages without any session identifier, and leaves no synthetic LLM seed;
+14. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
+15. when command-menu sync is enabled, `getMyCommands` for the allowlisted chat-specific scope returns exactly `/start`, `/help`, `/status`, `/usage`, `/sessions`, `/model`, and `/reset`; the official `all_private_chats` scope remains untouched.
+16. `/usr/bin/flock` is present and executable; the first meaningful Stop creates at most one `0600` per-session title-state record, makes one isolated Haiku call, appends a verified `custom-title` through the official zero-turn `/rename` local-command path and exact readback, and never exposes credentials, prompt bodies, UUIDs, paths, or tool inputs in Telegram;
+17. `/rename NAME` writes the exact current session, returns escaped HTML, marks `USER_LOCKED`, and survives later Stops, `/sessions`, `/reset`, and resume without automatic overwrite.
+18. `systemctl show claude-telegram.service -p NoNewPrivileges` returns `yes`; `sudo` from a process with the same service hardening fails, while Broker Protocol `capabilities` succeeds through the private socket.
+19. a successful Claude `Artifact` tool call sends one quoted silent document after the canonical final text; failed/unmatched, wrong-session, symlink, hardlink, writable, oversized, and uncertain files never replay or expose a path.
 
 Before removing an allowlisted private chat or disabling menu sync, set `TELEGRAM_COMMAND_MENU_ENABLED=delete`, restart once, verify the chat-specific `getMyCommands` result is empty, then remove the chat or env key. A stale menu never grants authority, but verified cleanup keeps Telegram UI aligned with the live allowlist.
 

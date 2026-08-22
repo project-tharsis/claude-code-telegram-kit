@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   editProgressBubble,
+  EPHEMERAL_PRESENTATION_TIMEOUT_MS,
   sendProgressBubble,
   sendTypingAction
 } from "../src/progress-transport.js";
@@ -78,6 +79,22 @@ describe("progress bubble send", () => {
       return reply(200, { ok: true, result: { message_id: 1 } });
     })).rejects.toThrow("chat is not authorized");
     expect(called).toBe(false);
+  });
+
+  test("a stalled progress request aborts on the ephemeral presentation budget", async () => {
+    const started = performance.now();
+    const result = await sendProgressBubble(config, "123", "9", "x", async (_input, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(new Error("aborted"));
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    expect(result).toEqual({ kind: "uncertain" });
+    expect(performance.now() - started).toBeLessThan(EPHEMERAL_PRESENTATION_TIMEOUT_MS + 500);
   });
 
   test("a timeout, a 429, and a 5xx are all uncertain, never rejected", async () => {
