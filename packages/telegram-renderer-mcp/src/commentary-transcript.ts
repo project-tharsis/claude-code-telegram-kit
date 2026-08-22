@@ -44,7 +44,7 @@ function parseRows(buffer: Buffer, sessionId: string, base: number, toolUseId: s
       }
     } catch { /* malformed rows fail closed */ }
   }
-  return [];
+  return blocks;
 }
 
 export function startCommentaryTranscriptTracker(input: BindTurnInput, options: { expectedRoot: string; uid?: number }): CommentaryTracker | null {
