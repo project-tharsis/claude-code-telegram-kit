@@ -3,7 +3,7 @@ import {
   createTurnDisclosure,
   type FinalDeliveryOutcome
 } from "../src/progress-disclosure.js";
-import type { CommentaryBlock } from "../src/commentary-transcript.js";
+import { createCommentaryDisplayBuffer, type CommentaryBlock } from "../src/commentary-display.js";
 import type {
   CommentarySendOutcome,
   ProgressEditOutcome,
@@ -14,7 +14,7 @@ import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const PROMPT = "p1";
 const ENVELOPE = '<channel source="telegram" chat_id="123" message_id="9">do work';
-const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
+const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123", "124"]) };
 
 interface Harness {
   disclosure: ReturnType<typeof createTurnDisclosure>;
@@ -25,6 +25,7 @@ interface Harness {
 }
 
 function harness(options: {
+  displayBuffer?: boolean;
   commentaryByTool?: Record<string, CommentaryBlock[]>;
   commentaryOutcomes?: CommentarySendOutcome[];
   finalOutcome?: FinalDeliveryOutcome;
@@ -40,12 +41,15 @@ function harness(options: {
     mode: "safe",
     startTyping: () => () => undefined,
     startArtifactTracking: () => ({ collect: () => [], close: () => undefined }),
-    startCommentaryTracking: () => ({
-      collectBeforeTool: toolUseId => (options.commentaryByTool?.[toolUseId] ?? [])
-        .filter(block => !reserved.has(block.key)),
-      reserve: key => { reserved.add(key); },
-      close: () => undefined
-    }),
+    startCommentaryBuffer: () => options.displayBuffer
+      ? createCommentaryDisplayBuffer(SESSION)
+      : ({
+          add: () => undefined,
+          collectBeforeTool: toolUseId => (options.commentaryByTool?.[toolUseId] ?? [])
+            .filter(block => !reserved.has(block.key)),
+          reserve: key => { reserved.add(key); },
+          close: () => undefined
+        }),
     deliverCommentary: async (_config, _chatId, _messageId, content) => {
       events.push(`commentary:${content}`);
       const outcome = options.commentaryOutcomes?.[commentaryAttempts] ?? "delivered";
@@ -128,7 +132,65 @@ async function finish(h: Harness, text = "done"): Promise<void> {
   });
 }
 
+function display(h: Harness, prompt_id: string, delta: string, agent_id?: string): void {
+  h.disclosure.recordMessageDisplay({
+    session_id: SESSION,
+    prompt_id,
+    agent_id,
+    turn_id: `turn-${prompt_id}`,
+    message_id: `message-${prompt_id}-${agent_id ?? "main"}`,
+    index: 0,
+    final: true,
+    delta,
+    hook_event_name: "MessageDisplay"
+  });
+}
+
 describe("semantic commentary rail", () => {
+  test("MessageDisplay completion is committed by the later PreToolUse boundary", async () => {
+    const h = harness({ displayBuffer: true });
+    h.disclosure.recordMessageDisplay({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      turn_id: "turn-1",
+      message_id: "message-1",
+      index: 0,
+      final: true,
+      delta: "Displayed commentary.",
+      hook_event_name: "MessageDisplay"
+    });
+    await tool(h, "t1");
+    expect(h.events[0]).toBe("commentary:Displayed commentary.");
+    await finish(h);
+    expect(h.events.at(-1)).toBe("final:done");
+  });
+
+  test("routes display by exact prompt and drops subagent text", async () => {
+    const h = harness({ displayBuffer: true });
+    h.disclosure.bindTurn({ session_id: SESSION, prompt_id: "p2", prompt: '<channel source="telegram" chat_id="124" message_id="10">other', hook_event_name: "UserPromptSubmit" });
+    display(h, "p2", "wrong prompt");
+    display(h, PROMPT, "subagent", "agent-1");
+    display(h, PROMPT, "right prompt");
+    await tool(h, "t1");
+    expect(h.events).toEqual(["commentary:right prompt"]);
+  });
+
+  test("MessageDisplay text with no later tool is discarded at Stop", async () => {
+    const h = harness({ displayBuffer: true });
+    h.disclosure.recordMessageDisplay({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      turn_id: "turn-1",
+      message_id: "message-final",
+      index: 0,
+      final: true,
+      delta: "Canonical final.",
+      hook_event_name: "MessageDisplay"
+    });
+    await finish(h, "Canonical final.");
+    expect(h.events).toEqual(["final:Canonical final."]);
+  });
+
   test("commentary before the first tool is delivered before the first progress bubble", async () => {
     const h = harness({ commentaryByTool: { t1: [{ key: "k1", text: "Planning first." }] } });
     await tool(h, "t1");

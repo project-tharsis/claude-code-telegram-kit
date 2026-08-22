@@ -12,6 +12,7 @@
       "mcp__telegram-renderer__record_tool",
       "mcp__telegram-renderer__record_tool_success",
       "mcp__telegram-renderer__record_tool_failure",
+      "mcp__telegram-renderer__record_message_display",
       "mcp__telegram-renderer__finish_turn",
       "mcp__session-control__dispatch_command"
     ]
@@ -64,6 +65,28 @@
               "prompt_id": "${prompt_id}",
               "prompt": "${prompt}",
               "hook_event_name": "UserPromptSubmit"
+            }
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_message_display",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "agent_id": "${agent_id}",
+              "turn_id": "${turn_id}",
+              "message_id": "${message_id}",
+              "index": "${index}",
+              "final": "${final}",
+              "delta": "${delta}",
+              "hook_event_name": "MessageDisplay"
             }
           }
         ]
