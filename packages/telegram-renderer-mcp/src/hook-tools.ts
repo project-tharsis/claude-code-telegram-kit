@@ -158,7 +158,7 @@ export const HOOK_TOOL_NAMES: string[] = INTERNAL_HOOK_TOOLS.map(tool => tool.na
 export interface HookDisclosure {
   /** Binds the submitted prompt as a disclosure turn, or ignores it silently. */
   bindTurn: (input: BindTurnInput) => void;
-  recordTool: (input: RecordToolInput) => void | Promise<void>;
+  recordTool: (input: RecordToolInput) => void;
 
   recordSuccess: (input: RecordToolSuccessInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
@@ -190,7 +190,7 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
           disclosure.bindTurn(BindTurnInputSchema.parse(arguments_));
           break;
         case RECORD_TOOL_TOOL.name:
-          await disclosure.recordTool(RecordToolInputSchema.parse(arguments_));
+          disclosure.recordTool(RecordToolInputSchema.parse(arguments_));
           break;
 
         case RECORD_TOOL_SUCCESS_TOOL.name:

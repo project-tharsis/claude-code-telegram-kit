@@ -44,8 +44,6 @@ Tool names map to a fixed allowlist of human labels, so a vendor-controlled tool
 
 Disclosure is configurable as `safe`, `all`, or `verbose`. Every accepted preview field is bounded; credential-shaped values are replaced with fixed markers before truncation or delivery.
 
-When Claude finishes an assistant commentary block and then calls another tool, the exact bound transcript proves that block is interim. For each trusted PreToolUse, the renderer performs one immediate read plus one bounded 35ms catch-up read for rows flushed just afterward; overlapping hooks catch up concurrently while segment writes remain ordered. It then fails open and records the tool, seals the preceding tool bubble, sends the bounded redacted commentary as a separate silent message, and opens a fresh tool segment. This is semantic streaming rather than token streaming: the canonical final remains atomic and Stop-owned.
-
 ## Rendering
 
 | Official Channel | With this kit |
