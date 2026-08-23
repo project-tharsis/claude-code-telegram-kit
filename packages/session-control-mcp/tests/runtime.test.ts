@@ -35,7 +35,7 @@ function capabilities(overrides: Record<string, unknown> = {}) {
     status: "ok",
     capabilities: {
       protocol: HELPER_PROTOCOL_VERSION,
-      actions: ["reset", "resume", "model"],
+      actions: ["reset", "resume", "model", "title"],
       models: ["opus", "sonnet", "haiku", "inherit"],
       ...overrides
     }
@@ -94,7 +94,7 @@ describe("Unix control broker transport", () => {
       socket.on("data", chunk => {
         request += chunk.toString();
         if (request.endsWith("\n")) {
-          socket.end(`{"status":"ok","capabilities":{"protocol":${HELPER_PROTOCOL_VERSION},"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"]}}\n`);
+          socket.end(`{"status":"ok","capabilities":{"protocol":${HELPER_PROTOCOL_VERSION},"actions":["reset","resume","model","title"],"models":["opus","sonnet","haiku","inherit"]}}\n`);
         }
       });
     });
@@ -127,6 +127,13 @@ describe("session scheduler broker contract", () => {
     ]);
   });
 
+  test("schedules an authenticated one-shot automatic title job", async () => {
+    const seen: unknown[] = [];
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-title-${"c".repeat(24)}` }, seen) });
+    await expect(scheduler.scheduleTitle(SESSION)).resolves.toMatch(/^claude-session-title-/);
+    expect(seen).toEqual([{ protocol: BROKER_PROTOCOL_VERSION, action: "title", session_id: SESSION }]);
+  });
+
   test("rejects malformed identity and broker receipts", async () => {
     const schedule = createResetScheduler({ callBroker: broker({ status: "scheduled", unit: "evil.service" }) });
     await expect(schedule("123", "51", SESSION)).rejects.toThrow("rejected");
@@ -141,7 +148,7 @@ describe("broker capability preflight", () => {
   test("accepts the current helper protocol and required actions/models", async () => {
     expect(await probeHelperCapabilities({ callBroker: broker(capabilities()) })).toEqual({
       protocol: HELPER_PROTOCOL_VERSION,
-      actions: ["reset", "resume", "model"],
+      actions: ["reset", "resume", "model", "title"],
       models: ["opus", "sonnet", "haiku", "inherit"]
     });
   });

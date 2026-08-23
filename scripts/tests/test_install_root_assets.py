@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import grp
 import importlib.util
+import json
 import os
 import pwd
 import subprocess
@@ -71,6 +72,10 @@ class RootAssetInstallerTests(unittest.TestCase):
 
         result = self.install()
         self.assertEqual(result["commit"], self.commit)
+        self.assertEqual(result["bun"]["path"], str(Path(pwd.getpwuid(self.uid).pw_dir) / ".bun/bin/bun"))
+        self.assertEqual(len(result["bun"]["sha256"]), 64)
+        installed_manifest = json.loads((self.state / "installed.json").read_text())
+        self.assertEqual(installed_manifest["bun"], result["bun"])
         for asset in root_assets.ASSETS:
             installed = self.root / asset.destination.lstrip("/")
             self.assertTrue(installed.is_file())
@@ -86,8 +91,19 @@ class RootAssetInstallerTests(unittest.TestCase):
         rolled = root_assets.rollback_release(state_root=self.state, owner_uid=self.uid, owner_gid=self.gid)
         self.assertEqual(rolled["rolled_back"], self.commit)
         self.assertEqual(old_path.read_text(), "old\n")
+        self.assertFalse((self.state / "installed.json").exists())
         for asset in root_assets.ASSETS[1:]:
             self.assertFalse((self.root / asset.destination.lstrip("/")).exists())
+
+    def test_rollback_restores_the_previous_installed_manifest(self):
+        with mock.patch.object(root_assets.time, "time", side_effect=[100, 101]):
+            self.install()
+            previous = (self.state / "installed.json").read_bytes()
+            second = self.install()
+        self.assertNotEqual((self.state / "installed.json").read_bytes(), b"")
+        rolled = root_assets.rollback_release(state_root=self.state, owner_uid=self.uid, owner_gid=self.gid)
+        self.assertEqual(rolled["backup"], second["backup"])
+        self.assertEqual((self.state / "installed.json").read_bytes(), previous)
 
     def test_activation_tmpfiles_repairs_control_socket_parent_and_isolates_env(self):
         policy = (SCRIPT.parents[1] / "examples/claude-code-telegram-kit-tmpfiles.conf").read_text()

@@ -14,10 +14,10 @@ const DEFAULT_BROKER_SOCKET = "/run/claude-code-telegram-kit/control.sock";
 const MAX_BROKER_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_BROKER_TIMEOUT_MS = 5_000;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const UNIT = /^claude-session-reset(?:-(?:resume|model))?-[0-9a-f]{24}$/;
+const UNIT = /^claude-session-(?:reset(?:-(?:resume|model))?|title)-[0-9a-f]{24}$/;
 export const BROKER_PROTOCOL_VERSION = 2;
-export const HELPER_PROTOCOL_VERSION = 5;
-export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model"] as const;
+export const HELPER_PROTOCOL_VERSION = 6;
+export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model", "title"] as const;
 
 interface TelegramEnvelope {
   ok?: unknown;
@@ -74,7 +74,8 @@ export type BrokerRequest =
   | { protocol: 2; action: "capabilities" }
   | { protocol: 2; action: "reset"; chat_id: string; message_id: string; current_session_id: string }
   | { protocol: 2; action: "resume"; chat_id: string; message_id: string; current_session_id: string; session_id: string }
-  | { protocol: 2; action: "model"; chat_id: string; message_id: string; model: ModelAlias };
+  | { protocol: 2; action: "model"; chat_id: string; message_id: string; model: ModelAlias }
+  | { protocol: 2; action: "title"; session_id: string };
 
 export type BrokerCall = (request: BrokerRequest) => Promise<unknown>;
 
@@ -145,8 +146,10 @@ function validId(value: string, label: string): void {
 export function createSessionScheduler(options: SchedulerOptions = {}) {
   const call = brokerCall(options);
   async function submit(request: Exclude<BrokerRequest, { action: "capabilities" }>): Promise<string> {
-    validId(request.chat_id, "chat ID");
-    validId(request.message_id, "message ID");
+    if (request.action !== "title") {
+      validId(request.chat_id, "chat ID");
+      validId(request.message_id, "message ID");
+    }
     if (request.action === "reset" || request.action === "resume") {
       if (!SESSION_UUID.test(request.current_session_id)) throw new Error("invalid current session UUID");
     }
@@ -155,6 +158,9 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
     }
     if (request.action === "model" && !MODEL_ALIASES.includes(request.model)) {
       throw new Error("invalid model alias");
+    }
+    if (request.action === "title" && !SESSION_UUID.test(request.session_id)) {
+      throw new Error("invalid session UUID");
     }
     const result = await call(request) as { status?: unknown; unit?: unknown };
     if (result?.status !== "scheduled" || typeof result.unit !== "string" || !UNIT.test(result.unit)) {
@@ -165,7 +171,8 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
   return {
     scheduleReset: (chatId: string, messageId: string, currentSessionId: string) => submit({ protocol: 2, action: "reset", chat_id: chatId, message_id: messageId, current_session_id: currentSessionId }),
     scheduleResume: (chatId: string, messageId: string, currentSessionId: string, sessionId: string) => submit({ protocol: 2, action: "resume", chat_id: chatId, message_id: messageId, current_session_id: currentSessionId, session_id: sessionId }),
-    scheduleModel: (chatId: string, messageId: string, model: ModelAlias) => submit({ protocol: 2, action: "model", chat_id: chatId, message_id: messageId, model })
+    scheduleModel: (chatId: string, messageId: string, model: ModelAlias) => submit({ protocol: 2, action: "model", chat_id: chatId, message_id: messageId, model }),
+    scheduleTitle: (sessionId: string) => submit({ protocol: 2, action: "title", session_id: sessionId })
   };
 }
 

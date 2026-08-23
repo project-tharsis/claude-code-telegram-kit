@@ -151,7 +151,7 @@ describe("supported Claude Code hook configuration", () => {
     expect(guard?.timeout).toBe(5);
   });
 
-  test("runs automatic title generation as an auth-inheriting command hook", () => {
+  test("schedules automatic title jobs from command hooks without running the model there", () => {
     for (const event of ["UserPromptSubmit", "Stop"] as const) {
       const hook = settings.hooks[event]!
         .flatMap(entry => entry.hooks)

@@ -15,7 +15,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Automatic session-title failures now persist bounded phase/reason diagnostics in private `0600` state. The command-hook wrapper delegates every failed state to the title service, so a first proven pre-mutation generation/parse failure may retry once after persisted backoff; second-attempt, legacy, rename, readback, lock, and ambiguous failures remain terminal.
+- Automatic session titles now use the Stop command hook only to schedule a fixed broker job. PID 1 injects the root-owned OAuth EnvironmentFile into the exact title unit; the root helper passes only allowlisted auth to a dedicated service-user worker, which reads the exact JSONL, runs one isolated Haiku title call, applies zero-turn `/rename`, and requires exact readback. Final delivery never waits for the job. First proven generation/parse failure may retry once after persisted backoff; second-attempt, legacy, rename, readback, lock, and ambiguous failures remain terminal.
 - Activation state now uses its own `/run/claude-code-telegram-activation` namespace, so tmpfiles never changes the control broker socket directory's `0755` traversal authority.
 - Bare `/resume` now lists recent sessions; `/resume N` selects one, while `/sessions` remains a compatibility alias and is no longer advertised.
 

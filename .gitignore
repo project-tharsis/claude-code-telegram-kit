@@ -5,6 +5,8 @@ __pycache__/
 .coverage
 coverage/
 dist/
+!packages/session-control-mcp/dist/
+!packages/session-control-mcp/dist/session-title-worker.js
 .env
 .env.*
 !.env.example
