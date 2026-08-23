@@ -46,6 +46,7 @@ The README lists the five invariants that define the project's blast radius. Thi
 - A direct Telegram envelope and live allowlist bind the turn. Missing or malformed binding suppresses disclosure.
 - A completed internal background-task notification may bind only through an unexpired in-memory route created when the same session's foreground Telegram turn emitted the exact `tool_use_id`. Binding consumes that route before transport, so replays cannot create a second final. The recovered turn owns final delivery only: no progress bubble, typing heartbeat, artifact scan, or reaction mutation. Direct Telegram text that merely contains task-notification markup cannot enter this path.
 - Presentation is fail-open for the agent: hook, send, edit, throttle, and restart failures never block tool execution or the final reply. Progress send/edit attempts have a 500-millisecond abort budget; timeout preserves terminal uncertainty, while canonical final delivery keeps its separate timeout.
+- MarkdownV2 conversion parses canonical GFM with single-tilde strikethrough disabled, then escapes literal tildes only at text-node source offsets. Numeric ranges stay literal; `~~strikethrough~~`, code spans, and link destinations retain their syntax.
 - One turn owns at most one replacement progress bubble; unknown sends are never retried and 429 ends disclosure for that turn.
 
 ## Session continuity
