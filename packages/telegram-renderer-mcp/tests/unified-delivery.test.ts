@@ -62,6 +62,20 @@ describe("unified deterministic delivery", () => {
     });
   });
 
+  test("can deliver a background final without touching the original reaction", async () => {
+    const calls: string[] = [];
+    const deliver = createUnifiedDeliverer(async (input) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 79 } }), {
+        status: 200, headers: { "content-type": "application/json" }
+      });
+    }, Date.now, false);
+    const input = UnifiedReplyInputSchema.parse({ chat_id: "123456789", message_id: "51", content: "Background complete." });
+    await deliver(input, config);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.endsWith("/sendMessage")).toBe(true);
+  });
+
   test("lets an explicit reply target override the inbound message", async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const fakeFetch: UnifiedFetchLike = async (_input, init) => {

@@ -94,7 +94,8 @@ async function finalizeSuccessReaction(
 
 export function createUnifiedDeliverer(
   fetchImpl: UnifiedFetchLike = fetch,
-  now: ClockLike = Date.now
+  now: ClockLike = Date.now,
+  finalizeReactions = true
 ) {
   let richDisabledUntil = 0;
 
@@ -118,7 +119,7 @@ export function createUnifiedDeliverer(
         fetchImpl
       );
       if (richAttempt?.kind === "success") {
-        await finalizeSuccessReaction(config, input, fetchImpl);
+        if (finalizeReactions) await finalizeSuccessReaction(config, input, fetchImpl);
         return { mode: "rich", messageIds: [richAttempt.messageId] };
       }
       if (richAttempt?.kind === "uncertain") {
@@ -138,7 +139,7 @@ export function createUnifiedDeliverer(
       fetchImpl
     );
     if (markdownAttempt.kind === "success") {
-      await finalizeSuccessReaction(config, input, fetchImpl);
+      if (finalizeReactions) await finalizeSuccessReaction(config, input, fetchImpl);
       return { mode: "markdownv2", messageIds: [markdownAttempt.messageId] };
     }
     if (markdownAttempt.kind === "uncertain") {
@@ -155,7 +156,7 @@ export function createUnifiedDeliverer(
       fetchImpl
     );
     if (textAttempt.kind === "success") {
-      await finalizeSuccessReaction(config, input, fetchImpl);
+      if (finalizeReactions) await finalizeSuccessReaction(config, input, fetchImpl);
       return { mode: "text", messageIds: [textAttempt.messageId] };
     }
     if (textAttempt.kind === "uncertain") {

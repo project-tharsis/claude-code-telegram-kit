@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, linkSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -46,6 +46,48 @@ function writeSession(
 }
 
 describe("bounded resumable session catalog", () => {
+  test("defers for a live forked Skill result and resumes after completed task notification", () => {
+    const root = makeRoot();
+    const id = uuid(9);
+    const envelope = '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">build it</channel>';
+    const path = writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "user", message: { content: envelope } }),
+      JSON.stringify({ type: "assistant", message: { model: "claude-sonnet", content: [
+        { type: "tool_use", id: "skill-1", name: "Skill", input: { skill: "review" } }
+      ] } }),
+      JSON.stringify({ type: "user", toolUseResult: { status: "forked", agentId: "agent-1" }, message: { content: [
+        { type: "tool_result", tool_use_id: "skill-1", content: "Async agent launched successfully." }
+      ] } })
+    ] });
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
+    writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
+      type: "user", message: { content:
+        '<task-notification><task-id>task-1</task-id><tool-use-id>skill-1</tool-use-id><status>completed</status><summary>done</summary></task-notification>'
+      }
+    })}\n`);
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
+  });
+
+  test("finds an incomplete fork in the middle of a large transcript", () => {
+    const root = makeRoot();
+    const id = uuid(8);
+    const envelope = '<channel source="plugin:telegram:telegram" chat_id="123" message_id="8">review it</channel>';
+    const filler = JSON.stringify({ type: "progress", text: "x".repeat(900) });
+    const path = writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "user", message: { content: envelope } }),
+      ...Array.from({ length: 700 }, () => filler),
+      JSON.stringify({ type: "user", toolUseResult: { status: "forked", agentId: "agent-8" }, message: { content: [
+        { type: "tool_result", tool_use_id: "skill-middle", content: "Async agent launched successfully." }
+      ] } }),
+      ...Array.from({ length: 700 }, () => filler)
+    ] });
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
+    writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
+      type: "user", message: { content: '<task-notification><task-id>task-8</task-id><tool-use-id>skill-middle</tool-use-id><status>completed</status></task-notification>' }
+    })}\n`);
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
+  });
+
   test("returns titled sessions newest first", () => {
     const root = makeRoot();
     writeSession(root, uuid(1), { title: "Older work", mtimeSeconds: 1_000 });
@@ -292,9 +334,11 @@ describe("selected session revalidation", () => {
       customTitle: "Manual title",
       aiTitle: "Late AI title",
       chatId: "123",
+      chatMessageId: "2",
       userPrompt: "Build the auth flow",
       assistantText: "Implemented the authentication flow.",
-      toolNames: ["Read"]
+      toolNames: ["Read"],
+      hasIncompleteForkedTask: false
     });
     expect(JSON.stringify(context)).not.toContain("never-return-this");
   });

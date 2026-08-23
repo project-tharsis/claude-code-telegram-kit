@@ -9,7 +9,10 @@ import {
   realpathSync
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { parseDirectTelegramEnvelope } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  parseCompletedTaskNotification,
+  parseDirectTelegramEnvelope
+} from "@project-tharsis/claude-code-telegram-shared";
 import { parseControlCommand } from "./control-command.js";
 
 /**
@@ -28,6 +31,9 @@ const DEFAULT_TAIL_BYTES = 256 * 1024;
 const DEFAULT_MAX_PARSED_FILES = 24;
 const DEFAULT_MAX_SCAN_MS = 2_000;
 const MAX_TITLE_CHARS = 60;
+const TASK_SCAN_CHUNK_BYTES = 64 * 1024;
+const MAX_TASK_SCAN_LINE_BYTES = 1024 * 1024;
+const MAX_TRACKED_BACKGROUND_TASKS = 256;
 const CONVERSATION_FALLBACK = "Conversation with Claudio";
 const CONTROL_ONLY_FALLBACK = "Control-only session";
 
@@ -343,9 +349,11 @@ export interface SessionTitleContext {
   customTitle: string | null;
   aiTitle: string | null;
   chatId: string | null;
+  chatMessageId?: string | null;
   userPrompt: string | null;
   assistantText: string;
   toolNames: string[];
+  hasIncompleteForkedTask?: boolean;
 }
 
 function contentBlocks(value: unknown): Array<Record<string, unknown>> {
@@ -355,10 +363,86 @@ function contentBlocks(value: unknown): Array<Record<string, unknown>> {
   );
 }
 
+function updateBackgroundTaskState(row: Record<string, unknown>, taskIds: Set<string>): boolean {
+  if (row.type !== "user") return false;
+  const message = typeof row.message === "object" && row.message !== null
+    ? row.message as Record<string, unknown> : null;
+  if (message === null) return false;
+  const result = typeof row.toolUseResult === "object" && row.toolUseResult !== null
+    ? row.toolUseResult as Record<string, unknown> : null;
+  if (result?.status === "forked") {
+    for (const block of contentBlocks(message.content)) {
+      if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      if (taskIds.size >= MAX_TRACKED_BACKGROUND_TASKS && !taskIds.has(block.tool_use_id)) return true;
+      taskIds.add(block.tool_use_id);
+    }
+  }
+  const values = typeof message.content === "string" ? [message.content] : contentBlocks(message.content)
+    .filter(block => block.type === "text" && typeof block.text === "string")
+    .map(block => block.text as string);
+  for (const value of values) {
+    const notification = parseCompletedTaskNotification(value);
+    if (notification !== null) taskIds.delete(notification.toolUseId);
+  }
+  return false;
+}
+
 function boundedText(value: string, maxChars: number): string {
   return Array.from(value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim())
     .slice(0, maxChars)
     .join("");
+}
+
+function scanIncompleteBackgroundTasks(options: {
+  directory: string;
+  sessionId: string;
+  expectedUid?: number;
+}): boolean {
+  const opened = openValidatedTranscript(
+    join(resolve(options.directory), `${options.sessionId}.jsonl`),
+    options.expectedUid ?? currentUid(),
+    DEFAULT_MAX_FILE_BYTES
+  );
+  if (opened === null) return true;
+  const taskIds = new Set<string>();
+  let overflow = false;
+  let pending = Buffer.alloc(0);
+  let skipOversizedLine = false;
+  const consume = (line: Buffer) => {
+    if (line.length === 0 || line.length > MAX_TASK_SCAN_LINE_BYTES) return;
+    try {
+      const row = JSON.parse(line.toString("utf8")) as unknown;
+      if (typeof row === "object" && row !== null && updateBackgroundTaskState(row as Record<string, unknown>, taskIds)) {
+        overflow = true;
+      }
+    } catch { /* malformed transcript rows are ignored */ }
+  };
+  try {
+    let offset = 0;
+    while (offset < opened.size) {
+      const length = Math.min(TASK_SCAN_CHUNK_BYTES, opened.size - offset);
+      const chunk = Buffer.allocUnsafe(length);
+      const count = readSync(opened.fd, chunk, 0, length, offset);
+      if (count <= 0) break;
+      offset += count;
+      pending = Buffer.concat([pending, chunk.subarray(0, count)]);
+      let newline: number;
+      while ((newline = pending.indexOf(0x0a)) >= 0) {
+        const line = pending.subarray(0, newline);
+        pending = pending.subarray(newline + 1);
+        if (skipOversizedLine) skipOversizedLine = false;
+        else consume(line);
+      }
+      if (pending.length > MAX_TASK_SCAN_LINE_BYTES) {
+        pending = Buffer.alloc(0);
+        skipOversizedLine = true;
+      }
+    }
+    if (!skipOversizedLine) consume(pending);
+    return overflow || taskIds.size > 0;
+  } finally {
+    closeSync(opened.fd);
+  }
 }
 
 /**
@@ -374,6 +458,7 @@ export function readSessionTitleContext(options: {
   let customTitle: string | null = null;
   let aiTitle: string | null = null;
   let chatId: string | null = null;
+  let chatMessageId: string | null = null;
   let userPrompt: string | null = null;
   let assistantText = "";
   const toolNames: string[] = [];
@@ -415,6 +500,7 @@ export function readSessionTitleContext(options: {
         const prompt = boundedText(envelope.body, 1_200);
         if (prompt) {
           chatId = envelope.chatId;
+          chatMessageId = envelope.messageId;
           userPrompt = prompt;
           break;
         }
@@ -443,5 +529,14 @@ export function readSessionTitleContext(options: {
     }
   }
 
-  return { customTitle, aiTitle, chatId, userPrompt, assistantText, toolNames };
+  return {
+    customTitle,
+    aiTitle,
+    chatId,
+    chatMessageId,
+    userPrompt,
+    assistantText,
+    toolNames,
+    hasIncompleteForkedTask: scanIncompleteBackgroundTasks(options)
+  };
 }

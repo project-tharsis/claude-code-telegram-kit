@@ -176,6 +176,7 @@ Verify from the real destination:
 16. `/rename NAME` writes the exact current session, returns escaped HTML, marks `USER_LOCKED`, and survives later Stops, `/resume`, `/reset`, and resume without automatic overwrite.
 17. `systemctl show claude-telegram.service -p NoNewPrivileges` returns `yes`; `sudo` from a process with the same service hardening fails, while Broker Protocol `capabilities` succeeds through the private socket.
 18. a successful Claude `Artifact` tool call sends one quoted silent document after the canonical final text; failed/unmatched, wrong-session, symlink, hardlink, writable, oversized, and uncertain files never replay or expose a path.
+19. a background `Skill`/agent completion arrives without another user message, quotes the original Telegram request, emits no second progress bubble, typing heartbeat, artifact pass, or reaction change, and remains silent when its route is missing or expired; automatic title state remains unclaimed until that completion.
 
 Before removing an allowlisted private chat or disabling menu sync, set `TELEGRAM_COMMAND_MENU_ENABLED=delete`, restart once, verify the chat-specific `getMyCommands` result is empty, then remove the chat or env key. A stale menu never grants authority, but verified cleanup keeps Telegram UI aligned with the live allowlist.
 
