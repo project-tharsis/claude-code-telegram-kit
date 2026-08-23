@@ -4,6 +4,35 @@
 // packages/session-control-mcp/src/session-title-worker.ts
 import { homedir as homedir2 } from "os";
 
+// packages/shared/src/task-notification.ts
+var TOOL_USE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+var TASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+var COMPLETE_ENVELOPE = /^\s*<task-notification>\s*([\s\S]*?)\s*<\/task-notification>\s*$/;
+function exactTag(body, tag) {
+  const pattern = new RegExp(`<${tag}>\\s*([^<>]*?)\\s*</${tag}>`, "g");
+  const matches = Array.from(body.matchAll(pattern));
+  if (matches.length !== 1)
+    return null;
+  const value = matches[0]?.[1]?.trim();
+  return value ? value : null;
+}
+function parseCompletedTaskNotification(prompt) {
+  if (typeof prompt !== "string" || prompt.length > 1e6)
+    return null;
+  const body = COMPLETE_ENVELOPE.exec(prompt)?.[1];
+  if (body === undefined)
+    return null;
+  const header = body.split(/<(?:summary|result)\b/i, 1)[0];
+  if (exactTag(header, "status") !== "completed")
+    return null;
+  const toolUseId = exactTag(header, "tool-use-id");
+  if (toolUseId === null || !TOOL_USE_ID.test(toolUseId))
+    return null;
+  const taskId = exactTag(header, "task-id");
+  if (taskId !== null && !TASK_ID.test(taskId))
+    return null;
+  return { toolUseId, ...taskId === null ? {} : { taskId } };
+}
 // packages/shared/src/telegram-authority.ts
 import {
   closeSync,
@@ -337,6 +366,9 @@ class ConfirmationChallengeStore {
 var DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
 var DEFAULT_TAIL_BYTES = 256 * 1024;
 var MAX_TITLE_CHARS = 60;
+var TASK_SCAN_CHUNK_BYTES = 64 * 1024;
+var MAX_TASK_SCAN_LINE_BYTES = 1024 * 1024;
+var MAX_TRACKED_BACKGROUND_TASKS = 256;
 var CONVERSATION_FALLBACK = "Conversation with Claudio";
 var CONTROL_ONLY_FALLBACK = "Control-only session";
 function currentUid2() {
@@ -476,14 +508,88 @@ function contentBlocks(value) {
     return [];
   return value.filter((item) => typeof item === "object" && item !== null);
 }
+function updateBackgroundTaskState(row, taskIds) {
+  if (row.type !== "user")
+    return false;
+  const message = typeof row.message === "object" && row.message !== null ? row.message : null;
+  if (message === null)
+    return false;
+  const result = typeof row.toolUseResult === "object" && row.toolUseResult !== null ? row.toolUseResult : null;
+  if (result?.status === "forked") {
+    for (const block of contentBlocks(message.content)) {
+      if (block.type !== "tool_result" || typeof block.tool_use_id !== "string")
+        continue;
+      if (taskIds.size >= MAX_TRACKED_BACKGROUND_TASKS && !taskIds.has(block.tool_use_id))
+        return true;
+      taskIds.add(block.tool_use_id);
+    }
+  }
+  const values = typeof message.content === "string" ? [message.content] : contentBlocks(message.content).filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text);
+  for (const value of values) {
+    const notification = parseCompletedTaskNotification(value);
+    if (notification !== null)
+      taskIds.delete(notification.toolUseId);
+  }
+  return false;
+}
 function boundedText(value, maxChars) {
   return Array.from(value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, maxChars).join("");
+}
+function scanIncompleteBackgroundTasks(options) {
+  const opened = openValidatedTranscript(join(resolve2(options.directory), `${options.sessionId}.jsonl`), options.expectedUid ?? currentUid2(), DEFAULT_MAX_FILE_BYTES);
+  if (opened === null)
+    return true;
+  const taskIds = new Set;
+  let overflow = false;
+  let pending = Buffer.alloc(0);
+  let skipOversizedLine = false;
+  const consume = (line) => {
+    if (line.length === 0 || line.length > MAX_TASK_SCAN_LINE_BYTES)
+      return;
+    try {
+      const row = JSON.parse(line.toString("utf8"));
+      if (typeof row === "object" && row !== null && updateBackgroundTaskState(row, taskIds)) {
+        overflow = true;
+      }
+    } catch {}
+  };
+  try {
+    let offset = 0;
+    while (offset < opened.size) {
+      const length = Math.min(TASK_SCAN_CHUNK_BYTES, opened.size - offset);
+      const chunk = Buffer.allocUnsafe(length);
+      const count = readSync(opened.fd, chunk, 0, length, offset);
+      if (count <= 0)
+        break;
+      offset += count;
+      pending = Buffer.concat([pending, chunk.subarray(0, count)]);
+      let newline;
+      while ((newline = pending.indexOf(10)) >= 0) {
+        const line = pending.subarray(0, newline);
+        pending = pending.subarray(newline + 1);
+        if (skipOversizedLine)
+          skipOversizedLine = false;
+        else
+          consume(line);
+      }
+      if (pending.length > MAX_TASK_SCAN_LINE_BYTES) {
+        pending = Buffer.alloc(0);
+        skipOversizedLine = true;
+      }
+    }
+    if (!skipOversizedLine)
+      consume(pending);
+    return overflow || taskIds.size > 0;
+  } finally {
+    closeSync2(opened.fd);
+  }
 }
 function readSessionTitleContext(options) {
   const text = readUsableSessionTranscript({ ...options, tailBytes: 512 * 1024 });
   let customTitle = null;
   let aiTitle = null;
   let chatId = null;
+  let chatMessageId = null;
   let userPrompt = null;
   let assistantText = "";
   const toolNames = [];
@@ -520,6 +626,7 @@ function readSessionTitleContext(options) {
         const prompt = boundedText(envelope.body, 1200);
         if (prompt) {
           chatId = envelope.chatId;
+          chatMessageId = envelope.messageId;
           userPrompt = prompt;
           break;
         }
@@ -536,7 +643,16 @@ function readSessionTitleContext(options) {
       }
     }
   }
-  return { customTitle, aiTitle, chatId, userPrompt, assistantText, toolNames };
+  return {
+    customTitle,
+    aiTitle,
+    chatId,
+    chatMessageId,
+    userPrompt,
+    assistantText,
+    toolNames,
+    hasIncompleteForkedTask: scanIncompleteBackgroundTasks(options)
+  };
 }
 
 // packages/session-control-mcp/src/session-title-state.ts
@@ -1311,6 +1427,8 @@ function createSessionTitleService(options) {
           lockUserTitle({ ...stateOptions(sessionId), title: before.aiTitle });
           return "existing";
         }
+        if (before.hasIncompleteForkedTask === true)
+          return "deferred";
         if (before.userPrompt === null || !assistantText && before.toolNames.length === 0) {
           return "no_context";
         }

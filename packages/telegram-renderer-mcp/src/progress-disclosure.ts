@@ -1,5 +1,6 @@
 import {
   assertAuthorizedChat,
+  parseCompletedTaskNotification,
   parseDirectTelegramEnvelope,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
@@ -26,11 +27,15 @@ export const PROGRESS_DEBOUNCE_MS = 1_500;
  * drain continues in the background.
  */
 export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
-/** Ephemeral state only. A long session must not accumulate turns without bound. */
+/** Ephemeral turn state only. */
 export const MAX_RETAINED_TURNS = 32;
+/** Routes survive the foreground Stop so a later internal completion can recover its Telegram authority. */
+export const BACKGROUND_TASK_ROUTE_TTL_MS = 6 * 60 * 60 * 1_000;
+export const MAX_BACKGROUND_TASK_ROUTES = 128;
 
 const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)/;
 const MODEL_REPLY_CHOICE = /^(?:[1-4] · (?:Opus|Sonnet|Haiku|Inherit)|5 · Cancel)$/;
+const BACKGROUND_ROUTE_TOOLS = new Set(["Skill", "Task", "Agent"]);
 
 export type CancelScheduled = () => void;
 export type FinalDeliveryOutcome = "delivered" | "uncertain" | "too_large" | "rejected";
@@ -66,7 +71,8 @@ export interface TurnDisclosureDeps {
     chatId: string,
     messageId: string,
     content: string,
-    artifacts: readonly ArtifactCandidate[]
+    artifacts: readonly ArtifactCandidate[],
+    background?: boolean
   ) => Promise<FinalDeliveryOutcome>;
   send: (
     config: RuntimeConfig,
@@ -81,6 +87,7 @@ export interface TurnDisclosureDeps {
     text: string
   ) => Promise<ProgressEditOutcome>;
   schedule: (run: () => Promise<void>, delayMs: number) => CancelScheduled;
+  now?: () => number;
 }
 
 /**
@@ -92,6 +99,7 @@ type BubbleState = "none" | "have" | "unknown" | "abandoned";
 interface Turn {
   chatId: string;
   quoteMessageId: string;
+  background: boolean;
   progress: TurnProgress;
   bubbleMessageId: number | null;
   state: BubbleState;
@@ -105,6 +113,16 @@ interface Turn {
   artifactTracker: ArtifactTracker | null;
   artifacts: ArtifactCandidate[] | null;
   chain: Promise<void>;
+}
+
+interface BackgroundTaskRoute {
+  chatId: string;
+  quoteMessageId: string;
+  expiresAt: number;
+}
+
+function backgroundRouteKey(sessionId: string, toolUseId: string): string {
+  return `${sessionId}/${toolUseId}`;
 }
 
 function turnKey(sessionId: string, promptId: string): string {
@@ -130,6 +148,31 @@ function collectArtifacts(turn: Turn): ArtifactCandidate[] {
  */
 export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   const turns = new Map<string, Turn>();
+  const backgroundTaskRoutes = new Map<string, BackgroundTaskRoute>();
+  const now = deps.now ?? Date.now;
+
+  function pruneBackgroundTaskRoutes(): void {
+    const current = now();
+    for (const [key, route] of backgroundTaskRoutes) {
+      if (route.expiresAt <= current) backgroundTaskRoutes.delete(key);
+    }
+    while (backgroundTaskRoutes.size > MAX_BACKGROUND_TASK_ROUTES) {
+      const oldest = backgroundTaskRoutes.keys().next();
+      if (oldest.done === true) return;
+      backgroundTaskRoutes.delete(oldest.value);
+    }
+  }
+
+  function rememberBackgroundTaskRoute(sessionId: string, toolUseId: string, turn: Turn): void {
+    const key = backgroundRouteKey(sessionId, toolUseId);
+    backgroundTaskRoutes.delete(key);
+    backgroundTaskRoutes.set(key, {
+      chatId: turn.chatId,
+      quoteMessageId: turn.quoteMessageId,
+      expiresAt: now() + BACKGROUND_TASK_ROUTE_TTL_MS
+    });
+    pruneBackgroundTaskRoutes();
+  }
 
   function drop(turn: Turn): void {
     turn.cancel?.();
@@ -276,20 +319,38 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
 
     bindTurn(input: BindTurnInput): void {
       try {
+        pruneBackgroundTaskRoutes();
         const envelope = parseDirectTelegramEnvelope(input.prompt);
-        if (envelope === null) return;
-        // Session-control commands already have their own ACK/list/permission/completion UX.
-        // A progress bubble is redundant, and resume/reset kill the current process before
-        // Stop can close it, leaving a permanent stale progress bubble.
-        if (CONTROL_NAMESPACE.test(envelope.body) || MODEL_REPLY_CHOICE.test(envelope.body)) return;
-        assertAuthorizedChat(deps.loadConfig(), envelope.chatId);
+        const notification = envelope === null ? parseCompletedTaskNotification(input.prompt) : null;
+        let chatId: string;
+        let quoteMessageId: string;
+        let background = false;
+        let routeToConsume: string | null = null;
+        if (envelope !== null) {
+          // Session-control commands already have their own ACK/list/permission/completion UX.
+          if (CONTROL_NAMESPACE.test(envelope.body) || MODEL_REPLY_CHOICE.test(envelope.body)) return;
+          chatId = envelope.chatId;
+          quoteMessageId = envelope.messageId;
+        } else {
+          if (notification === null) return;
+          routeToConsume = backgroundRouteKey(input.session_id, notification.toolUseId);
+          const route = backgroundTaskRoutes.get(routeToConsume);
+          if (route === undefined || route.expiresAt <= now()) return;
+          chatId = route.chatId;
+          quoteMessageId = route.quoteMessageId;
+          background = true;
+        }
+        assertAuthorizedChat(deps.loadConfig(), chatId);
+        if (routeToConsume !== null) backgroundTaskRoutes.delete(routeToConsume);
 
-        // A newer prompt in the same chat retires the previous bubble; a stale turn must
-        // never reopen and edit a message that no longer describes what is happening.
-        for (const [existingKey, existing] of turns) {
-          if (existing.chatId === envelope.chatId) {
-            drop(existing);
-            turns.delete(existingKey);
+        // A newer direct prompt retires only older direct turns. Background completion turns
+        // retain their own route and must not clobber or be clobbered by foreground work.
+        if (!background) {
+          for (const [existingKey, existing] of turns) {
+            if (existing.chatId === chatId && !existing.background) {
+              drop(existing);
+              turns.delete(existingKey);
+            }
           }
         }
 
@@ -298,11 +359,12 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         if (duplicate !== undefined) drop(duplicate);
         turns.delete(key);
         const turn: Turn = {
-          chatId: envelope.chatId,
-          quoteMessageId: envelope.messageId,
+          chatId,
+          quoteMessageId,
+          background,
           progress: new TurnProgress({
-            chatId: envelope.chatId,
-            messageId: envelope.messageId,
+            chatId,
+            messageId: quoteMessageId,
             sessionId: input.session_id,
             promptId: input.prompt_id
           }),
@@ -311,7 +373,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           replacementUsed: false,
           lastSentText: null,
           cancel: null,
-          cancelTyping: deps.startTyping(envelope.chatId),
+          cancelTyping: background ? null : deps.startTyping(chatId),
           cancelAuthWatch: null,
           finalDeliveryAttempted: false,
           finalDeliveryRetries: 0,
@@ -320,7 +382,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           chain: Promise.resolve()
         };
         turns.set(key, turn);
-        if (input.transcript_path !== undefined && deps.startArtifactTracking !== undefined) {
+        if (!background && input.transcript_path !== undefined && deps.startArtifactTracking !== undefined) {
           try {
             turn.artifactTracker = deps.startArtifactTracking(input);
           } catch {
@@ -328,7 +390,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           }
         }
         if (
-          input.transcript_path !== undefined
+          !background
+          && input.transcript_path !== undefined
           && deps.startAuthFailureWatch !== undefined
           && deps.sendAuthFailure !== undefined
         ) {
@@ -363,6 +426,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
+        if (!turn.background && BACKGROUND_ROUTE_TOOLS.has(input.tool_name)) {
+          rememberBackgroundTaskRoute(input.session_id, input.tool_use_id, turn);
+        }
+        if (turn.background) return;
         const display = buildProgressStep(input.tool_name, input, deps.mode, input.agent_id);
         if (display === null) return;
         if (turn.progress.recordTool(input.tool_use_id, display)) touch(turn);
@@ -423,7 +490,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
               turn.chatId,
               turn.quoteMessageId,
               input.last_assistant_message,
-              collectArtifacts(turn)
+              collectArtifacts(turn),
+              turn.background
             );
           } catch {
             outcome = "rejected";
@@ -433,7 +501,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           if (turn.finalDeliveryRetries < 1) {
             turn.finalDeliveryRetries += 1;
             turn.finalDeliveryAttempted = false;
-            turn.cancelTyping = deps.startTyping(turn.chatId);
+            turn.cancelTyping = turn.background ? null : deps.startTyping(turn.chatId);
             return "retry";
           }
           if (config === undefined) {
@@ -451,7 +519,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
                 turn.chatId,
                 turn.quoteMessageId,
                 "The response was too long to deliver. Ask for a shorter answer.",
-                []
+                [],
+                turn.background
               );
             } catch {
               // The fixed fallback is attempted once; unknown outcomes are never replayed.

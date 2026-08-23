@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  BACKGROUND_TASK_ROUTE_TTL_MS,
   createTurnDisclosure,
   FINAL_DRAIN_TIMEOUT_MS,
   PROGRESS_DEBOUNCE_MS
@@ -27,6 +28,7 @@ interface Harness {
     messageId: string;
     content: string;
     artifacts: readonly ArtifactCandidate[];
+    background?: true;
   }>;
   typingStarts: string[];
   typingStops: { count: number };
@@ -44,6 +46,7 @@ function harness(options: {
   ) => FinalDeliveryOutcome | Promise<FinalDeliveryOutcome>);
   config?: RuntimeConfig;
   artifacts?: readonly ArtifactCandidate[];
+  now?: () => number;
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
@@ -64,8 +67,14 @@ function harness(options: {
       collect: () => [...(options.artifacts ?? [])],
       close: () => undefined
     }),
-    deliverFinal: async (_config, chatId, messageId, content, artifacts) => {
-      finalDeliveries.push({ chatId, messageId, content, artifacts });
+    deliverFinal: async (_config, chatId, messageId, content, artifacts, background) => {
+      finalDeliveries.push({
+        chatId,
+        messageId,
+        content,
+        artifacts,
+        ...(background ? { background: true as const } : {})
+      });
       return typeof options.finalOutcome === "function"
         ? options.finalOutcome(content, finalDeliveries.length - 1)
         : options.finalOutcome ?? "delivered";
@@ -84,7 +93,8 @@ function harness(options: {
       return () => {
         queued = null;
       };
-    }
+    },
+    ...(options.now === undefined ? {} : { now: options.now })
   });
 
   return {
@@ -150,6 +160,45 @@ describe("turn disclosure lifecycle", () => {
       artifacts: []
     }]);
     expect(await finish(h, "Stop", "**hello**")).toBe("finished");
+    expect(h.finalDeliveries).toHaveLength(1);
+  });
+
+  test("routes a completed background task final through its original tool authority", async () => {
+    const h = harness();
+    bind(h);
+    tool(h, "toolu_background_1", "Skill");
+    await finish(h, "Stop", "Background work started.");
+    const notification = "<task-notification><task-id>task-1</task-id><tool-use-id>toolu_background_1</tool-use-id><status>completed</status><summary>done</summary></task-notification>";
+    bind(h, notification, "p-background");
+    h.disclosure.recordTool({
+      session_id: SESSION, prompt_id: "p-background", tool_use_id: "search-1", tool_name: "ToolSearch", hook_event_name: "PreToolUse"
+    });
+    await h.disclosure.finishTurn({
+      session_id: SESSION, prompt_id: "p-background", last_assistant_message: "Review complete.", hook_event_name: "Stop"
+    });
+    expect(h.finalDeliveries[1]).toEqual({
+      chatId: "123", messageId: "9", content: "Review complete.", artifacts: [], background: true
+    });
+    expect(h.typingStarts).toEqual(["123"]);
+    expect(h.sends).toHaveLength(1);
+    bind(h, notification, "p-background-replay");
+    await h.disclosure.finishTurn({
+      session_id: SESSION, prompt_id: "p-background-replay", last_assistant_message: "duplicate", hook_event_name: "Stop"
+    });
+    expect(h.finalDeliveries).toHaveLength(2);
+  });
+
+  test("expires background task routes instead of retaining authority forever", async () => {
+    let clock = 0;
+    const h = harness({ now: () => clock });
+    bind(h);
+    tool(h, "toolu_expiring", "Skill");
+    await finish(h, "Stop", "started");
+    clock = BACKGROUND_TASK_ROUTE_TTL_MS + 1;
+    bind(h, "<task-notification><task-id>task-2</task-id><tool-use-id>toolu_expiring</tool-use-id><status>completed</status></task-notification>", "p-expired");
+    await h.disclosure.finishTurn({
+      session_id: SESSION, prompt_id: "p-expired", last_assistant_message: "must not send", hook_event_name: "Stop"
+    });
     expect(h.finalDeliveries).toHaveLength(1);
   });
 

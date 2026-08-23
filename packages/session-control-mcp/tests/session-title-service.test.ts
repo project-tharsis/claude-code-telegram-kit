@@ -29,6 +29,37 @@ function context(overrides: Partial<SessionTitleContext> = {}): SessionTitleCont
 }
 
 describe("session title service", () => {
+  test("defers automatic naming while a forked background task is incomplete", async () => {
+    const directory = stateDir();
+    let generated = 0;
+    const current = context({ hasIncompleteForkedTask: true });
+    const service = createSessionTitleService({
+      projectSessionsDir: "/sessions", workspaceDir: "/workspace", stateDirectory: directory,
+      isAuthorizedChat: () => true,
+      readContext: () => current,
+      generate: async () => { generated += 1; return "Must not run"; },
+      rename: async () => undefined
+    });
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("deferred");
+    expect(generated).toBe(0);
+    expect(readSessionTitleState({ directory, sessionId: SESSION })).toBeNull();
+  });
+
+  test("does not defer after the forked task result is present", async () => {
+    const directory = stateDir();
+    let current = context({ hasIncompleteForkedTask: false });
+    let generated = 0;
+    const service = createSessionTitleService({
+      projectSessionsDir: "/sessions", workspaceDir: "/workspace", stateDirectory: directory,
+      isAuthorizedChat: () => true,
+      readContext: () => current,
+      generate: async () => { generated += 1; return "After Fork"; },
+      rename: async (_id, title) => { current = { ...current, customTitle: title }; }
+    });
+    await expect(service.ensureAutoTitle(SESSION)).resolves.toBe("applied");
+    expect(generated).toBe(1);
+  });
+
   test("generates and applies at most once with exact readback", async () => {
     const directory = stateDir();
     let current = context();

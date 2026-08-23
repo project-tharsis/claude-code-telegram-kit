@@ -22,7 +22,7 @@ import {
 import { SessionTitleGenerationError } from "./session-title-generator.js";
 import { renameSessionWithClaude } from "./session-title-rename.js";
 
-export type EnsureTitleResult = "applied" | "existing" | "no_context" | "already_attempted" | "retry_scheduled" | "failed";
+export type EnsureTitleResult = "applied" | "existing" | "no_context" | "deferred" | "already_attempted" | "retry_scheduled" | "failed";
 
 export interface SessionTitleServiceOptions {
   projectSessionsDir: string;
@@ -95,6 +95,7 @@ export function createSessionTitleService(options: SessionTitleServiceOptions) {
         lockUserTitle({ ...stateOptions(sessionId), title: before.aiTitle });
         return "existing";
       }
+      if (before.hasIncompleteForkedTask === true) return "deferred";
       if (before.userPrompt === null || (!assistantText && before.toolNames.length === 0)) {
         return "no_context";
       }

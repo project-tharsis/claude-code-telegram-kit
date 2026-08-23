@@ -34,6 +34,7 @@ const artifactRoot = projectSessionsDir === undefined || serviceUid === undefine
 const loadConfig = () => loadRuntimeConfig(stateDir);
 const disclosureMode = parseToolDisclosureMode(process.env.TELEGRAM_TOOL_DISCLOSURE_MODE);
 const deliver = createUnifiedDeliverer();
+const deliverBackground = createUnifiedDeliverer(fetch, Date.now, false);
 const deliverArtifacts = artifactRoot === undefined
   ? null
   : createArtifactDeliverer({ root: artifactRoot });
@@ -70,15 +71,16 @@ const disclosure = createTurnDisclosure({
       disable_notification: false
     }, config);
   },
-  deliverFinal: async (config, chatId, messageId, content, artifacts) => {
+  deliverFinal: async (config, chatId, messageId, content, artifacts, background = false) => {
+    const deliverText = background ? deliverBackground : deliver;
     try {
-      await deliver({
+      await deliverText({
         chat_id: chatId,
         message_id: messageId,
         content,
         disable_notification: false
       }, config);
-      if (artifacts.length > 0) {
+      if (!background && artifacts.length > 0) {
         if (deliverArtifacts === null) {
           process.stderr.write("artifact delivery: root is not configured\n");
           try {
@@ -114,10 +116,12 @@ const disclosure = createTurnDisclosure({
     } catch (error) {
       if (error instanceof TelegramContentTooLargeError) return "too_large";
       if (error instanceof TelegramUncertainOutcomeError) return "uncertain";
-      try {
-        await finalizeTelegramReaction(config, chatId, messageId, "failure");
-      } catch {
-        // Reaction UX never changes the proven final-delivery result.
+      if (!background) {
+        try {
+          await finalizeTelegramReaction(config, chatId, messageId, "failure");
+        } catch {
+          // Reaction UX never changes the proven final-delivery result.
+        }
       }
       return "rejected";
     }
