@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, parse, resolve } from "node:path";
-import {
-  assertAuthorizedChat,
-  loadRuntimeConfig,
-  parseDirectTelegramEnvelope
-} from "@project-tharsis/claude-code-telegram-shared";
+import { dirname, isAbsolute, parse, resolve } from "node:path";
+import { parseDirectTelegramEnvelope } from "@project-tharsis/claude-code-telegram-shared";
 import { parseControlCommand } from "./control-command.js";
-import { readSessionTitleState, type SessionTitleState } from "./session-title-state.js";
+import {
+  isRetryableTitleFailure,
+  readSessionTitleState,
+  type SessionTitleState
+} from "./session-title-state.js";
+import { createSessionScheduler } from "./runtime.js";
 
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -78,7 +78,9 @@ function resolveAuthority(payload: HookPayload, roots: {
 
 export interface SessionTitleCommandOptions {
   ensure?: (authority: { sessionId: string; workspaceDir: string; projectSessionsDir: string; assistantText?: string }) => Promise<unknown>;
+  schedule?: (sessionId: string) => Promise<unknown>;
   readState?: (sessionId: string) => SessionTitleState | null;
+  now?: () => number;
   workspaceDir?: string;
   projectSessionsDir?: string;
 }
@@ -94,32 +96,21 @@ export async function handleSessionTitleCommand(
   });
   if (options.ensure === undefined || options.readState !== undefined) {
     const state = (options.readState ?? (sessionId => readSessionTitleState({ sessionId })))(authority.sessionId);
-    if (state !== null && state.status !== "failed") return;
+    if (state !== null) {
+      if (state.status !== "failed") return;
+      if (state.attempts !== 1
+          || state.phase === undefined
+          || state.reason === undefined
+          || state.retryAt === undefined
+          || !isRetryableTitleFailure(state.phase, state.reason)
+          || state.retryAt > (options.now ?? Date.now)()) return;
+    }
   }
   if (options.ensure !== undefined) {
     await options.ensure(authority);
     return;
   }
-  const { createSessionTitleService } = await import("./session-title-service.js");
-  const telegramConfig = loadRuntimeConfig(
-    process.env.TELEGRAM_STATE_DIR ?? join(homedir(), ".claude", "channels", "telegram")
-  );
-  const service = createSessionTitleService({
-    projectSessionsDir: authority.projectSessionsDir,
-    workspaceDir: authority.workspaceDir,
-    isAuthorizedChat: chatId => {
-      try {
-        assertAuthorizedChat(telegramConfig, chatId);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-  });
-  await service.ensureAutoTitle(
-    authority.sessionId,
-    authority.assistantText === undefined ? {} : { assistantText: authority.assistantText }
-  );
+  await (options.schedule ?? (sessionId => createSessionScheduler().scheduleTitle(sessionId)))(authority.sessionId);
 }
 
 async function main(): Promise<void> {

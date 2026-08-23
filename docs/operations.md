@@ -85,7 +85,32 @@ Copy and adapt:
 
 Keep `examples/reset.json` root-owned when installed under `/etc/claude-code-telegram-kit/reset.json`.
 
+Automatic titles also require an externally provisioned provider EnvironmentFile at
+`/etc/claude-code-telegram-kit/claude-oauth.env`. The root-asset installer intentionally never
+creates or copies credentials. Provision that file through the deployment's secret-management
+path, then require a root-owned, single-link regular file with mode `0600` before enabling title
+jobs:
+
+```bash
+sudo install -o root -g root -m 0600 /secure/source/claude-oauth.env \
+  /etc/claude-code-telegram-kit/claude-oauth.env
+sudo stat -c 'uid=%u gid=%g mode=%a links=%h' \
+  /etc/claude-code-telegram-kit/claude-oauth.env
+```
+
+The file must contain at least one supported provider credential assignment. Never commit it,
+print its value, or pass its path through an unprivileged request. Broker validation and PID 1
+own the fixed path.
+
 The system service must include `EnvironmentFile=-/etc/claude-code-telegram-kit/model.env` and a fixed `CLAUDE_TITLE_CLI` path to the same reviewed Claude executable used by `ExecStart`. Do not create the model file manually: `/model <alias>` owns it through the root helper, and `inherit` removes it atomically.
+
+The title worker is installed as the checked-in, byte-verified bundle at
+`/usr/local/libexec/claude-code-telegram-kit/session-title-worker.js`, owned by `root:root` and
+non-writable. The root helper validates the fixed root-assets manifest and the service user's Bun
+path/hash, opens Bun with `O_NOFOLLOW`, and executes it through `/proc/self/fd/<fd>`; it never
+executes the mutable `current` release. `CLAUDE_TITLE_CLI` is the fixed
+`/home/USER/.local/bin/claude` inherited from the reviewed main service. That user-owned Claude
+CLI remains an explicit existing service trust boundary and is not copied or compiled.
 
 Set `CLAUDE_WORKSPACE_DIR` and `CLAUDE_PROJECT_SESSIONS_DIR` in the Claude service environment because command hooks inherit the service environment. Pass the same exact values into the `session-control` MCP, and pass the same `CLAUDE_PROJECT_SESSIONS_DIR` into the renderer MCP. Do not derive any of these paths from a model argument or inbound message.
 
@@ -97,7 +122,7 @@ Follow the exact-commit/digest procedure in `packages/session-control-mcp/README
 /usr/local/sbin/claude-code-session-reset --capabilities
 ```
 
-The helper receipt must report protocol `5` with `reset`, `resume`, and `model`, plus `opus`, `sonnet`, `haiku`, and `inherit`. Install the broker and both systemd units from the same SHA by the procedure in the package README. The socket must be mode `0600`, owned by the exact service user, and enabled before the Claude service starts.
+The helper receipt must report protocol `6` with `reset`, `resume`, `model`, and `title`, plus `opus`, `sonnet`, `haiku`, and `inherit`. Install the broker and both systemd units from the same SHA by the procedure in the package README. The socket must be mode `0600`, owned by the exact service user, and enabled before the Claude service starts.
 
 A fresh reset also requires the SessionStart receipt writer, installed from the same merged SHA:
 
@@ -147,7 +172,7 @@ Verify from the real destination:
 12. `/reset` uses a one-shot confirmation, sends typographic accepted/completion messages without any session identifier, and leaves no synthetic LLM seed;
 13. Claude, the sole official Telegram poller, renderer MCP, and control MCP are alive.
 14. when command-menu sync is enabled, `getMyCommands` for the allowlisted chat-specific scope returns exactly `/start`, `/help`, `/status`, `/usage`, `/resume`, `/model`, and `/reset`; the official `all_private_chats` scope remains untouched.
-15. `/usr/bin/flock` is present and executable; the first meaningful Stop creates at most one `0600` per-session title-state record, makes one isolated Haiku call, appends a verified `custom-title` through the official zero-turn `/rename` local-command path and exact readback, and never exposes credentials, prompt bodies, UUIDs, paths, or tool inputs in Telegram;
+15. `/usr/bin/flock` is present and executable; the first meaningful Stop schedules one fixed `claude-session-title-*` unit without delaying final delivery. That unit receives the root-owned OAuth EnvironmentFile, drops to the configured service user, creates at most one `0600` per-session title-state record, makes one isolated Haiku call, appends a verified `custom-title` through the official zero-turn `/rename` path and exact readback, and never exposes credentials, prompt bodies, UUIDs, paths, or tool inputs in Telegram;
 16. `/rename NAME` writes the exact current session, returns escaped HTML, marks `USER_LOCKED`, and survives later Stops, `/resume`, `/reset`, and resume without automatic overwrite.
 17. `systemctl show claude-telegram.service -p NoNewPrivileges` returns `yes`; `sudo` from a process with the same service hardening fails, while Broker Protocol `capabilities` succeeds through the private socket.
 18. a successful Claude `Artifact` tool call sends one quoted silent document after the canonical final text; failed/unmatched, wrong-session, symlink, hardlink, writable, oversized, and uncertain files never replay or expose a path.

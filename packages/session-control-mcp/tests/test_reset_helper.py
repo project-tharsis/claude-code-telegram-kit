@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -327,12 +328,78 @@ def _write_receipt(directory: Path, session_id: str, overrides=None) -> Path:
     return path
 
 
+class TitleSessionTests(unittest.TestCase):
+    def _title_assets(self, root: Path, home: Path):
+        bun = home / ".bun/bin/bun"
+        bun.parent.mkdir(parents=True)
+        bun.write_bytes(b"fake-bun-runtime")
+        bun.chmod(0o755)
+        worker = root / "session-title-worker.js"
+        worker.write_bytes(b"immutable-worker")
+        manifest = root / "installed.json"
+        manifest.write_text(json.dumps({
+            "commit": "a" * 40,
+            "service_user": "tester",
+            "bun": {"path": str(bun), "sha256": hashlib.sha256(bun.read_bytes()).hexdigest(), "mode": "0755"},
+            "backup": "/var/lib/claude-code-telegram-kit/root-assets/backups/previous",
+            "assets": [{"destination": str(worker), "sha256": hashlib.sha256(worker.read_bytes()).hexdigest(), "mode": "0o444"}],
+        }))
+        return bun, worker, manifest
+
+    def test_passes_only_allowlisted_auth_to_the_dropped_worker(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            _write_transcript(config.project_sessions, NEW_SESSION)
+            bun, worker, manifest = self._title_assets(Path(td), Path(td) / "home")
+            account = SimpleNamespace(pw_dir=str(Path(td) / "home"), pw_gid=os.getgid())
+            completed = subprocess.CompletedProcess([], 0, b"", b"")
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_secure_regular_file", return_value=os.stat(bun)), \
+                    mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
+                    mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
+                    mock.patch.object(reset, "TITLE_WORKER_PATH", worker), \
+                    mock.patch.object(reset.subprocess, "run", return_value=completed) as run, \
+                    mock.patch.dict(reset.os.environ, {
+                        "CLAUDE_CODE_OAUTH_TOKEN": "opaque-test-token",
+                        "SHOULD_NOT_COPY": "private"
+                    }, clear=True):
+                result = reset.title_session(config, session_id=NEW_SESSION, timeout=30)
+            self.assertEqual(result["status"], "title_complete")
+            argv = run.call_args.args[0]
+            kwargs = run.call_args.kwargs
+            self.assertEqual(argv[-1], NEW_SESSION)
+            self.assertEqual(argv[1], str(worker))
+            self.assertTrue(argv[0].startswith("/proc/self/fd/"))
+            self.assertEqual(kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "opaque-test-token")
+            self.assertNotIn("SHOULD_NOT_COPY", kwargs["env"])
+            self.assertIsNotNone(kwargs["preexec_fn"])
+
+    def test_refuses_to_start_without_an_authenticated_title_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            _write_transcript(config.project_sessions, NEW_SESSION)
+            bun, worker, manifest = self._title_assets(Path(td), Path(td) / "home")
+            account = SimpleNamespace(pw_dir=str(Path(td) / "home"), pw_gid=os.getgid())
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_secure_regular_file", return_value=os.stat(bun)), \
+                    mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
+                    mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
+                    mock.patch.object(reset, "TITLE_WORKER_PATH", worker), \
+                    mock.patch.object(reset.subprocess, "run") as run, \
+                    mock.patch.dict(reset.os.environ, {}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "authenticated title source"):
+                    reset.title_session(config, session_id=NEW_SESSION, timeout=30)
+            run.assert_not_called()
+
+
 class ProtocolTests(unittest.TestCase):
     def test_capabilities_declare_the_current_protocol_and_actions(self):
         capabilities = reset.capabilities()
         self.assertEqual(capabilities["protocol"], reset.PROTOCOL_VERSION)
-        self.assertEqual(reset.PROTOCOL_VERSION, 5)
-        self.assertEqual(sorted(capabilities["actions"]), ["model", "reset", "resume"])
+        self.assertEqual(reset.PROTOCOL_VERSION, 6)
+        self.assertEqual(sorted(capabilities["actions"]), ["model", "reset", "resume", "title"])
         self.assertEqual(capabilities["models"], ["opus", "sonnet", "haiku", "inherit"])
 
     def test_capabilities_flag_prints_json_and_exits_zero_without_config(self):
@@ -344,7 +411,7 @@ class ProtocolTests(unittest.TestCase):
             code = reset.main(["--capabilities"])
         self.assertEqual(code, 0)
         payload = json.loads(buffer.getvalue())
-        self.assertEqual(payload["protocol"], 5)
+        self.assertEqual(payload["protocol"], 6)
         self.assertIn("model", payload["actions"])
 
     def test_rejects_non_finite_or_unbounded_operation_timeout(self):

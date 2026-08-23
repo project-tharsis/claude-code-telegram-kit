@@ -36,6 +36,7 @@ ASSETS = (
     Asset("packages/session-control-mcp/scripts/claude_code_session_receipt.py", "/usr/local/sbin/claude-session-start-receipt", 0o755),
     Asset("packages/session-control-mcp/scripts/claude_code_control_guard.py", "/usr/local/sbin/claude-control-command-guard", 0o755),
     Asset("packages/session-control-mcp/scripts/claude_code_usage_snapshot.py", "/usr/local/sbin/claude-usage-snapshot", 0o755),
+    Asset("packages/session-control-mcp/dist/session-title-worker.js", "/usr/local/libexec/claude-code-telegram-kit/session-title-worker.js", 0o444),
     Asset("scripts/runtime_activate.py", "/usr/local/sbin/claude-runtime-activate", 0o755),
     Asset("examples/claude-runtime-activation.json", "/etc/claude-code-telegram-kit/activation.json", 0o600, True),
     Asset("examples/claude-telegram-activation.conf", "/etc/systemd/system/claude-telegram.service.d/30-runtime-activation.conf", 0o644),
@@ -114,7 +115,14 @@ def _backup(destinations: list[Path], state_root: Path, owner_uid: int = 0, owne
             _atomic_write(backup / name, data, 0o600, owner_uid, owner_gid)
             record.update({"file": name, "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid})
         records.append(record)
-    _atomic_write(backup / "manifest.json", json.dumps({"assets": records}, separators=(",", ":")).encode(), 0o600, owner_uid, owner_gid)
+    previous_manifest = state_root / "installed.json"
+    backup_record = {"assets": records, "previous_manifest": previous_manifest.exists()}
+    if previous_manifest.exists():
+        info = previous_manifest.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise ValueError("unsafe installed manifest")
+        _atomic_write(backup / "previous-installed.json", previous_manifest.read_bytes(), 0o600, owner_uid, owner_gid)
+    _atomic_write(backup / "manifest.json", json.dumps(backup_record, separators=(",", ":")).encode(), 0o600, owner_uid, owner_gid)
     return backup
 
 
@@ -124,6 +132,22 @@ def _verify_destination(path: Path, expected: bytes, mode: int, owner_uid: int =
         raise ValueError(f"unsafe installed asset: {path}")
     if stat.S_IMODE(info.st_mode) != mode or _sha256(path.read_bytes()) != _sha256(expected):
         raise ValueError(f"installed asset mismatch: {path}")
+
+
+def _verify_runtime(path: Path, service_uid: int) -> tuple[str, str]:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode)
+                or info.st_uid != service_uid or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o755):
+            raise ValueError("service-user Bun runtime is not a secure 0755 regular file")
+        digest = hashlib.sha256()
+        while chunk := os.read(fd, 1024 * 1024):
+            digest.update(chunk)
+        return str(path), digest.hexdigest()
+    finally:
+        os.close(fd)
 
 def _destination(asset: Asset, root_prefix: Path) -> Path:
     return root_prefix / asset.destination.lstrip("/")
@@ -141,6 +165,11 @@ def _restore_backup(backup: Path, owner_uid: int = 0, owner_gid: int = 0) -> Non
             if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                 raise ValueError(f"unsafe rollback destination: {destination}")
             destination.unlink()
+    installed_path = backup.parent.parent / "installed.json"
+    if manifest.get("previous_manifest"):
+        _atomic_write(installed_path, (backup / "previous-installed.json").read_bytes(), 0o600, owner_uid, owner_gid)
+    elif installed_path.exists():
+        installed_path.unlink()
 
 
 def install_release(
@@ -165,6 +194,7 @@ def install_release(
         raise ValueError("service user must be unprivileged")
     service_group = grp.getgrgid(account.pw_gid).gr_name
     service_group.encode("ascii")
+    bun_path, bun_sha256 = _verify_runtime(Path(account.pw_dir) / ".bun/bin/bun", account.pw_uid)
     _secure_state_root(state_root, owner_uid)
     rendered = [
         (asset, _render(asset, _git_show(repo, commit, asset.source), service_user, service_group))
@@ -179,6 +209,7 @@ def install_release(
         manifest = {
             "commit": commit,
             "service_user": service_user,
+            "bun": {"path": bun_path, "sha256": bun_sha256, "mode": "0755"},
             "backup": str(backup),
             "assets": [
                 {"destination": str(destination), "sha256": _sha256(data), "mode": oct(asset.mode)}
@@ -208,7 +239,6 @@ def rollback_release(
     if state_root not in backup.parents:
         raise ValueError("backup path escaped root asset state")
     _restore_backup(backup, owner_uid, owner_gid)
-    installed_path.unlink()
     return {"rolled_back": installed.get("commit"), "backup": str(backup)}
 
 def main(argv: list[str] | None = None) -> int:

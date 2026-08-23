@@ -62,21 +62,67 @@ describe("session title command hook", () => {
     }]);
   });
 
-  test("delegates failed state but skips a claimed state", async () => {
+  test("delegates a due retry but skips a claimed state", async () => {
     const { payload, workspaceDir, projectSessionsDir } = fixture();
     const seen: string[] = [];
     let state: SessionTitleState = {
-      version: 1, sessionId: SESSION, status: "failed", attempts: 1, updatedAt: 1
+      version: 1, sessionId: SESSION, status: "failed", attempts: 1,
+      phase: "generate", reason: "command_failed", retryAt: 1, updatedAt: 1
     };
     const options = {
       workspaceDir, projectSessionsDir,
       readState: () => state,
+      now: () => 2,
       ensure: async () => { seen.push("called"); }
     };
     await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, options);
     state = { version: 1, sessionId: SESSION, status: "claimed", attempts: 1, updatedAt: 2 };
     await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, options);
     expect(seen).toEqual(["called"]);
+  });
+
+  test("does not schedule terminal or not-yet-due failures", async () => {
+    const { payload, workspaceDir, projectSessionsDir } = fixture();
+    const scheduled: string[] = [];
+    for (const state of [
+      { version: 1, sessionId: SESSION, status: "failed", attempts: 1, updatedAt: 1 },
+      { version: 1, sessionId: SESSION, status: "failed", attempts: 2, phase: "generate", reason: "command_failed", updatedAt: 2 },
+      { version: 1, sessionId: SESSION, status: "failed", attempts: 1, phase: "generate", reason: "command_failed", retryAt: 10, updatedAt: 3 }
+    ] as SessionTitleState[]) {
+      await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, {
+        workspaceDir, projectSessionsDir,
+        readState: () => state,
+        now: () => 5,
+        schedule: async id => { scheduled.push(id); }
+      });
+    }
+    expect(scheduled).toEqual([]);
+  });
+
+  test("schedules a title job instead of doing generation in the hook", async () => {
+    const { payload, workspaceDir, projectSessionsDir } = fixture();
+    const scheduled: string[] = [];
+    await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, {
+      workspaceDir,
+      projectSessionsDir,
+      schedule: async sessionId => { scheduled.push(sessionId); },
+      readState: () => null,
+    });
+    expect(scheduled).toEqual([SESSION]);
+  });
+
+  test("never turns the hook into a generator based on worker environment", async () => {
+    const { payload, workspaceDir, projectSessionsDir } = fixture();
+    const scheduled: string[] = [];
+    process.env.CLAUDE_TITLE_WORKER = "1";
+    try {
+      await handleSessionTitleCommand({ ...payload, hook_event_name: "Stop" }, {
+        workspaceDir, projectSessionsDir, schedule: async id => { scheduled.push(id); }, readState: () => null
+      });
+    } finally {
+      delete process.env.CLAUDE_TITLE_WORKER;
+    }
+    expect(scheduled).toEqual([SESSION]);
   });
 
   test("rejects traversal and transcript identity mismatch", async () => {

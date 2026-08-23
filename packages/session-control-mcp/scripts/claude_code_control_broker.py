@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 BROKER_PROTOCOL = 2
-HELPER_PROTOCOL = 5
+HELPER_PROTOCOL = 6
 DEFAULT_CONFIG = Path("/etc/claude-code-telegram-kit/reset.json")
 DEFAULT_HELPER = Path("/usr/local/sbin/claude-code-session-reset")
+TITLE_OAUTH_ENV_FILE = Path("/etc/claude-code-telegram-kit/claude-oauth.env")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 MAX_REQUEST_BYTES = 8 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -34,7 +35,7 @@ MAX_PENDING_JOBS = 4
 MODELS = {"opus", "sonnet", "haiku", "inherit"}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 DIGITS_RE = re.compile(r"^[0-9]+$")
-UNIT_RE = re.compile(r"^claude-session-reset(?:-(?:resume|model))?-[0-9a-f]{24}$")
+UNIT_RE = re.compile(r"^claude-session-(?:reset(?:-(?:resume|model))?|title)-[0-9a-f]{24}$")
 Runner = Callable[[list[str], float], subprocess.CompletedProcess[str]]
 
 
@@ -71,6 +72,9 @@ def _load_service_uid(config_path: Path) -> int:
 
 
 def _request_id(action: str, request: dict[str, Any]) -> str:
+    if action == "title":
+        seed = f"title:{request['session_id']}"
+        return hashlib.sha256(seed.encode()).hexdigest()[:24]
     chat = request["chat_id"]
     message = request["message_id"]
     if action == "reset":
@@ -99,6 +103,7 @@ def _pending_jobs(run: Runner) -> int:
         "/usr/bin/systemctl", "list-units", "--type=service",
         "--state=activating,running", "--no-legend", "--plain",
         "claude-session-reset*.service",
+        "claude-session-title*.service",
     ], 5.0)
     if result.returncode != 0:
         raise RuntimeError("unable to count control jobs")
@@ -171,7 +176,7 @@ def _helper_capabilities(helper: Path, run: Runner, verify_files: bool = True) -
         raise ValueError("helper protocol mismatch")
     if not isinstance(payload.get("actions"), list) or not all(isinstance(value, str) for value in payload["actions"]):
         raise ValueError("helper action shape mismatch")
-    if not {"reset", "resume", "model"}.issubset(set(payload["actions"])):
+    if not {"reset", "resume", "model", "title"}.issubset(set(payload["actions"])):
         raise ValueError("helper action mismatch")
     if not isinstance(payload.get("models"), list) or not all(isinstance(value, str) for value in payload["models"]):
         raise ValueError("helper model shape mismatch")
@@ -209,25 +214,36 @@ def _mutation_argv(request: dict[str, Any], helper: Path, config: Path) -> tuple
         _exact_keys(request, base | {"model"})
         if request["model"] not in MODELS:
             raise ValueError("invalid model")
+    elif action == "title":
+        _exact_keys(request, {"protocol", "action", "session_id"})
+        if not UUID_RE.fullmatch(str(request["session_id"])):
+            raise ValueError("invalid session identity")
     else:
         raise ValueError("invalid action")
-    _validate_id(request["chat_id"], "chat ID")
-    _validate_id(request["message_id"], "message ID")
+    if action != "title":
+        _validate_id(request["chat_id"], "chat ID")
+        _validate_id(request["message_id"], "message ID")
     request_id = _request_id(action, request)
-    unit = f"claude-session-reset{'-' + action if action != 'reset' else ''}-{request_id}"
+    unit = f"claude-session-title-{request_id}" if action == "title" else f"claude-session-reset{'-' + action if action != 'reset' else ''}-{request_id}"
     if not UNIT_RE.fullmatch(unit):
         raise ValueError("invalid unit")
-    argv = [
-        SYSTEMD_RUN, f"--unit={unit}", "--collect", "--no-block", str(helper),
-        "--config", str(config), "--protocol", str(HELPER_PROTOCOL), "--action", action,
+    argv = [SYSTEMD_RUN, f"--unit={unit}"]
+    if action == "title":
+        argv.append(f"--property=EnvironmentFile={TITLE_OAUTH_ENV_FILE}")
+    argv += [
+        "--collect", "--no-block", str(helper), "--config", str(config),
+        "--protocol", str(HELPER_PROTOCOL), "--action", action,
     ]
+    if action == "title":
+        argv += ["--session-id", request["session_id"]]
     if action in {"reset", "resume"}:
         argv += ["--current-session-id", request["current_session_id"]]
     if action == "resume":
         argv += ["--session-id", request["session_id"]]
     if action == "model":
         argv += ["--model", request["model"]]
-    argv += ["--chat-id", request["chat_id"], "--request-id", request_id]
+    if action != "title":
+        argv += ["--chat-id", request["chat_id"], "--request-id", request_id]
     return unit, argv
 
 def process_request(
@@ -256,6 +272,8 @@ def process_request(
         return {"status": "ok", "capabilities": _helper_capabilities(helper, run, verify_files)}
     if verify_files:
         _secure_file(helper, (0o755,), "reset helper")
+        if action == "title":
+            _secure_file(TITLE_OAUTH_ENV_FILE, (0o600,), "title OAuth environment")
     unit, argv = _mutation_argv(request, helper, config_path)
     (reserve or _reserve_mutation)(run)
     result = run(argv, 10.0)
