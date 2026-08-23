@@ -22,7 +22,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Automatic session-title failures now persist bounded phase/reason diagnostics in private `0600` state. The command-hook wrapper delegates every failed state to the title service, so a first proven pre-mutation generation/parse failure may retry once after persisted backoff; second-attempt, legacy, rename, readback, lock, and ambiguous failures remain terminal.
 - Activation state now uses its own `/run/claude-code-telegram-activation` namespace, so tmpfiles never changes the control broker socket directory's `0755` traversal authority.
 - Bare `/resume` now lists recent sessions; `/resume N` selects one, while `/sessions` remains a compatibility alias and is no longer advertised.
-- Interim commentary capture now treats the trusted PreToolUse event as continuation authority when Claude's current tool row has not yet flushed to JSONL; already-flushed tool rows still enforce content-order cutoff.
+- Interim commentary capture now gives each trusted PreToolUse one immediate exact-transcript read plus one bounded 35ms catch-up read for assistant rows flushed just afterward; overlapping hooks catch up concurrently while segment writes remain ordered, then fail open and record their tools.
 
 ## [0.3.0] - 2026-08-21
 

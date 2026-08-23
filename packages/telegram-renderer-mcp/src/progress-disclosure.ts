@@ -23,6 +23,8 @@ import { sanitizeCommentary } from "./commentary-sanitizer.js";
 
 /** Long enough to coalesce a parallel tool burst, short enough to still read as progress. */
 export const PROGRESS_DEBOUNCE_MS = 1_500;
+/** One bounded transcript catch-up read, separate from progress scheduling. */
+export const COMMENTARY_CATCHUP_WAIT_MS = 35;
 /**
  * The Stop/StopFailure hook must never hold Claude's turn end open for a full Telegram
  * timeout. The final drain is bounded; if the transport is slow, the hook returns and the
@@ -60,6 +62,8 @@ export interface TurnDisclosureDeps {
     onFailure: () => Promise<void>
   ) => CancelScheduled;
   startCommentaryTracking?: (input: BindTurnInput) => CommentaryTracker | null;
+  /** Bounded transcript catch-up wait; production uses one setTimeout, tests inject a no-time wait. */
+  waitForCommentaryCatchup?: (delayMs: number) => Promise<void>;
   deliverCommentary?: (
     config: RuntimeConfig,
     chatId: string,
@@ -472,19 +476,38 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           }
         };
         const blocks = turn.commentaryTracker?.collectBeforeTool(input.tool_use_id) ?? [];
-        const freshBlocks = blocks.filter(block => !turn.commentaryKeys.has(block.key));
-        if (freshBlocks.length === 0 && turn.pendingCommentaryBoundaries === 0) {
-          record();
-          return;
-        }
-        const ownsBoundary = freshBlocks.length > 0;
+        let freshBlocks = blocks.filter(block => !turn.commentaryKeys.has(block.key));
+        // Every empty read gets one bounded catch-up. Start its timer before queueing so
+        // overlapping hooks wait in parallel, while turn.chain still preserves record order.
+        const needsCatchup = freshBlocks.length === 0 && turn.commentaryTracker !== null;
+        const catchupWait = needsCatchup
+          ? Promise.resolve().then(() => (
+              deps.waitForCommentaryCatchup ?? ((delayMs: number) => new Promise<void>(resolve => {
+                // This timer is awaited by the hook; it must keep short-lived processes alive.
+                setTimeout(resolve, delayMs);
+              }))
+            )(COMMENTARY_CATCHUP_WAIT_MS)).catch(() => undefined)
+          : null;
+        const ownsBoundary = freshBlocks.length > 0 || needsCatchup;
         if (ownsBoundary) turn.pendingCommentaryBoundaries += 1;
         const run = async (): Promise<void> => {
           try {
             if (turn.commentaryAbandoned || lookup(input.session_id, input.prompt_id) !== turn) return;
+            if (catchupWait !== null) {
+              await catchupWait;
+              if (turn.commentaryAbandoned || lookup(input.session_id, input.prompt_id) !== turn) return;
+              try {
+                freshBlocks = (turn.commentaryTracker?.collectBeforeTool(input.tool_use_id) ?? [])
+                  .filter(block => !turn.commentaryKeys.has(block.key));
+              } catch {
+                // Fail open: an unreadable catch-up leaves this hook with no commentary.
+              }
+              if (turn.commentaryAbandoned || lookup(input.session_id, input.prompt_id) !== turn) return;
+            }
             const pending = freshBlocks.filter(block => !turn.commentaryKeys.has(block.key));
             if (pending.length > 0) await beginSegment(turn, pending);
-            if (!turn.commentaryAbandoned) record();
+            if (turn.commentaryAbandoned || lookup(input.session_id, input.prompt_id) !== turn) return;
+            record();
           } finally {
             if (ownsBoundary) turn.pendingCommentaryBoundaries -= 1;
           }

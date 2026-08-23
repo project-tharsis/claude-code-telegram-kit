@@ -46,12 +46,18 @@ function harness(options: {
   config?: RuntimeConfig;
   artifacts?: readonly ArtifactCandidate[];
   commentary?: string;
+  commentaryTool?: string;
+  noCommentary?: boolean;
+  waitForCommentaryCatchup?: (delayMs: number) => Promise<void>;
+  commentaryReadyAfterWaits?: number;
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
   const finalDeliveries: Harness["finalDeliveries"] = [];
   const commentaries: string[] = [];
-  let commentaryPolls = 0;
+  let commentaryAvailable = options.commentary === undefined
+    || (options.commentaryReadyAfterWaits === undefined && options.commentaryTool !== undefined);
+  let catchupWaits = 0;
   const typingStarts: string[] = [];
   const typingStops = { count: 0 };
   const delays: number[] = [];
@@ -74,11 +80,11 @@ function harness(options: {
         ? options.finalOutcome(content, finalDeliveries.length - 1)
         : options.finalOutcome ?? "delivered";
     },
-    startCommentaryTracking: () => options.commentary === undefined ? null : ({
-      collectBeforeTool: () => {
-        commentaryPolls += 1;
-        return commentaryPolls < 2 ? [] : [{ key: "row-1", text: options.commentary! }];
-      },
+    startCommentaryTracking: () => (options.commentary === undefined && !options.noCommentary) ? null : ({
+      collectBeforeTool: toolUseId => options.noCommentary ? [] : (
+        commentaryAvailable && options.commentaryTool === toolUseId
+        || (commentaryAvailable && options.commentaryTool === undefined)
+      ) ? [{ key: "row-1", text: options.commentary! }] : [],
       reserve: () => undefined,
       close: () => undefined
     }),
@@ -100,7 +106,14 @@ function harness(options: {
       return () => {
         queued = null;
       };
-    }
+    },
+    ...(options.commentaryTool === undefined || options.waitForCommentaryCatchup !== undefined ? {
+      waitForCommentaryCatchup: async (delayMs: number) => {
+        await options.waitForCommentaryCatchup?.(delayMs);
+        catchupWaits += 1;
+        if (options.commentaryReadyAfterWaits === undefined || catchupWaits >= options.commentaryReadyAfterWaits) commentaryAvailable = true;
+      }
+    } : {})
   });
 
   return {
@@ -131,8 +144,8 @@ function bind(h: Harness, prompt = ENVELOPE, promptId = PROMPT): void {
   });
 }
 
-function tool(h: Harness, toolUseId: string, toolName: string, agentId?: string): void {
-  h.disclosure.recordTool({
+async function tool(h: Harness, toolUseId: string, toolName: string, agentId?: string): Promise<void> {
+  await h.disclosure.recordTool({
     session_id: SESSION,
     prompt_id: PROMPT,
     tool_use_id: toolUseId,
@@ -157,16 +170,140 @@ async function finish(
 
 describe("turn disclosure lifecycle", () => {
   test("a later tool proves preceding assistant text is commentary before the next bubble", async () => {
-    const h = harness({ commentary: "I found the relevant files." });
+    const h = harness({ commentary: "I found the relevant files.", commentaryTool: "t2" });
     bind(h);
-    tool(h, "t1", "Read");
+    await h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "t1",
+      tool_name: "Read",
+      hook_event_name: "PreToolUse"
+    });
     await h.tick();
-    tool(h, "t2", "Bash");
+    await h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "t2",
+      tool_name: "Bash",
+      hook_event_name: "PreToolUse"
+    });
     await finish(h, "Stop", "done");
     expect(h.commentaries).toEqual(["I found the relevant files."]);
     expect(h.sends).toHaveLength(2);
     expect(h.edits).toHaveLength(1);
     expect(h.edits[0]!.text).toContain("Cogitated");
+  });
+
+  test("bounded catch-up captures a commentary row flushed after the initial read", async () => {
+    const h = harness({ commentary: "I found the relevant files." });
+    bind(h);
+    await tool(h, "t1", "Read");
+    await finish(h, "Stop", "done");
+    expect(h.commentaries).toEqual(["I found the relevant files."]);
+  });
+
+  test("concurrent no-commentary hooks queue behind a delayed boundary", async () => {
+    let waits = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const h = harness({
+      commentary: "I found the relevant files.",
+      commentaryTool: "t1",
+      commentaryReadyAfterWaits: 2,
+      waitForCommentaryCatchup: async () => {
+        waits += 1;
+        if (waits === 2) await gate;
+      }
+    });
+    bind(h);
+    await tool(h, "t0", "Read");
+    await h.tick();
+    const first = h.disclosure.recordTool({
+      session_id: SESSION, prompt_id: PROMPT, tool_use_id: "t1", tool_name: "Read", hook_event_name: "PreToolUse"
+    });
+    const second = h.disclosure.recordTool({
+      session_id: SESSION, prompt_id: PROMPT, tool_use_id: "t2", tool_name: "Bash", hook_event_name: "PreToolUse"
+    });
+    await Promise.resolve();
+    expect(h.sends).toHaveLength(1);
+    release();
+    await Promise.all([first, second]);
+    await finish(h, "Stop", "done");
+    expect(h.commentaries).toEqual(["I found the relevant files."]);
+    expect(h.sends).toHaveLength(2);
+    expect(h.sends[0]!.text).toContain("Reading");
+    expect(h.sends[1]!.text).toContain("terminal");
+  });
+
+  test("each concurrent hook gets one bounded re-read without reordering segments", async () => {
+    let waits = 0;
+    let markFirstWaitStarted!: () => void;
+    let releaseFirstWait!: () => void;
+    const firstWaitStarted = new Promise<void>(resolve => { markFirstWaitStarted = resolve; });
+    const firstWaitGate = new Promise<void>(resolve => { releaseFirstWait = resolve; });
+    const h = harness({
+      commentary: "commentary before the later tool",
+      commentaryTool: "t2",
+      commentaryReadyAfterWaits: 2,
+      waitForCommentaryCatchup: async () => {
+        waits += 1;
+        if (waits === 1) {
+          markFirstWaitStarted();
+          await firstWaitGate;
+        }
+      }
+    });
+    bind(h);
+    const first = h.disclosure.recordTool({
+      session_id: SESSION, prompt_id: PROMPT, tool_use_id: "t1", tool_name: "Read", hook_event_name: "PreToolUse"
+    });
+    await firstWaitStarted;
+    const second = h.disclosure.recordTool({
+      session_id: SESSION, prompt_id: PROMPT, tool_use_id: "t2", tool_name: "Bash", hook_event_name: "PreToolUse"
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    try {
+      expect(waits).toBe(2);
+    } finally {
+      releaseFirstWait();
+    }
+    await Promise.all([first, second]);
+    await finish(h, "Stop", "done");
+    expect(h.commentaries).toEqual(["commentary before the later tool"]);
+    expect(h.sends).toHaveLength(2);
+    expect(h.sends[0]!.text).toContain("Reading");
+    expect(h.sends[1]!.text).toContain("terminal");
+  });
+
+  test("bounded catch-up exits after one empty re-read when no commentary exists", async () => {
+    let waits = 0;
+    const h = harness({ noCommentary: true, waitForCommentaryCatchup: async delayMs => {
+      waits += 1;
+      expect(delayMs).toBe(35);
+    } });
+    bind(h);
+    await tool(h, "t1", "Read");
+    await finish(h, "Stop", "done");
+    expect(waits).toBe(1);
+    expect(h.commentaries).toEqual([]);
+    expect(h.sends).toHaveLength(1);
+  });
+
+  test("supersession during catch-up cannot mutate the retired turn", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const h = harness({ commentary: "stale commentary", waitForCommentaryCatchup: () => gate });
+    bind(h, ENVELOPE, "p-old");
+    const oldTool = h.disclosure.recordTool({
+      session_id: SESSION, prompt_id: "p-old", tool_use_id: "old-tool", tool_name: "Read", hook_event_name: "PreToolUse"
+    });
+    await Promise.resolve();
+    bind(h, '<channel source="telegram" chat_id="123" message_id="10">new turn', "p-new");
+    release();
+    await oldTool;
+    expect(h.commentaries).toEqual([]);
+    expect(h.sends).toEqual([]);
   });
 
   test("Stop auto-delivers the final assistant Markdown exactly once", async () => {
@@ -223,13 +360,14 @@ describe("turn disclosure lifecycle", () => {
     const pendingSend = new Promise<ProgressSendOutcome>(resolve => { releaseSend = resolve; });
     const h = harness({ send: () => pendingSend });
     bind(h, ENVELOPE, "p-old");
-    h.disclosure.recordTool({
+    const recordTool = h.disclosure.recordTool({
       session_id: SESSION,
       prompt_id: "p-old",
       tool_use_id: "t-old",
       tool_name: "Read",
       hook_event_name: "PreToolUse"
     });
+    await Promise.resolve();
     const firstFlush = h.tick();
     await Promise.resolve();
     const stopping = h.disclosure.finishTurn({
@@ -240,7 +378,7 @@ describe("turn disclosure lifecycle", () => {
     });
     bind(h, '<channel source="telegram" chat_id="123" message_id="10">new turn', "p-new");
     releaseSend({ kind: "sent", messageId: 101 });
-    await Promise.all([firstFlush, stopping]);
+    await Promise.all([recordTool, firstFlush, stopping]);
     expect(h.finalDeliveries).toEqual([]);
   });
 
@@ -366,7 +504,7 @@ describe("turn disclosure lifecycle", () => {
       transcript_path: `/tmp/${SESSION}.jsonl`,
       hook_event_name: "UserPromptSubmit"
     });
-    disclosure.recordTool({
+    await disclosure.recordTool({
       session_id: SESSION,
       prompt_id: "p-auth-bubble",
       tool_use_id: "t1",
@@ -413,7 +551,7 @@ describe("turn disclosure lifecycle", () => {
       transcript_path: `/tmp/${SESSION}.jsonl`,
       hook_event_name: "UserPromptSubmit"
     });
-    disclosure.recordTool({
+    await disclosure.recordTool({
       session_id: SESSION,
       prompt_id: "p-auth-race",
       tool_use_id: "t1",
@@ -547,7 +685,7 @@ describe("turn disclosure lifecycle", () => {
 
   test("an unbound turn ignores tool events entirely", async () => {
     const h = harness();
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
     await finish(h);
     expect(h.sends).toEqual([]);
@@ -556,7 +694,7 @@ describe("turn disclosure lifecycle", () => {
   test("a prompt without a direct Telegram envelope binds nothing", async () => {
     const h = harness();
     bind(h, "please read the file");
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
     expect(h.sends).toEqual([]);
   });
@@ -588,7 +726,7 @@ describe("turn disclosure lifecycle", () => {
     ]) {
       const h = harness();
       bind(h, `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${body}`);
-      tool(h, "t1", "ToolSearch");
+      await tool(h, "t1", "ToolSearch");
       await h.tick();
       await finish(h);
       expect(h.sends).toEqual([]);
@@ -598,7 +736,7 @@ describe("turn disclosure lifecycle", () => {
   test("conversational session requests still disclose real tool work", async () => {
     const h = harness();
     bind(h, '<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">please list sessions');
-    tool(h, "t1", "Bash");
+    await tool(h, "t1", "Bash");
     await h.tick();
     expect(h.sends.length).toBe(1);
   });
@@ -606,7 +744,7 @@ describe("turn disclosure lifecycle", () => {
   test("an unauthorized chat binds nothing", async () => {
     const h = harness({ config: { token: "1:tok", allowedChatIds: new Set(["777"]) } });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
     expect(h.sends).toEqual([]);
   });
@@ -614,7 +752,7 @@ describe("turn disclosure lifecycle", () => {
   test("sends one silent bubble quoting the inbound message after the debounce", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     expect(h.sends).toEqual([]);
     expect(h.delays).toEqual([PROGRESS_DEBOUNCE_MS]);
     await h.tick();
@@ -624,9 +762,9 @@ describe("turn disclosure lifecycle", () => {
   test("coalesces a burst into one debounced flush and one bubble", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
-    tool(h, "t2", "Grep");
-    tool(h, "t3", "Bash");
+    await tool(h, "t1", "Read");
+    await tool(h, "t2", "Grep");
+    await tool(h, "t3", "Bash");
     expect(h.delays).toEqual([PROGRESS_DEBOUNCE_MS]);
     await h.tick();
     expect(h.sends.length).toBe(1);
@@ -645,7 +783,7 @@ describe("turn disclosure lifecycle", () => {
       }
     });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
 
     const firstFlush = h.tick();
     await Promise.resolve();
@@ -660,9 +798,9 @@ describe("turn disclosure lifecycle", () => {
   test("later steps edit the same bubble instead of sending another", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     expect(h.sends.length).toBe(1);
     expect(h.edits).toEqual([{ messageId: 101, text: "Cogitating…\n📖 Reading\n💻 terminal" }]);
@@ -671,11 +809,11 @@ describe("turn disclosure lifecycle", () => {
   test("filters internal sidecar tools and discloses subagent internals", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t0", "mcp__telegram-renderer__finish_turn");
-    tool(h, "t1", "Task");
-    tool(h, "t2", "Read", "agent-1");
-    tool(h, "t3", "Bash", "agent-1");
-    tool(h, "t4", "mcp__session-control__dispatch_command", "agent-1");
+    await tool(h, "t0", "mcp__telegram-renderer__finish_turn");
+    await tool(h, "t1", "Task");
+    await tool(h, "t2", "Read", "agent-1");
+    await tool(h, "t3", "Bash", "agent-1");
+    await tool(h, "t4", "mcp__session-control__dispatch_command", "agent-1");
     await h.tick();
     expect(h.sends[0]!.text).toBe(
       "Cogitating…\n👥 Delegating\n📖 Reading\n💻 terminal"
@@ -685,9 +823,9 @@ describe("turn disclosure lifecycle", () => {
   test("dedupes a repeated tool_use_id across flushes", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     expect(h.pending()).toBe(false);
     await h.tick();
     expect(h.edits).toEqual([]);
@@ -696,7 +834,7 @@ describe("turn disclosure lifecycle", () => {
   test("marks a failure by tool_use_id and drains it on finish", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Bash");
+    await tool(h, "t1", "Bash");
     await h.tick();
     h.disclosure.recordFailure({
       session_id: SESSION,
@@ -711,7 +849,7 @@ describe("turn disclosure lifecycle", () => {
   test("finish drains without waiting for the debounce timer", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await finish(h);
     expect(h.sends.length).toBe(1);
     expect(h.sends[0]!.text).toBe("Cogitated\n📖 Reading");
@@ -721,7 +859,7 @@ describe("turn disclosure lifecycle", () => {
   test("a failed stop uses its own header", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await finish(h, "StopFailure");
     expect(h.sends[0]!.text).toBe("Failed\n❌ 📖 Reading");
   });
@@ -729,11 +867,11 @@ describe("turn disclosure lifecycle", () => {
   test("late events after close change nothing", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await finish(h);
     const sent = h.sends.length;
     const edited = h.edits.length;
-    tool(h, "t9", "Bash");
+    await tool(h, "t9", "Bash");
     await h.tick();
     await finish(h);
     expect(h.sends.length).toBe(sent);
@@ -743,10 +881,10 @@ describe("turn disclosure lifecycle", () => {
   test("a new turn supersedes the previous one and never edits its bubble", async () => {
     const h = harness();
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
     bind(h, ENVELOPE, "p2");
-    h.disclosure.recordTool({
+    await h.disclosure.recordTool({
       session_id: SESSION,
       prompt_id: "p2",
       tool_use_id: "u1",
@@ -763,7 +901,7 @@ describe("turn disclosure lifecycle", () => {
     const h = harness();
     bind(h, ENVELOPE, "p1");
     bind(h, ENVELOPE, "p2");
-    h.disclosure.recordTool({
+    await h.disclosure.recordTool({
       session_id: SESSION,
       prompt_id: "p2",
       tool_use_id: "u1",
@@ -779,9 +917,9 @@ describe("turn disclosure failure handling", () => {
   test("an uncertain send never produces a duplicate for the rest of the turn", async () => {
     const h = harness({ send: () => ({ kind: "uncertain" }) });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     await finish(h);
     expect(h.sends.length).toBe(1);
@@ -791,9 +929,9 @@ describe("turn disclosure failure handling", () => {
   test("a rejected send is not retried", async () => {
     const h = harness({ send: () => ({ kind: "rejected" }) });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await finish(h);
     expect(h.sends.length).toBe(1);
   });
@@ -810,9 +948,9 @@ describe("turn disclosure failure handling", () => {
       }
     });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     expect(h.edits.length).toBe(1);
     await finish(h);
@@ -825,12 +963,12 @@ describe("turn disclosure failure handling", () => {
   test("a flood-controlled edit abandons disclosure for the rest of the turn", async () => {
     const h = harness({ edit: () => ({ kind: "throttled" }) });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     expect(h.edits.length).toBe(1);
-    tool(h, "t3", "Write");
+    await tool(h, "t3", "Write");
     expect(h.pending()).toBe(false);
     await expect(finish(h)).resolves.toBe("finished");
     expect(h.edits.length).toBe(1);
@@ -839,12 +977,12 @@ describe("turn disclosure failure handling", () => {
   test("a gone bubble is replaced at most once per turn", async () => {
     const h = harness({ edit: () => ({ kind: "gone" }) });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     expect(h.sends.length).toBe(2);
-    tool(h, "t3", "Write");
+    await tool(h, "t3", "Write");
     await h.tick();
     await finish(h);
     expect(h.sends.length).toBe(2);
@@ -853,9 +991,9 @@ describe("turn disclosure failure handling", () => {
   test("a permanently rejected edit stops editing without a replacement send", async () => {
     const h = harness({ edit: () => ({ kind: "rejected" }) });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     await finish(h);
     expect(h.sends.length).toBe(1);
@@ -865,9 +1003,9 @@ describe("turn disclosure failure handling", () => {
   test("an unchanged edit is treated as current and not repeated", async () => {
     const h = harness({ edit: () => ({ kind: "unchanged" }) });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
-    tool(h, "t2", "Bash");
+    await tool(h, "t2", "Bash");
     await h.tick();
     await finish(h);
     expect(h.edits.length).toBe(2);
@@ -918,7 +1056,7 @@ describe("turn disclosure failure handling", () => {
       }
     });
     bind(h);
-    tool(h, "t1", "Read");
+    await tool(h, "t1", "Read");
     await h.tick();
 
     const started = Date.now();
