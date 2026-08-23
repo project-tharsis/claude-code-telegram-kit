@@ -6,10 +6,6 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- Completed assistant commentary that precedes a later tool call now travels on a dedicated silent Telegram rail. Each commentary boundary seals the preceding tool-progress bubble, opens a new segment for later tools, and leaves canonical final delivery Stop-owned and exactly once.
-
 ### Changed
 
 - Exact-SHA local installation and rollback now report `activation_required` after the atomic `current` switch; the fixed root-owned activator restarts only the configured service and verifies the selected SHA before declaring it active.
@@ -22,7 +18,6 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Automatic session-title failures now persist bounded phase/reason diagnostics in private `0600` state. The command-hook wrapper delegates every failed state to the title service, so a first proven pre-mutation generation/parse failure may retry once after persisted backoff; second-attempt, legacy, rename, readback, lock, and ambiguous failures remain terminal.
 - Activation state now uses its own `/run/claude-code-telegram-activation` namespace, so tmpfiles never changes the control broker socket directory's `0755` traversal authority.
 - Bare `/resume` now lists recent sessions; `/resume N` selects one, while `/sessions` remains a compatibility alias and is no longer advertised.
-- Interim commentary capture now gives each trusted PreToolUse one immediate exact-transcript read plus one bounded 35ms catch-up read for assistant rows flushed just afterward; overlapping hooks catch up concurrently while segment writes remain ordered, then fail open and record their tools.
 
 ## [0.3.0] - 2026-08-21
 

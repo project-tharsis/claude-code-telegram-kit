@@ -13,11 +13,10 @@ import {
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
 import { createArtifactDeliverer } from "./artifact-delivery.js";
 import { startArtifactTranscriptTracker } from "./artifact-transcript.js";
-import { startCommentaryTranscriptTracker } from "./commentary-transcript.js";
 import { watchAuthFailureTranscript } from "./auth-failure-watcher.js";
 import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
-import { editProgressBubble, sendInterimCommentary, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
+import { editProgressBubble, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
 import { createTypingHeartbeatManager } from "./typing-heartbeat.js";
 import {
   createUnifiedDeliverer,
@@ -53,11 +52,6 @@ const disclosure = createTurnDisclosure({
   startArtifactTracking: input => projectSessionsDir === undefined
     ? null
     : startArtifactTranscriptTracker(input, { expectedRoot: projectSessionsDir }),
-  startCommentaryTracking: input => projectSessionsDir === undefined
-    ? null
-    : startCommentaryTranscriptTracker(input, { expectedRoot: projectSessionsDir }),
-  deliverCommentary: (config, chatId, messageId, content) =>
-    sendInterimCommentary(config, chatId, messageId, content),
   startAuthFailureWatch: (input, onFailure) => {
     if (projectSessionsDir === undefined || input.transcript_path === undefined) return () => undefined;
     return watchAuthFailureTranscript({
