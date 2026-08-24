@@ -3,7 +3,7 @@ const TASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const COMPLETE_ENVELOPE = /^\s*<task-notification>\s*([\s\S]*?)\s*<\/task-notification>\s*$/;
 
 export interface TerminalTaskNotification {
-  toolUseId: string;
+  toolUseId?: string;
   taskId?: string;
   status: "completed" | "failed";
 }
@@ -30,15 +30,20 @@ export function parseTerminalTaskNotification(prompt: string): TerminalTaskNotif
   const status = exactTag(header, "status");
   if (status !== "completed" && status !== "failed") return null;
   const toolUseId = exactTag(header, "tool-use-id");
-  if (toolUseId === null || !TOOL_USE_ID.test(toolUseId)) return null;
+  if (toolUseId !== null && !TOOL_USE_ID.test(toolUseId)) return null;
   const taskId = exactTag(header, "task-id");
   if (taskId !== null && !TASK_ID.test(taskId)) return null;
-  return { toolUseId, status, ...(taskId === null ? {} : { taskId }) };
+  if (toolUseId === null && taskId === null) return null;
+  return {
+    status,
+    ...(toolUseId === null ? {} : { toolUseId }),
+    ...(taskId === null ? {} : { taskId })
+  };
 }
 
 export function parseCompletedTaskNotification(prompt: string): CompletedTaskNotification | null {
   const notification = parseTerminalTaskNotification(prompt);
-  if (notification === null || notification.status !== "completed") return null;
+  if (notification === null || notification.status !== "completed" || notification.toolUseId === undefined) return null;
   const { toolUseId, taskId } = notification;
   return { toolUseId, ...(taskId === undefined ? {} : { taskId }) };
 }

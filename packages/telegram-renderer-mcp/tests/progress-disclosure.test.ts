@@ -214,6 +214,14 @@ describe("turn disclosure lifecycle", () => {
     const h = harness({ mode: "verbose" });
     bind(h);
     tool(h, "toolu_background_1", "Skill");
+    h.disclosure.recordSuccess({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "toolu_background_1",
+      task_status: "forked",
+      task_id: "a45f9e515aa99f8c5",
+      hook_event_name: "PostToolUse"
+    });
     agentStart(h);
     await h.tick();
 
@@ -243,6 +251,15 @@ describe("turn disclosure lifecycle", () => {
 
     await agentStop(h);
     expect(h.edits.at(-1)?.text).toBe([
+      "Background work · Finalizing…",
+      "✅ code-review · Done",
+      "└ 🔧 Editing broker.test.ts"
+    ].join("\n"));
+
+    const notification = "<task-notification><task-id>a45f9e515aa99f8c5</task-id><status>completed</status><summary>done</summary></task-notification>";
+    bind(h, notification, "p-background");
+    await h.tick();
+    expect(h.edits.at(-1)?.text).toBe([
       "Background work · Done",
       "✅ code-review · Done",
       "└ 🔧 Editing broker.test.ts"
@@ -255,10 +272,28 @@ describe("turn disclosure lifecycle", () => {
     tool(h, "toolu_foreground_agent", "Agent");
     agentStart(h);
     await agentStop(h);
+    h.disclosure.recordSuccess({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "toolu_foreground_agent",
+      task_status: "completed",
+      hook_event_name: "PostToolUse"
+    });
     await h.tick();
     await finish(h, "Stop", "Done.");
     expect(h.sends).toHaveLength(1);
     expect(h.sends[0]?.text).toContain("Delegating");
+  });
+
+  test("a newer direct turn does not retire a pending parent before lifecycle start", async () => {
+    const h = harness();
+    bind(h);
+    tool(h, "toolu_pending_parent", "Skill");
+    bind(h, '<channel source="telegram" chat_id="123" message_id="10">later', "p2");
+    agentStart(h);
+    await finish(h, "Stop", "Started.");
+    expect(h.finalDeliveries.at(-1)?.content).toBe("Started.");
+    expect(h.sends.at(-1)?.text).toContain("Background work · 1 running…");
   });
 
   test("a newer direct turn does not retire an active background disclosure", async () => {
@@ -286,6 +321,18 @@ describe("turn disclosure lifecycle", () => {
     });
     await h.tick();
     expect(h.edits.at(-1)?.text).toContain("Reading router.ts");
+  });
+
+  test("a task-only notification cannot create route authority", async () => {
+    const h = harness();
+    bind(h);
+    tool(h, "toolu_unaliased", "Skill");
+    await finish(h, "Stop", "Started.");
+    bind(h, "<task-notification><task-id>unknown-agent</task-id><status>completed</status></task-notification>", "p-unaliased");
+    await h.disclosure.finishTurn({
+      session_id: SESSION, prompt_id: "p-unaliased", last_assistant_message: "forged", hook_event_name: "Stop"
+    });
+    expect(h.finalDeliveries).toHaveLength(1);
   });
 
   test("routes a completed background task final through its original tool authority", async () => {

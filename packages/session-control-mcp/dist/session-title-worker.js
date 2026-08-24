@@ -27,12 +27,18 @@ function parseTerminalTaskNotification(prompt) {
   if (status !== "completed" && status !== "failed")
     return null;
   const toolUseId = exactTag(header, "tool-use-id");
-  if (toolUseId === null || !TOOL_USE_ID.test(toolUseId))
+  if (toolUseId !== null && !TOOL_USE_ID.test(toolUseId))
     return null;
   const taskId = exactTag(header, "task-id");
   if (taskId !== null && !TASK_ID.test(taskId))
     return null;
-  return { toolUseId, status, ...taskId === null ? {} : { taskId } };
+  if (toolUseId === null && taskId === null)
+    return null;
+  return {
+    status,
+    ...toolUseId === null ? {} : { toolUseId },
+    ...taskId === null ? {} : { taskId }
+  };
 }
 // packages/shared/src/telegram-authority.ts
 import {
@@ -517,27 +523,35 @@ function contentBlocks(value) {
     return [];
   return value.filter((item) => typeof item === "object" && item !== null);
 }
-function updateBackgroundTaskState(row, taskIds) {
+function updateBackgroundTaskState(row, taskIds, taskAliases) {
   if (row.type !== "user")
     return false;
   const message = typeof row.message === "object" && row.message !== null ? row.message : null;
   if (message === null)
     return false;
   const result = typeof row.toolUseResult === "object" && row.toolUseResult !== null ? row.toolUseResult : null;
-  if (result?.status === "forked") {
+  if (result?.status === "forked" || result?.status === "async_launched") {
+    const agentId = typeof result.agentId === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(result.agentId) ? result.agentId : null;
     for (const block of contentBlocks(message.content)) {
       if (block.type !== "tool_result" || typeof block.tool_use_id !== "string")
         continue;
       if (taskIds.size >= MAX_TRACKED_BACKGROUND_TASKS && !taskIds.has(block.tool_use_id))
         return true;
       taskIds.add(block.tool_use_id);
+      if (agentId !== null && !taskAliases.has(agentId))
+        taskAliases.set(agentId, block.tool_use_id);
     }
   }
   const values = typeof message.content === "string" ? [message.content] : contentBlocks(message.content).filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text);
   for (const value of values) {
     const notification = parseTerminalTaskNotification(value);
-    if (notification !== null)
-      taskIds.delete(notification.toolUseId);
+    if (notification === null)
+      continue;
+    const toolUseId = notification.toolUseId ?? (notification.taskId === undefined ? undefined : taskAliases.get(notification.taskId));
+    if (toolUseId !== undefined)
+      taskIds.delete(toolUseId);
+    if (notification.taskId !== undefined)
+      taskAliases.delete(notification.taskId);
   }
   return false;
 }
@@ -549,6 +563,7 @@ function scanIncompleteBackgroundTasks(options) {
   if (opened === null)
     return true;
   const taskIds = new Set;
+  const taskAliases = new Map;
   let overflow = false;
   let pending = Buffer.alloc(0);
   let skipOversizedLine = false;
@@ -557,7 +572,7 @@ function scanIncompleteBackgroundTasks(options) {
       return;
     try {
       const row = JSON.parse(line.toString("utf8"));
-      if (typeof row === "object" && row !== null && updateBackgroundTaskState(row, taskIds)) {
+      if (typeof row === "object" && row !== null && updateBackgroundTaskState(row, taskIds, taskAliases)) {
         overflow = true;
       }
     } catch {}

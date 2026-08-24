@@ -121,6 +121,10 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("UserPromptSubmit")[0]!.input.transcript_path).toBe("${transcript_path}");
     expect(toolsFor("PreToolUse").map(hook => hook.tool)).toEqual(["record_tool"]);
     expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual(["record_tool_success"]);
+    expect(toolsFor("PostToolUse")[0]!.input).toMatchObject({
+      task_status: "${tool_response.status}",
+      task_id: "${tool_response.agentId}"
+    });
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("SubagentStart").map(hook => hook.tool)).toEqual(["record_subagent_start"]);
     expect(toolsFor("SubagentStop").map(hook => hook.tool)).toEqual(["record_subagent_stop"]);

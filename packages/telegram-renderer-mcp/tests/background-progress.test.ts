@@ -33,14 +33,17 @@ describe("event-driven background progress", () => {
     ].join("\n"));
   });
 
-  test("changes only on lifecycle events and closes when every agent stops", () => {
+  test("waits for the parent task terminal event after every observed agent stops", () => {
     const progress = new BackgroundProgress();
-    progress.recordStart("agent-1", "code-review");
-    const generation = progress.generation;
-    expect(progress.recordStart("agent-1", "code-review")).toBe(false);
-    expect(progress.generation).toBe(generation);
+    expect(progress.recordTaskStart("parent-tool")).toBe(true);
+    expect(progress.recordStart("agent-1", "code-review")).toBe(true);
     expect(progress.recordStop("agent-1")).toBe(true);
     expect(progress.hasActive).toBe(false);
+    expect(progress.render()).toBe([
+      "Background work · Finalizing…",
+      "✅ code-review · Done"
+    ].join("\n"));
+    expect(progress.recordTaskTerminal("parent-tool")).toBe(true);
     expect(progress.render()).toBe([
       "Background work · Done",
       "✅ code-review · Done"
@@ -68,8 +71,10 @@ describe("event-driven background progress", () => {
   test("bounds retained agents and strips terminal command previews", () => {
     const progress = new BackgroundProgress();
     for (let index = 0; index < 16; index += 1) {
+      expect(progress.recordTaskStart(`parent-${index}`)).toBe(true);
       expect(progress.recordStart(`agent-${index}`, "reviewer")).toBe(true);
     }
+    expect(progress.recordTaskStart("parent-overflow")).toBe(false);
     expect(progress.recordStart("agent-overflow", "reviewer")).toBe(false);
     expect(progress.recordTool("agent-0", "shell-1", {
       emoji: "💻",

@@ -133,6 +133,9 @@ interface Turn {
 interface BackgroundTaskRoute {
   chatId: string;
   quoteMessageId: string;
+  ownerKey: string;
+  toolUseId: string;
+  taskAliases: Set<string>;
   depth: number;
   expiresAt: number;
 }
@@ -165,18 +168,29 @@ function collectArtifacts(turn: Turn): ArtifactCandidate[] {
 export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   const turns = new Map<string, Turn>();
   const backgroundTaskRoutes = new Map<string, BackgroundTaskRoute>();
+  const backgroundTaskAliases = new Map<string, string>();
   const runtimeIncidents = new Map<string, number>();
   const now = deps.now ?? Date.now;
+
+  function deleteBackgroundTaskRoute(key: string): BackgroundTaskRoute | undefined {
+    const route = backgroundTaskRoutes.get(key);
+    if (route === undefined) return undefined;
+    backgroundTaskRoutes.delete(key);
+    for (const alias of route.taskAliases) {
+      if (backgroundTaskAliases.get(alias) === key) backgroundTaskAliases.delete(alias);
+    }
+    return route;
+  }
 
   function pruneBackgroundTaskRoutes(): void {
     const current = now();
     for (const [key, route] of backgroundTaskRoutes) {
-      if (route.expiresAt <= current) backgroundTaskRoutes.delete(key);
+      if (route.expiresAt <= current) deleteBackgroundTaskRoute(key);
     }
     while (backgroundTaskRoutes.size > MAX_BACKGROUND_TASK_ROUTES) {
       const oldest = backgroundTaskRoutes.keys().next();
       if (oldest.done === true) return;
-      backgroundTaskRoutes.delete(oldest.value);
+      deleteBackgroundTaskRoute(oldest.value);
     }
   }
 
@@ -192,17 +206,45 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     return true;
   }
 
-  function rememberBackgroundTaskRoute(sessionId: string, toolUseId: string, turn: Turn): void {
+  function rememberBackgroundTaskRoute(
+    sessionId: string,
+    toolUseId: string,
+    ownerKey: string,
+    turn: Turn
+  ): void {
     if (turn.backgroundDepth >= MAX_BACKGROUND_CHAIN_DEPTH) return;
     const key = backgroundRouteKey(sessionId, toolUseId);
-    backgroundTaskRoutes.delete(key);
+    if (backgroundTaskRoutes.has(key)) return;
+    if (!turn.backgroundProgress.recordTaskStart(toolUseId)) return;
     backgroundTaskRoutes.set(key, {
       chatId: turn.chatId,
       quoteMessageId: turn.quoteMessageId,
+      ownerKey,
+      toolUseId,
+      taskAliases: new Set(),
       depth: turn.backgroundDepth + 1,
       expiresAt: now() + BACKGROUND_TASK_ROUTE_TTL_MS
     });
     pruneBackgroundTaskRoutes();
+  }
+
+  function rememberBackgroundTaskAlias(sessionId: string, toolUseId: string, taskId: string): void {
+    const canonical = backgroundRouteKey(sessionId, toolUseId);
+    const route = backgroundTaskRoutes.get(canonical);
+    if (route === undefined) return;
+    const alias = backgroundRouteKey(sessionId, taskId);
+    const existing = backgroundTaskAliases.get(alias);
+    if (existing !== undefined && existing !== canonical) return;
+    backgroundTaskAliases.set(alias, canonical);
+    route.taskAliases.add(alias);
+  }
+
+  function terminalizeBackgroundTaskRoute(sessionId: string, toolUseId: string): Turn | undefined {
+    const route = deleteBackgroundTaskRoute(backgroundRouteKey(sessionId, toolUseId));
+    if (route === undefined) return undefined;
+    const owner = turns.get(route.ownerKey);
+    return owner !== undefined && owner.backgroundProgress.recordTaskTerminal(route.toolUseId)
+      ? owner : undefined;
   }
 
   function drop(turn: Turn): void {
@@ -219,6 +261,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   }
 
   function isActiveBackground(turn: Turn): boolean {
+    if (turn.backgroundProgress.hasPendingTasks) return true;
     return turn.progressPhase === "background-agents" && turn.backgroundProgress.hasActive;
   }
 
@@ -438,7 +481,13 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           quoteMessageId = envelope.messageId;
         } else {
           if (notification === null) return;
-          routeToConsume = backgroundRouteKey(input.session_id, notification.toolUseId);
+          const directRoute = notification.toolUseId === undefined
+            ? undefined : backgroundRouteKey(input.session_id, notification.toolUseId);
+          const aliasRoute = notification.taskId === undefined
+            ? undefined : backgroundTaskAliases.get(backgroundRouteKey(input.session_id, notification.taskId));
+          routeToConsume = directRoute !== undefined && backgroundTaskRoutes.has(directRoute)
+            ? directRoute : aliasRoute ?? null;
+          if (routeToConsume === null) return;
           const route = backgroundTaskRoutes.get(routeToConsume);
           if (route === undefined || route.expiresAt <= now()) return;
           chatId = route.chatId;
@@ -447,14 +496,19 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           backgroundDepth = route.depth;
         }
         assertAuthorizedChat(deps.loadConfig(), chatId);
-        if (routeToConsume !== null) backgroundTaskRoutes.delete(routeToConsume);
+        if (routeToConsume !== null) {
+          const consumed = deleteBackgroundTaskRoute(routeToConsume);
+          const owner = consumed === undefined ? undefined : turns.get(consumed.ownerKey);
+          const ownerChanged = owner !== undefined && consumed !== undefined
+            && owner.backgroundProgress.recordTaskTerminal(consumed.toolUseId);
+          if (ownerChanged && owner?.progressPhase === "background-agents") touch(owner);
+        }
 
         // A newer direct prompt retires only older direct turns. Background completion turns
         // retain their own route and must not clobber or be clobbered by foreground work.
         if (!background) {
           for (const [existingKey, existing] of turns) {
-            const activeBackground = existing.progressPhase === "background-agents"
-              && existing.backgroundProgress.hasActive;
+            const activeBackground = isActiveBackground(existing);
             if (existing.chatId === chatId && !existing.background && !activeBackground) {
               drop(existing);
               turns.delete(existingKey);
@@ -527,7 +581,12 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
         if (BACKGROUND_ROUTE_TOOLS.has(input.tool_name)) {
-          rememberBackgroundTaskRoute(input.session_id, input.tool_use_id, turn);
+          rememberBackgroundTaskRoute(
+            input.session_id,
+            input.tool_use_id,
+            turnKey(input.session_id, input.prompt_id),
+            turn
+          );
         }
         const display = buildProgressStep(input.tool_name, input, deps.mode, input.agent_id);
         if (display === null) return;
@@ -576,12 +635,20 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
+        const launched = input.task_status === "async_launched" || input.task_status === "forked";
+        let routeOwner: Turn | undefined;
+        if (launched) {
+          if (input.task_id !== undefined) rememberBackgroundTaskAlias(input.session_id, input.tool_use_id, input.task_id);
+        } else {
+          routeOwner = terminalizeBackgroundTaskRoute(input.session_id, input.tool_use_id);
+        }
         const backgroundChanged = turn.backgroundProgress.recordSuccess(input.tool_use_id);
         if (turn.progressPhase === "background-agents") {
-          if (backgroundChanged) touch(turn);
+          if (backgroundChanged || routeOwner === turn) touch(turn);
           return;
         }
         if (turn.progress.recordSuccess(input.tool_use_id)) touch(turn);
+        if (routeOwner !== undefined && routeOwner !== turn && routeOwner.progressPhase === "background-agents") touch(routeOwner);
       } catch {
         // Never surface a disclosure failure to the agent.
       }
@@ -591,12 +658,14 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
+        const routeOwner = terminalizeBackgroundTaskRoute(input.session_id, input.tool_use_id);
         const backgroundChanged = turn.backgroundProgress.recordFailure(input.tool_use_id);
         if (turn.progressPhase === "background-agents") {
-          if (backgroundChanged) touch(turn);
+          if (backgroundChanged || routeOwner === turn) touch(turn);
           return;
         }
         if (turn.progress.recordFailure(input.tool_use_id)) touch(turn);
+        if (routeOwner !== undefined && routeOwner !== turn && routeOwner.progressPhase === "background-agents") touch(routeOwner);
       } catch {
         // Never surface a disclosure failure to the agent.
       }

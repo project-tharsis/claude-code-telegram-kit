@@ -113,6 +113,8 @@
               "session_id": "${session_id}",
               "prompt_id": "${prompt_id}",
               "tool_use_id": "${tool_use_id}",
+              "task_status": "${tool_response.status}",
+              "task_id": "${tool_response.agentId}",
               "hook_event_name": "PostToolUse"
             }
           }
