@@ -327,6 +327,27 @@ describe("turn disclosure lifecycle", () => {
     expect(mismatch.edits.at(-1)?.text).toContain("Background work · Stopped");
   });
 
+  test("TaskStop success terminalizes the exact background alias", async () => {
+    const h = harness({ mode: "verbose" });
+    bind(h);
+    tool(h, "toolu_parent_stop", "Agent");
+    h.disclosure.recordSuccess({
+      session_id: SESSION, prompt_id: PROMPT, tool_use_id: "toolu_parent_stop",
+      task_status: "async_launched", task_id: "agent-stop", hook_event_name: "PostToolUse"
+    });
+    agentStart(h, "agent-stop", "general-purpose");
+    await h.tick();
+    await finish(h, "Stop", "launched");
+    bind(h, '<channel source="telegram" chat_id="123" message_id="10">stop', "p-cancel");
+    h.disclosure.recordTool({ session_id: SESSION, prompt_id: "p-cancel", tool_use_id: "toolu_taskstop", tool_name: "TaskStop", hook_event_name: "PreToolUse" });
+    h.disclosure.recordSuccess({ session_id: SESSION, prompt_id: "p-cancel", tool_use_id: "toolu_generic", task_status: "killed", task_id: "agent-stop", hook_event_name: "PostToolUse" });
+    await h.tick();
+    expect(h.edits.some(edit => edit.text.includes("Stopped"))).toBe(false);
+    h.disclosure.recordSuccess({ session_id: SESSION, prompt_id: "p-cancel", tool_use_id: "toolu_taskstop", tool_name: "TaskStop", task_status: "killed", task_id: "agent-stop", hook_event_name: "PostToolUse" });
+    await h.tick();
+    expect(h.edits.at(-1)?.text).toContain("Background work · Stopped");
+  });
+
   test("does not open background disclosure when the subagent stopped before the parent", async () => {
     const h = harness();
     bind(h);

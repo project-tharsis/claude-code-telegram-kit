@@ -84,6 +84,7 @@ export const RecordToolInputSchema = z.object({
 export const RecordToolSuccessInputSchema = z.object({
   ...turnKey,
   tool_use_id: identifier,
+  tool_name: toolName.optional(),
   task_status: optionalTaskStatus,
   task_id: optionalIdentifier,
   hook_event_name: z.literal("PostToolUse")

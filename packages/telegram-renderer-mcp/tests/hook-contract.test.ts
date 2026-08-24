@@ -165,6 +165,9 @@ describe("internal hook tool schemas", () => {
       .toMatchObject({ task_status: undefined, task_id: undefined });
     expect(RecordToolSuccessInputSchema.parse({ ...base, task_status: "completed", task_id: "" }).task_status)
       .toBe("completed");
+    expect(RecordToolSuccessInputSchema.parse({ ...base, tool_name: "TaskStop", task_status: "killed", task_id: "agent-1" }))
+      .toMatchObject({ tool_name: "TaskStop", task_status: "killed", task_id: "agent-1" });
+    expect(() => RecordToolSuccessInputSchema.parse({ ...base, tool_name: "Task Stop" })).toThrow();
     expect(() => RecordToolSuccessInputSchema.parse({ ...base, task_status: "x".repeat(65) })).toThrow();
     expect(() => RecordToolSuccessInputSchema.parse({ ...base, tool_response: { content: "private" } })).toThrow();
   });
