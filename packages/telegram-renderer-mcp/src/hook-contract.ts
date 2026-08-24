@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RUNTIME_FAILURE_TYPES } from "./runtime-failure-watcher.js";
 
 export const MAX_HOOK_FINAL_CHARACTERS = 1_000_000;
 
@@ -104,11 +105,23 @@ export const RecordSubagentStopInputSchema = z.object({
   hook_event_name: z.literal("SubagentStop")
 }).strict();
 
-export const FinishTurnInputSchema = z.object({
+const StopInputSchema = z.object({
   ...turnKey,
   last_assistant_message: requiredTemplateText(MAX_HOOK_FINAL_CHARACTERS),
-  hook_event_name: z.union([z.literal("Stop"), z.literal("StopFailure")])
+  hook_event_name: z.literal("Stop")
 }).strict();
+
+const StopFailureInputSchema = z.object({
+  ...turnKey,
+  last_assistant_message: requiredTemplateText(MAX_HOOK_FINAL_CHARACTERS),
+  error: z.enum(RUNTIME_FAILURE_TYPES),
+  hook_event_name: z.literal("StopFailure")
+}).strict();
+
+export const FinishTurnInputSchema = z.discriminatedUnion("hook_event_name", [
+  StopInputSchema,
+  StopFailureInputSchema
+]);
 
 export type BindTurnInput = z.infer<typeof BindTurnInputSchema>;
 export type RecordToolInput = z.infer<typeof RecordToolInputSchema>;

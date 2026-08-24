@@ -14,42 +14,56 @@ const MAX_SCAN_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
 const DEFAULT_DURATION_MS = 5_000;
 const POLL_MS = 100;
+const MAX_DATE_SECONDS = 8_640_000_000_000;
+const MAX_RESET_NOTICE_MS = 7 * 24 * 60 * 60 * 1_000;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export const RUNTIME_FAILURE_TYPES = [
+  "rate_limit", "overloaded", "authentication_failed", "oauth_org_not_allowed", "billing_error",
+  "invalid_request", "model_not_found", "server_error", "max_output_tokens", "unknown"
+] as const;
+export type RuntimeFailureType = (typeof RUNTIME_FAILURE_TYPES)[number];
+export interface RuntimeFailure { error: RuntimeFailureType; resetsAt?: number }
+const RUNTIME_FAILURE_SET = new Set<string>(RUNTIME_FAILURE_TYPES);
+const QUOTA_LIMIT_KEYS = new Set([
+  "remainingPercentage", "resetsAt", "rateLimitType", "isUsingOverage", "overageStatus",
+  "surpassedThreshold", "isPerModel", "isShowingWeeklyRefresh", "isShowingFiveHourRefresh"
+]);
 
 type TimerHandle = unknown;
 
-export interface AuthFailureWatcherScheduler {
+export interface RuntimeFailureWatcherScheduler {
   setTimeout(callback: () => void, delayMs?: number): TimerHandle;
   clearTimeout(handle: TimerHandle): void;
 }
 
-export interface AuthFailureWatcherReader {
+export interface RuntimeFailureWatcherReader {
   open(path: string, flags: number): number;
   stat(fd: number): Stats;
   read(fd: number, buffer: Buffer, offset: number, length: number, position: number): number;
   close(fd: number): void;
 }
 
-export interface AuthFailureTranscriptInput {
+export interface RuntimeFailureTranscriptInput {
   session_id: string;
   transcript_path: string;
 }
 
-export interface AuthFailureWatcherOptions {
+export interface RuntimeFailureWatcherOptions {
   expectedRoot: string;
-  onAuthFailure: () => void;
-  scheduler?: AuthFailureWatcherScheduler;
-  reader?: AuthFailureWatcherReader;
+  onFailure: (failure: RuntimeFailure) => void;
+  scheduler?: RuntimeFailureWatcherScheduler;
+  reader?: RuntimeFailureWatcherReader;
   now?: () => number;
   durationMs?: number;
 }
 
-const systemScheduler: AuthFailureWatcherScheduler = {
+const systemScheduler: RuntimeFailureWatcherScheduler = {
   setTimeout: (callback, delayMs = 0) => setTimeout(callback, delayMs),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)
 };
 
-const systemReader: AuthFailureWatcherReader = {
+const systemReader: RuntimeFailureWatcherReader = {
   open: (path, flags) => openSync(path, flags),
   stat: (fd) => fstatSync(fd),
   read: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
@@ -71,24 +85,80 @@ function sameIdentity(a: Stats, b: Stats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.nlink === b.nlink;
 }
 
-function isFailureRow(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const row = value as { type?: unknown; error?: unknown };
-  return row.type === "assistant" && row.error === "authentication_failed";
+function parseFailureRow(value: unknown): RuntimeFailure | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (row.type !== "assistant" || row.isApiErrorMessage !== true || typeof row.error !== "string") return null;
+  if (!RUNTIME_FAILURE_SET.has(row.error)) return null;
+  const message = row.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const envelope = message as Record<string, unknown>;
+  if (envelope.role !== "assistant" || !Array.isArray(envelope.content)) return null;
+  const quota = row.quotaLimits;
+  let resetsAt: number | undefined;
+  if (quota !== undefined) {
+    if (!quota || typeof quota !== "object" || Array.isArray(quota)) return null;
+    const limits = quota as Record<string, unknown>;
+    if (Object.keys(limits).some(key => !QUOTA_LIMIT_KEYS.has(key))) return null;
+    const reset = limits.resetsAt;
+    if (typeof reset !== "number" || !Number.isSafeInteger(reset)
+      || reset <= 0 || reset > MAX_DATE_SECONDS) return null;
+    resetsAt = reset;
+  }
+  return { error: row.error as RuntimeFailureType, ...(resetsAt === undefined ? {} : { resetsAt }) };
 }
 
-function scanLine(line: string, onFailure: () => void): void {
+function scanLine(line: string, onFailure: (failure: RuntimeFailure) => void): void {
   try {
-    if (isFailureRow(JSON.parse(line))) onFailure();
+    const failure = parseFailureRow(JSON.parse(line));
+    if (failure !== null) onFailure(failure);
   } catch {
     // Malformed transcript rows are deliberately ignored.
   }
 }
 
+export function formatRuntimeFailureMessage(
+  failure: RuntimeFailure,
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  now = Date.now()
+): string {
+  if (failure.error === "rate_limit") {
+    const resetMs = failure.resetsAt === undefined ? 0 : failure.resetsAt * 1_000;
+    let reset: string | null = null;
+    let zone = timeZone;
+    if (resetMs > now && resetMs <= now + MAX_RESET_NOTICE_MS) {
+      try {
+        reset = new Intl.DateTimeFormat("en-CA", {
+          timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+        }).format(new Date(resetMs));
+      } catch {
+        zone = "UTC";
+        reset = new Intl.DateTimeFormat("en-CA", {
+          timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+        }).format(new Date(resetMs));
+      }
+    }
+    const retry = reset === null ? "Retry after the limit resets." : `Retry after ${reset} (${zone}).`;
+    return `Claude Code hit a usage or rate limit.\n\nCurrent work is paused. ${retry}\nMessages sent before recovery will not replay automatically.`;
+  }
+  if (failure.error === "authentication_failed") {
+    return "Claude Code authentication failed.\n\nRe-authenticate Claude Code on the host, then resend this message.";
+  }
+  if (failure.error === "overloaded" || failure.error === "server_error") {
+    return "Claude Code is temporarily unavailable.\n\nThis turn stopped before completion. Retry shortly.";
+  }
+  if (failure.error === "max_output_tokens") {
+    return "Claude Code hit the response output limit.\n\nAsk for a shorter result.";
+  }
+  return "Claude Code failed before completing this turn.\n\nCheck the host runtime, then resend this message.";
+}
+
 /** Watch only bytes appended after this call for one bounded turn. */
-export function watchAuthFailureTranscript(
-  input: AuthFailureTranscriptInput,
-  options: AuthFailureWatcherOptions
+export function watchRuntimeFailureTranscript(
+  input: RuntimeFailureTranscriptInput,
+  options: RuntimeFailureWatcherOptions
 ): () => void {
   let fd: number | undefined;
   let timer: TimerHandle | undefined;
@@ -164,9 +234,9 @@ export function watchAuthFailureTranscript(
           pending = lines.pop() ?? "";
           for (const line of lines) {
             if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) continue;
-            scanLine(line, () => {
+            scanLine(line, failure => {
               delivered = true;
-              options.onAuthFailure();
+              options.onFailure(failure);
             });
             if (delivered) return cancel();
           }

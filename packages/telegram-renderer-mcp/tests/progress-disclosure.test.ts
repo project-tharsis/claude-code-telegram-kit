@@ -14,12 +14,14 @@ import type {
   ProgressSendOutcome
 } from "../src/progress-transport.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
+import type { RuntimeFailure } from "../src/runtime-failure-watcher.js";
 
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const PROMPT = "p1";
 const ENVELOPE = '<channel source="telegram" chat_id="123" message_id="9" user="u">do a thing';
 const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
+const AUTH_FAILURE: RuntimeFailure = { error: "authentication_failed" };
 
 interface Harness {
   disclosure: ReturnType<typeof createTurnDisclosure>;
@@ -32,6 +34,7 @@ interface Harness {
     artifacts: readonly ArtifactCandidate[];
     background?: true;
   }>;
+  runtimeFailures: Array<{ chatId: string; messageId: string; error: string; resetsAt?: number }>;
   typingStarts: string[];
   typingStops: { count: number };
   delays: number[];
@@ -54,6 +57,7 @@ function harness(options: {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
   const finalDeliveries: Harness["finalDeliveries"] = [];
+  const runtimeFailures: Harness["runtimeFailures"] = [];
   const typingStarts: string[] = [];
   const typingStops = { count: 0 };
   const delays: number[] = [];
@@ -70,6 +74,9 @@ function harness(options: {
       collect: () => [...(options.artifacts ?? [])],
       close: () => undefined
     }),
+    sendRuntimeFailure: async (_config, chatId, messageId, failure) => {
+      runtimeFailures.push({ chatId, messageId, ...failure });
+    },
     deliverFinal: async (_config, chatId, messageId, content, artifacts, background) => {
       finalDeliveries.push({
         chatId,
@@ -105,6 +112,7 @@ function harness(options: {
     sends,
     edits,
     finalDeliveries,
+    runtimeFailures,
     typingStarts,
     typingStops,
     delays,
@@ -170,11 +178,20 @@ async function finish(
   event: "Stop" | "StopFailure" = "Stop",
   finalMessage = ""
 ): Promise<"finished" | "retry"> {
+  if (event === "StopFailure") {
+    return h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      last_assistant_message: finalMessage,
+      error: "unknown",
+      hook_event_name: "StopFailure"
+    });
+  }
   return h.disclosure.finishTurn({
     session_id: SESSION,
     prompt_id: PROMPT,
     last_assistant_message: finalMessage,
-    hook_event_name: event
+    hook_event_name: "Stop"
   });
 }
 
@@ -443,11 +460,14 @@ describe("turn disclosure lifecycle", () => {
   });
 
 
-  test("StopFailure never delivers assistant text", async () => {
+  test("typed StopFailure sends one operational notice and never delivers assistant text", async () => {
     const h = harness();
     bind(h);
     expect(await finish(h, "StopFailure", "must not send")).toBe("finished");
     expect(h.finalDeliveries).toEqual([]);
+    expect(h.runtimeFailures).toEqual([{ chatId: "123", messageId: "9", error: "unknown" }]);
+    expect(await finish(h, "StopFailure", "duplicate")).toBe("finished");
+    expect(h.runtimeFailures).toHaveLength(1);
   });
 
   test("maps a semantic oversized final to retry before transport", async () => {
@@ -499,21 +519,23 @@ describe("turn disclosure lifecycle", () => {
     expect(h.finalDeliveries).toHaveLength(1);
   });
 
-  test("runtime auth failure retires the turn, stops typing, and sends one quoted explanation", async () => {
-    let fireAuthFailure: (() => Promise<void>) | null = null;
+  test("failed task notification uses its exact route to send one runtime notice", async () => {
+    let fireRuntimeFailure: ((failure: RuntimeFailure) => Promise<void>) | null = null;
+    let watchStarts = 0;
     let watchCancels = 0;
     const typingStops = { count: 0 };
-    const alerts: Array<{ chatId: string; messageId: string }> = [];
+    const alerts: Array<{ chatId: string; messageId: string; failure: RuntimeFailure }> = [];
     const disclosure = createTurnDisclosure({
       loadConfig: () => config,
       mode: "safe",
       startTyping: () => () => { typingStops.count += 1; },
-      startAuthFailureWatch: (_input, onFailure) => {
-        fireAuthFailure = onFailure;
+      startRuntimeFailureWatch: (_input, onFailure) => {
+        watchStarts += 1;
+        fireRuntimeFailure = onFailure;
         return () => { watchCancels += 1; };
       },
-      sendAuthFailure: async (_config, chatId, messageId) => {
-        alerts.push({ chatId, messageId });
+      sendRuntimeFailure: async (_config, chatId, messageId, failure) => {
+        alerts.push({ chatId, messageId, failure });
       },
       send: async () => ({ kind: "sent", messageId: 1 }),
       edit: async () => ({ kind: "edited" }),
@@ -526,27 +548,57 @@ describe("turn disclosure lifecycle", () => {
       transcript_path: `/tmp/${SESSION}.jsonl`,
       hook_event_name: "UserPromptSubmit"
     });
-    expect(fireAuthFailure).not.toBeNull();
-    await fireAuthFailure!();
-    expect(alerts).toEqual([{ chatId: "123", messageId: "9" }]);
+    disclosure.recordTool({
+      session_id: SESSION, prompt_id: "p-auth-failure", tool_use_id: "toolu_failed", tool_name: "Skill", hook_event_name: "PreToolUse"
+    });
+    disclosure.recordTool({
+      session_id: SESSION, prompt_id: "p-auth-failure", tool_use_id: "toolu_complete", tool_name: "Skill", hook_event_name: "PreToolUse"
+    });
+    await disclosure.finishTurn({
+      session_id: SESSION, prompt_id: "p-auth-failure", last_assistant_message: "Started.", hook_event_name: "Stop"
+    });
+    disclosure.bindTurn({
+      session_id: SESSION,
+      prompt_id: "p-runtime-complete",
+      prompt: "<task-notification><task-id>task-complete</task-id><tool-use-id>toolu_complete</tool-use-id><status>completed</status></task-notification>",
+      transcript_path: `/tmp/${SESSION}.jsonl`,
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(watchStarts).toBe(1);
+    await disclosure.finishTurn({
+      session_id: SESSION, prompt_id: "p-runtime-complete", last_assistant_message: "Done.", hook_event_name: "Stop"
+    });
+    disclosure.bindTurn({
+      session_id: SESSION,
+      prompt_id: "p-runtime-failure",
+      prompt: "<task-notification><task-id>task-failed</task-id><tool-use-id>toolu_failed</tool-use-id><status>failed</status><summary>secret</summary></task-notification>",
+      transcript_path: `/tmp/${SESSION}.jsonl`,
+      hook_event_name: "UserPromptSubmit"
+    });
+    expect(watchStarts).toBe(2);
+    expect(fireRuntimeFailure).not.toBeNull();
+    await fireRuntimeFailure!({ error: "rate_limit", resetsAt: 1_787_555_400 });
+    expect(alerts).toEqual([{
+      chatId: "123", messageId: "9", failure: { error: "rate_limit", resetsAt: 1_787_555_400 }
+    }]);
     expect(typingStops.count).toBe(1);
-    expect(watchCancels).toBe(1);
+    expect(watchCancels).toBe(2);
     expect(disclosure.size).toBe(0);
   });
 
   test("runtime auth failure closes an existing progress bubble before the explanation", async () => {
-    let fireAuthFailure: (() => Promise<void>) | null = null;
+    let fireRuntimeFailure: ((failure: RuntimeFailure) => Promise<void>) | null = null;
     const events: string[] = [];
     let queued: (() => Promise<void>) | null = null;
     const disclosure = createTurnDisclosure({
       loadConfig: () => config,
       mode: "safe",
       startTyping: () => () => undefined,
-      startAuthFailureWatch: (_input, onFailure) => {
-        fireAuthFailure = onFailure;
+      startRuntimeFailureWatch: (_input, onFailure) => {
+        fireRuntimeFailure = onFailure;
         return () => undefined;
       },
-      sendAuthFailure: async () => { events.push("auth-explanation"); },
+      sendRuntimeFailure: async () => { events.push("runtime-explanation"); },
       send: async () => ({ kind: "sent", messageId: 101 }),
       edit: async (_config, _chatId, _messageId, text) => {
         events.push(text.startsWith("Failed") ? "bubble-failed" : "bubble-other");
@@ -572,12 +624,12 @@ describe("turn disclosure lifecycle", () => {
       hook_event_name: "PreToolUse"
     });
     await queued!();
-    await fireAuthFailure!();
-    expect(events).toEqual(["bubble-failed", "auth-explanation"]);
+    await fireRuntimeFailure!(AUTH_FAILURE);
+    expect(events).toEqual(["bubble-failed", "runtime-explanation"]);
   });
 
   test("runtime auth failure serializes a Failed edit behind an in-flight first send", async () => {
-    let fireAuthFailure: (() => Promise<void>) | null = null;
+    let fireRuntimeFailure: ((failure: RuntimeFailure) => Promise<void>) | null = null;
     let releaseSend!: (outcome: ProgressSendOutcome) => void;
     const pendingSend = new Promise<ProgressSendOutcome>(resolve => { releaseSend = resolve; });
     const events: string[] = [];
@@ -586,11 +638,11 @@ describe("turn disclosure lifecycle", () => {
       loadConfig: () => config,
       mode: "safe",
       startTyping: () => () => undefined,
-      startAuthFailureWatch: (_input, onFailure) => {
-        fireAuthFailure = onFailure;
+      startRuntimeFailureWatch: (_input, onFailure) => {
+        fireRuntimeFailure = onFailure;
         return () => undefined;
       },
-      sendAuthFailure: async () => { events.push("auth-explanation"); },
+      sendRuntimeFailure: async () => { events.push("runtime-explanation"); },
       send: async () => {
         events.push("send-start");
         return pendingSend;
@@ -621,12 +673,12 @@ describe("turn disclosure lifecycle", () => {
     const firstFlush = queued!();
     await Promise.resolve();
     expect(events).toEqual(["send-start"]);
-    const recovery = fireAuthFailure!();
+    const recovery = fireRuntimeFailure!(AUTH_FAILURE);
     await Promise.resolve();
     expect(events).toEqual(["send-start"]);
     releaseSend({ kind: "sent", messageId: 101 });
     await Promise.all([firstFlush, recovery]);
-    expect(events).toEqual(["send-start", "bubble-failed", "auth-explanation"]);
+    expect(events).toEqual(["send-start", "bubble-failed", "runtime-explanation"]);
   });
 
   test("normal Stop cancels the bounded auth watcher without sending an auth explanation", async () => {
@@ -636,8 +688,8 @@ describe("turn disclosure lifecycle", () => {
       loadConfig: () => config,
       mode: "safe",
       startTyping: () => () => undefined,
-      startAuthFailureWatch: () => () => { watchCancels += 1; },
-      sendAuthFailure: async () => { alerts += 1; },
+      startRuntimeFailureWatch: () => () => { watchCancels += 1; },
+      sendRuntimeFailure: async () => { alerts += 1; },
       send: async () => ({ kind: "sent", messageId: 1 }),
       edit: async () => ({ kind: "edited" }),
       schedule: () => () => undefined
@@ -658,19 +710,19 @@ describe("turn disclosure lifecycle", () => {
     expect(alerts).toBe(0);
   });
 
-  test("StopFailure leaves the bounded watcher alive for a late exact auth row", async () => {
-    let fireAuthFailure: (() => Promise<void>) | null = null;
+  test("typed StopFailure cancels the fallback watcher and suppresses a late duplicate", async () => {
+    let fireRuntimeFailure: ((failure: RuntimeFailure) => Promise<void>) | null = null;
     let watchCancels = 0;
     let alerts = 0;
     const disclosure = createTurnDisclosure({
       loadConfig: () => config,
       mode: "safe",
       startTyping: () => () => undefined,
-      startAuthFailureWatch: (_input, onFailure) => {
-        fireAuthFailure = onFailure;
+      startRuntimeFailureWatch: (_input, onFailure) => {
+        fireRuntimeFailure = onFailure;
         return () => { watchCancels += 1; };
       },
-      sendAuthFailure: async () => { alerts += 1; },
+      sendRuntimeFailure: async () => { alerts += 1; },
       send: async () => ({ kind: "sent", messageId: 1 }),
       edit: async () => ({ kind: "edited" }),
       schedule: () => () => undefined
@@ -685,27 +737,29 @@ describe("turn disclosure lifecycle", () => {
     await disclosure.finishTurn({
       session_id: SESSION,
       prompt_id: "p-stop-failure",
+      last_assistant_message: "",
+      error: "authentication_failed",
       hook_event_name: "StopFailure"
     });
-    expect(watchCancels).toBe(0);
-    await fireAuthFailure!();
-    expect(alerts).toBe(1);
     expect(watchCancels).toBe(1);
+    expect(alerts).toBe(1);
+    await fireRuntimeFailure!(AUTH_FAILURE);
+    expect(alerts).toBe(1);
   });
 
   test("a superseded watch cannot send a late auth error for the replacement turn", async () => {
-    const callbacks: Array<() => Promise<void>> = [];
+    const callbacks: Array<(failure: RuntimeFailure) => Promise<void>> = [];
     let cancels = 0;
     let alerts = 0;
     const disclosure = createTurnDisclosure({
       loadConfig: () => config,
       mode: "safe",
       startTyping: () => () => undefined,
-      startAuthFailureWatch: (_input, onFailure) => {
+      startRuntimeFailureWatch: (_input, onFailure) => {
         callbacks.push(onFailure);
         return () => { cancels += 1; };
       },
-      sendAuthFailure: async () => { alerts += 1; },
+      sendRuntimeFailure: async () => { alerts += 1; },
       send: async () => ({ kind: "sent", messageId: 1 }),
       edit: async () => ({ kind: "edited" }),
       schedule: () => () => undefined
@@ -721,10 +775,47 @@ describe("turn disclosure lifecycle", () => {
     disclosure.bindTurn(bindInput);
     expect(callbacks).toHaveLength(2);
     expect(cancels).toBe(1);
-    await callbacks[0]!();
+    await callbacks[0]!(AUTH_FAILURE);
     expect(alerts).toBe(0);
-    await callbacks[1]!();
+    await callbacks[1]!(AUTH_FAILURE);
     expect(alerts).toBe(1);
+    disclosure.bindTurn({ ...bindInput, prompt_id: "p-next" });
+    expect(callbacks).toHaveLength(3);
+    await callbacks[2]!(AUTH_FAILURE);
+    expect(alerts).toBe(1);
+  });
+
+  test("incident cap never evicts a live dedupe entry", async () => {
+    const callbacks: Array<(failure: RuntimeFailure) => Promise<void>> = [];
+    const allowedChatIds = new Set(Array.from({ length: 33 }, (_, index) => String(1_000 + index)));
+    let alerts = 0;
+    const disclosure = createTurnDisclosure({
+      loadConfig: () => ({ token: "1:tok", allowedChatIds }),
+      mode: "safe",
+      startTyping: () => () => undefined,
+      startRuntimeFailureWatch: (_input, onFailure) => { callbacks.push(onFailure); return () => undefined; },
+      sendRuntimeFailure: async () => { alerts += 1; },
+      send: async () => ({ kind: "sent", messageId: 1 }),
+      edit: async () => ({ kind: "edited" }),
+      schedule: () => () => undefined,
+      now: () => 0
+    });
+    for (let index = 0; index < 33; index += 1) {
+      disclosure.bindTurn({
+        session_id: SESSION, prompt_id: `incident-${index}`,
+        prompt: `<channel source="plugin:telegram:telegram" chat_id="${1_000 + index}" message_id="9">x</channel>`,
+        transcript_path: `/tmp/${SESSION}.jsonl`, hook_event_name: "UserPromptSubmit"
+      });
+      await callbacks[index]!(AUTH_FAILURE);
+    }
+    expect(alerts).toBe(32);
+    disclosure.bindTurn({
+      session_id: SESSION, prompt_id: "incident-retry",
+      prompt: '<channel source="plugin:telegram:telegram" chat_id="1000" message_id="10">x</channel>',
+      transcript_path: `/tmp/${SESSION}.jsonl`, hook_event_name: "UserPromptSubmit"
+    });
+    await callbacks[33]!(AUTH_FAILURE);
+    expect(alerts).toBe(32);
   });
 
   test("starts sustained typing on bind and stops it on final cleanup", async () => {

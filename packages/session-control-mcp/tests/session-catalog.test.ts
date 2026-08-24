@@ -68,6 +68,21 @@ describe("bounded resumable session catalog", () => {
     expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
   });
 
+  test("clears a fork after a failed terminal notification", () => {
+    const root = makeRoot();
+    const id = uuid(19);
+    const path = writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "user", toolUseResult: { status: "forked", agentId: "agent-f" }, message: { content: [
+        { type: "tool_result", tool_use_id: "skill-failed", content: "Async agent launched successfully." }
+      ] } })
+    ] });
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
+    writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
+      type: "user", message: { content: '<task-notification><task-id>task-f</task-id><tool-use-id>skill-failed</tool-use-id><status>failed</status></task-notification>' }
+    })}\n`);
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
+  });
+
   test("finds an incomplete fork in the middle of a large transcript", () => {
     const root = makeRoot();
     const id = uuid(8);

@@ -16,6 +16,7 @@ import {
   type RecordToolInput,
   type RecordToolSuccessInput
 } from "./hook-contract.js";
+import { RUNTIME_FAILURE_TYPES } from "./runtime-failure-watcher.js";
 import type { FinishTurnDisposition } from "./progress-disclosure.js";
 
 /**
@@ -179,8 +180,19 @@ export const FINISH_TURN_TOOL = {
     properties: {
       ...turnKeyProperties,
       last_assistant_message: { type: "string", maxLength: MAX_HOOK_FINAL_CHARACTERS },
+      error: { type: "string", enum: [...RUNTIME_FAILURE_TYPES] },
       hook_event_name: { type: "string", enum: ["Stop", "StopFailure"] }
-    }
+    },
+    oneOf: [
+      {
+        properties: { hook_event_name: { const: "Stop" } },
+        not: { required: ["error"] }
+      },
+      {
+        properties: { hook_event_name: { const: "StopFailure" } },
+        required: ["error"]
+      }
+    ]
   }
 } as const;
 

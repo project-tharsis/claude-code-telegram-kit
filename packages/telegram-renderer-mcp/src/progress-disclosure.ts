@@ -1,6 +1,6 @@
 import {
   assertAuthorizedChat,
-  parseCompletedTaskNotification,
+  parseTerminalTaskNotification,
   parseDirectTelegramEnvelope,
   type RuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
@@ -17,6 +17,7 @@ import { BackgroundProgress } from "./background-progress.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
 import { TurnProgress } from "./progress-state.js";
 import { MAX_UNIFIED_CONTENT_CHARACTERS } from "./unified-contract.js";
+import type { RuntimeFailure } from "./runtime-failure-watcher.js";
 import type {
   ProgressEditOutcome,
   ProgressSendOutcome
@@ -37,6 +38,9 @@ export const MAX_BACKGROUND_CHAIN_DEPTH = 2;
 /** Routes survive the foreground Stop so a later internal completion can recover its Telegram authority. */
 export const BACKGROUND_TASK_ROUTE_TTL_MS = 6 * 60 * 60 * 1_000;
 export const MAX_BACKGROUND_TASK_ROUTES = 128;
+export const RUNTIME_INCIDENT_TTL_MS = 5 * 60 * 1_000;
+export const MAX_RUNTIME_INCIDENTS = 32;
+export const MAX_RESET_FUTURE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)/;
 const MODEL_REPLY_CHOICE = /^(?:[1-4] · (?:Opus|Sonnet|Haiku|Inherit)|5 · Cancel)$/;
@@ -62,14 +66,15 @@ export interface TurnDisclosureDeps {
   mode: ToolDisclosureMode;
   startTyping: (chatId: string) => CancelScheduled;
   startArtifactTracking?: (input: BindTurnInput) => ArtifactTracker | null;
-  startAuthFailureWatch?: (
+  startRuntimeFailureWatch?: (
     input: BindTurnInput,
-    onFailure: () => Promise<void>
+    onFailure: (failure: RuntimeFailure) => Promise<void>
   ) => CancelScheduled;
-  sendAuthFailure?: (
+  sendRuntimeFailure?: (
     config: RuntimeConfig,
     chatId: string,
-    messageId: string
+    messageId: string,
+    failure: RuntimeFailure
   ) => Promise<void>;
   deliverFinal?: (
     config: RuntimeConfig,
@@ -116,7 +121,8 @@ interface Turn {
   lastSentText: string | null;
   cancel: CancelScheduled | null;
   cancelTyping: CancelScheduled | null;
-  cancelAuthWatch: CancelScheduled | null;
+  cancelRuntimeFailureWatch: CancelScheduled | null;
+  runtimeFailureAttempted: boolean;
   finalDeliveryAttempted: boolean;
   finalDeliveryRetries: number;
   artifactTracker: ArtifactTracker | null;
@@ -159,6 +165,7 @@ function collectArtifacts(turn: Turn): ArtifactCandidate[] {
 export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   const turns = new Map<string, Turn>();
   const backgroundTaskRoutes = new Map<string, BackgroundTaskRoute>();
+  const runtimeIncidents = new Map<string, number>();
   const now = deps.now ?? Date.now;
 
   function pruneBackgroundTaskRoutes(): void {
@@ -171,6 +178,18 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       if (oldest.done === true) return;
       backgroundTaskRoutes.delete(oldest.value);
     }
+  }
+
+  function reserveRuntimeIncident(turn: Turn, failure: RuntimeFailure): boolean {
+    const current = now();
+    for (const [key, expiresAt] of runtimeIncidents) if (expiresAt <= current) runtimeIncidents.delete(key);
+    const key = `${turn.chatId}/${failure.error}`;
+    if ((runtimeIncidents.get(key) ?? 0) > current) return false;
+    if (runtimeIncidents.size >= MAX_RUNTIME_INCIDENTS) return false;
+    const reset = failure.resetsAt === undefined ? 0 : failure.resetsAt * 1_000;
+    const resetExpiry = reset > current && reset <= current + MAX_RESET_FUTURE_MS ? reset : 0;
+    runtimeIncidents.set(key, Math.max(current + RUNTIME_INCIDENT_TTL_MS, resetExpiry));
+    return true;
   }
 
   function rememberBackgroundTaskRoute(sessionId: string, toolUseId: string, turn: Turn): void {
@@ -191,8 +210,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancel = null;
     turn.cancelTyping?.();
     turn.cancelTyping = null;
-    turn.cancelAuthWatch?.();
-    turn.cancelAuthWatch = null;
+    turn.cancelRuntimeFailureWatch?.();
+    turn.cancelRuntimeFailureWatch = null;
     turn.artifactTracker?.close();
     turn.artifactTracker = null;
     turn.artifacts = [];
@@ -337,8 +356,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.cancel?.();
     turn.cancel = null;
     if (outcome === "Stop") {
-      turn.cancelAuthWatch?.();
-      turn.cancelAuthWatch = null;
+      turn.cancelRuntimeFailureWatch?.();
+      turn.cancelRuntimeFailureWatch = null;
     }
     turn.progress.close(outcome);
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -352,6 +371,31 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       ]);
     } finally {
       if (timeout !== null) clearTimeout(timeout);
+    }
+  }
+
+  async function deliverRuntimeFailure(
+    turn: Turn,
+    key: string,
+    failure: RuntimeFailure,
+    finalized = false
+  ): Promise<void> {
+    if (turn.runtimeFailureAttempted) return;
+    turn.runtimeFailureAttempted = true;
+    if (!finalized) await finalize(turn, "StopFailure");
+    if (turns.get(key) !== turn) return;
+    turn.cancelRuntimeFailureWatch?.();
+    turn.cancelRuntimeFailureWatch = null;
+    turns.delete(key);
+    const shouldSend = reserveRuntimeIncident(turn, failure);
+    drop(turn);
+    if (!shouldSend || deps.sendRuntimeFailure === undefined) return;
+    try {
+      const config = deps.loadConfig();
+      assertAuthorizedChat(config, turn.chatId);
+      await deps.sendRuntimeFailure(config, turn.chatId, turn.quoteMessageId, failure);
+    } catch {
+      // The incident is reserved before transport; unknown outcomes are never replayed.
     }
   }
 
@@ -381,7 +425,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         pruneBackgroundTaskRoutes();
         const envelope = parseDirectTelegramEnvelope(input.prompt);
-        const notification = envelope === null ? parseCompletedTaskNotification(input.prompt) : null;
+        const notification = envelope === null ? parseTerminalTaskNotification(input.prompt) : null;
         let chatId: string;
         let quoteMessageId: string;
         let background = false;
@@ -441,7 +485,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           lastSentText: null,
           cancel: null,
           cancelTyping: background ? null : deps.startTyping(chatId),
-          cancelAuthWatch: null,
+          cancelRuntimeFailureWatch: null,
+          runtimeFailureAttempted: false,
           finalDeliveryAttempted: false,
           finalDeliveryRetries: 0,
           artifactTracker: null,
@@ -457,29 +502,17 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           }
         }
         if (
-          !background
+          (envelope !== null || notification?.status === "failed")
           && input.transcript_path !== undefined
-          && deps.startAuthFailureWatch !== undefined
-          && deps.sendAuthFailure !== undefined
+          && deps.startRuntimeFailureWatch !== undefined
+          && deps.sendRuntimeFailure !== undefined
         ) {
           try {
-            turn.cancelAuthWatch = deps.startAuthFailureWatch(input, async () => {
-              if (turns.get(key) !== turn) return;
-              await finalize(turn, "StopFailure");
-              if (turns.get(key) !== turn) return;
-              turn.cancelAuthWatch?.();
-              turn.cancelAuthWatch = null;
-              turns.delete(key);
-              try {
-                const config = deps.loadConfig();
-                assertAuthorizedChat(config, turn.chatId);
-                await deps.sendAuthFailure!(config, turn.chatId, turn.quoteMessageId);
-              } catch {
-                // Auth recovery is user-facing UX only; delivery failure cannot revive the turn.
-              }
+            turn.cancelRuntimeFailureWatch = deps.startRuntimeFailureWatch(input, async failure => {
+              await deliverRuntimeFailure(turn, key, failure);
             });
           } catch {
-            turn.cancelAuthWatch = null;
+            turn.cancelRuntimeFailureWatch = null;
           }
         }
         evict();
@@ -574,10 +607,18 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         const key = turnKey(input.session_id, input.prompt_id);
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return "finished";
-        if (turn.progressPhase === "background-agents") return "finished";
+        if (turn.progressPhase === "background-agents") {
+          if (input.hook_event_name === "StopFailure") {
+            await deliverRuntimeFailure(turn, key, { error: input.error });
+          }
+          return "finished";
+        }
         await finalize(turn, input.hook_event_name);
         if (turns.get(key) !== turn) return "finished";
-        if (input.hook_event_name === "StopFailure") return "finished";
+        if (input.hook_event_name === "StopFailure") {
+          await deliverRuntimeFailure(turn, key, { error: input.error }, true);
+          return "finished";
+        }
         if (turn.finalDeliveryAttempted) return "finished";
         if (
           deps.deliverFinal === undefined

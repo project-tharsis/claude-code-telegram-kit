@@ -191,8 +191,12 @@ describe("internal hook tool schemas", () => {
     expect(FinishTurnInputSchema.parse({
       ...base,
       last_assistant_message: "",
+      error: "rate_limit",
       hook_event_name: "StopFailure"
-    }).hook_event_name).toBe("StopFailure");
+    })).toMatchObject({ hook_event_name: "StopFailure", error: "rate_limit" });
+    expect(() => FinishTurnInputSchema.parse({ ...base, hook_event_name: "StopFailure" })).toThrow();
+    expect(() => FinishTurnInputSchema.parse({ ...base, hook_event_name: "StopFailure", error: "made_up" })).toThrow();
+    expect(() => FinishTurnInputSchema.parse({ ...base, hook_event_name: "StopFailure", error: "unknown", error_details: "secret" })).toThrow();
     expect(() => FinishTurnInputSchema.parse({ ...base, hook_event_name: "SubagentStop" })).toThrow();
     expect(() => FinishTurnInputSchema.parse({ ...base, last_assistant_message: undefined })).toThrow();
     expect(FinishTurnInputSchema.parse({ ...base, last_assistant_message: "x".repeat(100_001) }).last_assistant_message).toHaveLength(100_001);

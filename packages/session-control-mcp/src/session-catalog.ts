@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  parseCompletedTaskNotification,
+  parseTerminalTaskNotification,
   parseDirectTelegramEnvelope
 } from "@project-tharsis/claude-code-telegram-shared";
 import { parseControlCommand } from "./control-command.js";
@@ -381,7 +381,7 @@ function updateBackgroundTaskState(row: Record<string, unknown>, taskIds: Set<st
     .filter(block => block.type === "text" && typeof block.text === "string")
     .map(block => block.text as string);
   for (const value of values) {
-    const notification = parseCompletedTaskNotification(value);
+    const notification = parseTerminalTaskNotification(value);
     if (notification !== null) taskIds.delete(notification.toolUseId);
   }
   return false;

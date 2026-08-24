@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseCompletedTaskNotification } from "../src/task-notification.js";
+import { parseCompletedTaskNotification, parseTerminalTaskNotification } from "../src/task-notification.js";
 
 const completed = `<task-notification>
 <task-id>ab6fa8c8413c80c31</task-id>
@@ -9,7 +9,7 @@ const completed = `<task-notification>
 <result>done</result>
 </task-notification>`;
 
-describe("completed internal task notification", () => {
+describe("terminal internal task notification", () => {
   test("extracts exact task and parent tool identities", () => {
     expect(parseCompletedTaskNotification(completed)).toEqual({
       taskId: "ab6fa8c8413c80c31",
@@ -19,6 +19,16 @@ describe("completed internal task notification", () => {
       taskId: "ab6fa8c8413c80c31",
       toolUseId: "toolu_016eLJUQPphmxoYs1uYFcFeF"
     });
+  });
+
+  test("accepts a failed notification without ingesting its summary", () => {
+    const failed = completed.replace("<status>completed</status>", "<status>failed</status>");
+    expect(parseTerminalTaskNotification(failed)).toEqual({
+      taskId: "ab6fa8c8413c80c31",
+      toolUseId: "toolu_016eLJUQPphmxoYs1uYFcFeF",
+      status: "failed"
+    });
+    expect(parseCompletedTaskNotification(failed)).toBeNull();
   });
 
   test("rejects direct Telegram wrappers, stopped events, duplicates, and malformed IDs", () => {
