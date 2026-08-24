@@ -9,7 +9,7 @@ export const DEFAULT_SUBSCRIPTION_USAGE_CACHE = join(
 );
 const MAX_CACHE_BYTES = 64 * 1024;
 const MAX_CACHE_AGE_MS = 24 * 60 * 60_000;
-const FRESH_CACHE_AGE_MS = 60 * 60_000;
+const LOCAL_SNAPSHOT_MAX_AGE_MS = 15 * 60_000;
 const WINDOW_NAMES = ["five_hour", "seven_day"] as const;
 
 type WindowName = (typeof WINDOW_NAMES)[number];
@@ -117,6 +117,9 @@ export function formatUsageSnapshot(
     lines.push(...active);
     if (!percentagesAreLive) return lines.join("\n");
   }
+  if (!percentagesAreLive && nowMs - snapshot.captured_at * 1_000 > LOCAL_SNAPSHOT_MAX_AGE_MS) {
+    return formatUnavailableUsage(undefined, nowMs);
+  }
   const labels: Array<[WindowName, string]> = [
     ["five_hour", "5-hour limit"],
     ["seven_day", "7-day limit (all models)"],
@@ -131,8 +134,8 @@ export function formatUsageSnapshot(
       `<i>${escapeTelegramHtml(resetText(window.resets_at))}</i>`
     );
   }
-  if (nowMs - snapshot.captured_at * 1_000 > FRESH_CACHE_AGE_MS) {
-    lines.push("", `<i>Last known · as of ${escapeTelegramHtml(new Date(snapshot.captured_at * 1_000).toLocaleString())}</i>`);
+  if (!percentagesAreLive) {
+    lines.push("", `<i>StatusLine snapshot · as of ${escapeTelegramHtml(new Date(snapshot.captured_at * 1_000).toLocaleString())}</i>`);
   }
   return lines.join("\n");
 }

@@ -139,9 +139,12 @@ const dispatchControlCommand = createControlCommandDispatcher({
     if (oauthUsageEnabled) {
       const live = await readOAuthUsage();
       if (live !== null) return formatUsageSnapshot(live, now, activeQuota, true);
+    }
+    try {
+      return await readSubscriptionUsage(activeQuota === undefined ? {} : { activeQuota });
+    } catch {
       return formatUnavailableUsage(activeQuota, now);
     }
-    return readSubscriptionUsage(activeQuota === undefined ? {} : { activeQuota });
   },
   getModelStatus: async sessionId => {
     const actual = projectSessionsDir === undefined

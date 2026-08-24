@@ -15,6 +15,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `/usage` now falls back from an unavailable OAuth endpoint to a statusLine snapshot only while that snapshot is at most 15 minutes old, always labels its capture time, and hides older percentages entirely.
 - OAuth usage credential-read rejections now enter the same five-minute cooldown as HTTP/network failures, so missing, malformed, or unsafe authority cannot cause immediate repeated `/usage` attempts.
 - Session title task tracking now rejects terminal notifications whose supplied task ID and tool-use ID do not resolve to the same fork, preserving pending state instead of clearing the wrong route.
 - Background task cancellation no longer leaves a Telegram bubble stuck at `Running`. Both a structured `killed` terminal and the deterministic `PostToolUse:TaskStop` hook consume only the exact task alias, stop its owner agent, and render `Background work · Stopped` without ingesting summary prose.
