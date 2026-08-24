@@ -103,7 +103,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^(?!mcp__telegram-renderer__|mcp__session-control__).*",
+        "matcher": "^(?!mcp__telegram-renderer__|mcp__session-control__|TaskStop$).*",
         "hooks": [
           {
             "type": "mcp_tool",
@@ -115,6 +115,25 @@
               "tool_use_id": "${tool_use_id}",
               "task_status": "${tool_response.status}",
               "task_id": "${tool_response.agentId}",
+              "hook_event_name": "PostToolUse"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "^TaskStop$",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_tool_success",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "tool_use_id": "${tool_use_id}",
+              "tool_name": "TaskStop",
+              "task_status": "killed",
+              "task_id": "${tool_response.task_id}",
               "hook_event_name": "PostToolUse"
             }
           }

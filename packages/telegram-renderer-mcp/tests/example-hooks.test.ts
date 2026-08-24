@@ -120,10 +120,17 @@ describe("supported Claude Code hook configuration", () => {
     ]);
     expect(toolsFor("UserPromptSubmit")[0]!.input.transcript_path).toBe("${transcript_path}");
     expect(toolsFor("PreToolUse").map(hook => hook.tool)).toEqual(["record_tool"]);
-    expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual(["record_tool_success"]);
+    expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual([
+      "record_tool_success", "record_tool_success"
+    ]);
     expect(toolsFor("PostToolUse")[0]!.input).toMatchObject({
       task_status: "${tool_response.status}",
       task_id: "${tool_response.agentId}"
+    });
+    expect(toolsFor("PostToolUse")[1]!.input).toMatchObject({
+      tool_name: "TaskStop",
+      task_status: "killed",
+      task_id: "${tool_response.task_id}"
     });
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("SubagentStart").map(hook => hook.tool)).toEqual(["record_subagent_start"]);
@@ -191,8 +198,10 @@ describe("supported Claude Code hook configuration", () => {
 
   test("excludes internal sidecar tools from tool-event matchers", () => {
     const internal = "^(?!mcp__telegram-renderer__|mcp__session-control__).*";
+    const taskEvents = "^(?!mcp__telegram-renderer__|mcp__session-control__|TaskStop$).*";
     expect(settings.hooks.PreToolUse![0]!.matcher).toBe(internal);
-    expect(settings.hooks.PostToolUse![0]!.matcher).toBe(internal);
+    expect(settings.hooks.PostToolUse![0]!.matcher).toBe(taskEvents);
+    expect(settings.hooks.PostToolUse![1]!.matcher).toBe("^TaskStop$");
     expect(settings.hooks.PostToolUseFailure![0]!.matcher).toBe(internal);
     expect(settings.hooks.Stop![0]!.matcher).toBeUndefined();
   });

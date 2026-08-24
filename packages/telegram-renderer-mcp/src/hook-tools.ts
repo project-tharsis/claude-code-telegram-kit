@@ -108,6 +108,7 @@ export const RECORD_TOOL_SUCCESS_TOOL = {
     properties: {
       ...turnKeyProperties,
       tool_use_id: { type: "string", pattern: IDENTIFIER_PATTERN },
+      tool_name: { type: "string", pattern: IDENTIFIER_PATTERN },
       task_status: { type: "string", maxLength: 64 },
       task_id: { type: "string", pattern: `^(?:|${IDENTIFIER_PATTERN.slice(1, -1)})$` },
       hook_event_name: { type: "string", const: "PostToolUse" }

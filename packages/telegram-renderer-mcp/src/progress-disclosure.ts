@@ -251,6 +251,19 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       ? owner : undefined;
   }
 
+  function terminalizeBackgroundTaskAlias(sessionId: string, taskId: string): Turn | undefined {
+    const alias = backgroundRouteKey(sessionId, taskId);
+    const canonical = backgroundTaskAliases.get(alias);
+    if (canonical === undefined) return undefined;
+    const route = deleteBackgroundTaskRoute(canonical);
+    if (route === undefined || !route.taskAliases.has(alias)) return undefined;
+    const owner = turns.get(route.ownerKey);
+    if (owner === undefined) return undefined;
+    const taskChanged = owner.backgroundProgress.recordTaskTerminal(route.toolUseId);
+    const agentChanged = owner.backgroundProgress.recordAgentTerminal(taskId, "killed");
+    return taskChanged || agentChanged ? owner : undefined;
+  }
+
   function resolveRuntimeFailureWaiters(turn: Turn): void {
     for (const waiter of turn.runtimeFailureWaiters) waiter();
     turn.runtimeFailureWaiters.clear();
@@ -683,6 +696,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         let routeOwner: Turn | undefined;
         if (launched) {
           if (input.task_id !== undefined) rememberBackgroundTaskAlias(input.session_id, input.tool_use_id, input.task_id);
+        } else if (input.tool_name === "TaskStop" && input.task_status === "killed" && input.task_id !== undefined) {
+          routeOwner = terminalizeBackgroundTaskAlias(input.session_id, input.task_id);
         } else {
           routeOwner = terminalizeBackgroundTaskRoute(input.session_id, input.tool_use_id);
         }
