@@ -39,6 +39,9 @@ export const CONTROL_OPERATION_FAILED_TEXT =
   "<b>Command failed</b>\n<i>Try again.</i>";
 
 export interface ControlCommandDispatcherDeps {
+  claimControlMessage: (chatId: string, messageId: string) => boolean;
+  usageQueueAttested: boolean;
+  now: () => number;
   loadConfig: () => RuntimeConfig;
   challenges: ConfirmationChallengeStore;
   sendMessage: (
@@ -118,8 +121,13 @@ function alreadyNotified(error: unknown): boolean {
  * messages return handled=false. Authority comes from the exact Channel envelope and live
  * allowlist, while destructive actions additionally require a short-lived one-shot challenge.
  */
+export type ControlDispatchSource = "hook" | "queue";
+
 export function createControlCommandDispatcher(deps: ControlCommandDispatcherDeps) {
-  return async (input: ControlHookInput): Promise<ControlDispatchResult> => {
+  return async (
+    input: ControlHookInput,
+    source: ControlDispatchSource = "hook"
+  ): Promise<ControlDispatchResult> => {
     const envelope = parseDirectTelegramEnvelope(input.prompt);
     if (envelope === null) return { handled: false };
 
@@ -133,6 +141,17 @@ export function createControlCommandDispatcher(deps: ControlCommandDispatcherDep
     } catch {
       // It is still a control command, so block it instead of allowing the LLM to reinterpret it.
       return { handled: true };
+    }
+
+    if (command.kind === "usage") {
+      if (deps.usageQueueAttested && source === "hook") return { handled: true };
+      if (!deps.usageQueueAttested && source === "queue") return { handled: true };
+      if (!deps.claimControlMessage(envelope.chatId, envelope.messageId)) return { handled: true };
+      const current = deps.now();
+      if (envelope.timestampMs !== undefined
+        && (envelope.timestampMs < current - 5 * 60_000 || envelope.timestampMs > current + 5 * 60_000)) {
+        return { handled: true };
+      }
     }
 
     const readOnlyNamespace = command.kind === "sessions"

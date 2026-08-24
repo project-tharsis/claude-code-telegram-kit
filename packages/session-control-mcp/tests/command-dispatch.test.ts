@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
 import { CONFIRMATION } from "../src/control.js";
+import { createControlMessageClaims } from "../src/usage-queue-watcher.js";
 import { createConfirmationChallengeStore } from "../src/control-command.js";
 import {
   CONTROL_CONFIRMATION_INVALID_TEXT,
@@ -19,11 +20,12 @@ const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
 const OTHER_SESSION = "4fcbaf06-4378-4339-b026-8c2e026a65e7";
 const config: RuntimeConfig = { token: "1:tok", allowedChatIds: new Set(["123"]) };
 
-function input(body: string, messageId = "9", sessionId = SESSION) {
+function input(body: string, messageId = "9", sessionId = SESSION, timestamp?: string) {
+  const ts = timestamp === undefined ? "" : ` ts="${timestamp}"`;
   return {
     session_id: sessionId,
     prompt_id: `p${messageId}`,
-    prompt: `<channel source="plugin:telegram:telegram" chat_id="123" message_id="${messageId}">${body}</channel>`,
+    prompt: `<channel source="plugin:telegram:telegram" chat_id="123" message_id="${messageId}"${ts}>${body}</channel>`,
     hook_event_name: "UserPromptSubmit" as const
   };
 }
@@ -33,6 +35,7 @@ function harness(options: {
   sendFails?: boolean;
   usageFails?: boolean;
   modelFails?: boolean;
+  usageQueueAttested?: boolean;
   config?: RuntimeConfig;
 } = {}) {
   const sent: Array<{
@@ -54,7 +57,11 @@ function harness(options: {
     ...(options.now === undefined ? {} : { now: options.now }),
     randomBytes: size => new Uint8Array(size)
   });
+  const claims = createControlMessageClaims();
   const dispatch = createControlCommandDispatcher({
+    claimControlMessage: claims.claim,
+    usageQueueAttested: options.usageQueueAttested ?? false,
+    now: options.now ?? Date.now,
     loadConfig: () => options.config ?? config,
     challenges,
     sendMessage: async (_cfg, chatId, text, replyTo, parseMode, replyMarkup) => {
@@ -136,6 +143,24 @@ describe("deterministic UserPromptSubmit control dispatcher", () => {
       parseMode: "HTML"
     }]);
     expect(h.reactions).toEqual([["123", "9", "success"]]);
+  });
+
+  test("blocks a stale queued usage hook without sending a late snapshot", async () => {
+    const now = Date.parse("2026-08-24T07:13:40.000Z");
+    const h = harness({ now: () => now });
+    expect(await h.dispatch(input(
+      "/usage", "9", SESSION, "2026-08-24T06:00:00.000Z"
+    ))).toEqual({ handled: true });
+    expect(h.usageCalls).toEqual([]);
+    expect(h.sent).toEqual([]);
+  });
+
+  test("deduplicates the same usage message across watcher and hook dispatch", async () => {
+    const h = harness({ usageQueueAttested: true });
+    expect(await h.dispatch(input("/usage"), "queue")).toEqual({ handled: true });
+    expect(await h.dispatch(input("/usage"), "hook")).toEqual({ handled: true });
+    expect(h.usageCalls).toEqual(["usage"]);
+    expect(h.sent).toHaveLength(1);
   });
 
   test("lists current model state and schedules an allowlisted switch without the LLM", async () => {

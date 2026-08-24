@@ -39,6 +39,11 @@ import {
 } from "./telegram-menu.js";
 import { escapeTelegramHtml } from "./telegram-html.js";
 import {
+  createControlMessageClaims,
+  isAttestedUsageQueueRuntime,
+  watchQueuedUsageControls
+} from "./usage-queue-watcher.js";
+import {
   finalizeTelegramReaction,
   loadRuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
@@ -50,6 +55,7 @@ const projectSessionsDir = process.env.CLAUDE_PROJECT_SESSIONS_DIR;
 const workspaceDir = process.env.CLAUDE_WORKSPACE_DIR;
 const selectionDir = defaultSelectionDirectory();
 const loadConfig = () => loadRuntimeConfig(stateDir);
+const usageQueueAttested = isAttestedUsageQueueRuntime(process.env);
 
 const scheduler = createSessionScheduler();
 const helperReady = async (): Promise<boolean> => {
@@ -96,7 +102,11 @@ const sessionsController = createSessionsController({
   now: Date.now
 });
 
+const controlClaims = createControlMessageClaims();
 const dispatchControlCommand = createControlCommandDispatcher({
+  claimControlMessage: controlClaims.claim,
+  usageQueueAttested,
+  now: Date.now,
   loadConfig,
   challenges,
   sendMessage: (config, chatId, text, replyTo, parseMode, replyMarkup) =>
@@ -132,6 +142,15 @@ const dispatchControlCommand = createControlCommandDispatcher({
   resetSession: request => controller(request)
 });
 const handleControlRouterTool = createControlRouterToolHandler(dispatchControlCommand);
+
+if (usageQueueAttested) {
+  if (projectSessionsDir === undefined) throw new Error("project sessions directory is not configured");
+  const watcher = watchQueuedUsageControls({
+    directory: projectSessionsDir,
+    dispatch: input => dispatchControlCommand(input, "queue")
+  });
+  process.once("exit", watcher.close);
+}
 
 const server = new Server(
   { name: "session-control", version: "0.3.0" },

@@ -46,7 +46,9 @@ function scheduler() {
 
 describe("bounded runtime-failure transcript watcher", () => {
   test("formats fixed notices from typed fields only", () => {
-    const message = formatRuntimeFailureMessage({ error: "rate_limit", resetsAt: 1_787_555_400 }, "Asia/Shanghai");
+    const message = formatRuntimeFailureMessage(
+      { error: "rate_limit", resetsAt: 1_787_555_400 }, "Asia/Shanghai", 1_787_544_000_000
+    );
     expect(message).toContain("2026-08-24, 15:10 (Asia/Shanghai)");
     expect(message).toContain("will not replay automatically");
     expect(formatRuntimeFailureMessage({ error: "overloaded" })).toContain("temporarily unavailable");
