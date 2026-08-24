@@ -61,6 +61,26 @@ After the first meaningful Stop, the command hook only validates exact session/t
 
 The helper stores root-owned idempotency receipts under `/var/lib/claude-code-telegram-kit/reset-requests/`. Receipts expire after 30 days. The store is capped at 4096 entries and fails closed when full.
 
+## Memory Harness read-only isolation spike (PR 1)
+
+A `Stop` command hook (`memory-review-command.ts`) reads `MEMORY_REVIEW_ENABLED` and, on the
+production default of unset/anything other than the exact string `true`, returns immediately
+without creating a receipt, contacting the broker, or making a model call. When explicitly
+enabled it evaluates the verified-delivery trigger, creates a durable `0700`/`0600`,
+singleflight-by-`(session_id, prompt_id)` review receipt under
+`~/.local/state/claude-code-telegram-kit/memory-review/receipts/`, and schedules a fixed
+`memory-review` broker action mirroring the `title` action exactly: the same root-owned OAuth
+`EnvironmentFile` injection, the same `systemd-run --collect --no-block` argv derivation, and
+no caller-selected path/argv/env. The dispatched worker is the checked-in, byte-verified
+bundle at `dist/memory-review-worker.js`, executed through the same pinned-Bun-FD pattern as
+the title worker: no `--channels`, no `--resume`/session fork, `--no-session-persistence`,
+`--setting-sources ""`, no MCP servers, no Bash/Read/Edit/Write tools, one bounded turn, one
+bounded output. The reviewer only ever emits the strict `{decision, target, topic, evidence,
+content, reason, freshness}` proposal shape; any out-of-schema field, overlong string,
+path-like value, credential-shaped content, or unsupported target is rejected before the
+worker transitions its bound receipt out of `queued`. This PR performs no memory mutation:
+the worker never has write authority over anything but its own bound receipt's status field.
+
 ## Installing root assets
 
 The user-level deploy script never installs privileged files. After reviewing and merging one exact commit, run the installer from that same checkout. The installer refuses non-SHA refs, verifies its own bytes against the exact Git object, renders the socket owner, backs up every destination, installs atomically, and reads back mode/owner/SHA-256:

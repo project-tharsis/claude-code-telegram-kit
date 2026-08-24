@@ -1,0 +1,92 @@
+import { describe, expect, test } from "bun:test";
+import { buildMemoryReviewSnapshot, serializeMemoryReviewSnapshot } from "../src/memory-review-snapshot.js";
+
+const VALID_RELEASE_SHA = "c".repeat(40);
+
+function baseInput() {
+  return {
+    userMessage: "please remember I prefer short replies",
+    assistantFinal: "Got it, I will keep replies short from now on.",
+    currentMemoryIndex: "- no-em-dash.md\n- obsidian-vault.md",
+    releaseSha: VALID_RELEASE_SHA,
+    packageVersion: "0.3.0"
+  };
+}
+
+describe("bounded memory review snapshot builder (handoff doc A4)", () => {
+  test("passes ordinary bounded input through unchanged", () => {
+    const snapshot = buildMemoryReviewSnapshot(baseInput());
+    expect(snapshot.userMessage).toBe(baseInput().userMessage);
+    expect(snapshot.releaseSha).toBe(VALID_RELEASE_SHA);
+  });
+
+  test("truncates an oversized single field instead of throwing", () => {
+    const snapshot = buildMemoryReviewSnapshot({ ...baseInput(), assistantFinal: "x".repeat(50_000) });
+    expect(snapshot.assistantFinal.length).toBeLessThanOrEqual(1_200);
+  });
+
+  test("caps total snapshot size even when every field is independently within its own cap", () => {
+    const snapshot = buildMemoryReviewSnapshot({
+      ...baseInput(),
+      userMessage: "a".repeat(1_200),
+      assistantFinal: "b".repeat(1_200),
+      recentCorrections: Array.from({ length: 4 }, () => "c".repeat(1_200)),
+      earlierTurnDigests: Array.from({ length: 6 }, () => "d".repeat(240)),
+      currentMemoryIndex: "e".repeat(1_200),
+      relevantTopics: [{ path: "topic.md", contentHash: "f".repeat(64), excerpt: "g".repeat(1_200) }],
+      nativeMemoryChangeSummary: "h".repeat(400)
+    });
+    const total = snapshot.userMessage.length + snapshot.assistantFinal.length
+      + snapshot.recentCorrections.join("").length + snapshot.earlierTurnDigests.join("").length
+      + snapshot.currentMemoryIndex.length + snapshot.relevantTopics.map(t => t.excerpt).join("").length
+      + snapshot.nativeMemoryChangeSummary.length;
+    expect(total).toBeLessThanOrEqual(6_000);
+  });
+
+  test("caps the number of tool entries and earlier-turn digests independent of content size", () => {
+    const snapshot = buildMemoryReviewSnapshot({
+      ...baseInput(),
+      tools: Array.from({ length: 100 }, (_, index) => ({ name: `Tool${index}`, classification: "success" as const })),
+      earlierTurnDigests: Array.from({ length: 100 }, (_, index) => `digest-${index}`)
+    });
+    expect(snapshot.tools.length).toBeLessThanOrEqual(20);
+    expect(snapshot.earlierTurnDigests.length).toBeLessThanOrEqual(6);
+  });
+
+  test("caps the number of relevant topic excerpts (file count cap)", () => {
+    const snapshot = buildMemoryReviewSnapshot({
+      ...baseInput(),
+      relevantTopics: Array.from({ length: 50 }, (_, index) => ({ path: `topic-${index}.md`, contentHash: "0".repeat(64), excerpt: "text" }))
+    });
+    expect(snapshot.relevantTopics.length).toBeLessThanOrEqual(4);
+  });
+
+  test("redacts a credential-shaped substring embedded in transcript-derived text", () => {
+    const snapshot = buildMemoryReviewSnapshot({
+      ...baseInput(),
+      userMessage: "here is my token: sk-live-abcdefghijklmnop please remember it",
+      assistantFinal: "the header carries bearer aaaaaaaaaaaaaaaaaaaaaaaa for auth"
+    });
+    expect(snapshot.userMessage).not.toContain("sk-live-abcdefghijklmnop");
+    expect(snapshot.assistantFinal).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(snapshot.userMessage).toContain("[redacted]");
+  });
+
+  test("rejects an invalid release SHA rather than passing it through", () => {
+    const snapshot = buildMemoryReviewSnapshot({ ...baseInput(), releaseSha: "not-a-sha; rm -rf" });
+    expect(snapshot.releaseSha).toBe("0".repeat(40));
+  });
+
+  test("silently tolerates hostile non-string/oversized-array input without throwing", () => {
+    expect(() => buildMemoryReviewSnapshot({
+      ...baseInput(),
+      recentCorrections: "not an array" as unknown as string[],
+      tools: "also not an array" as unknown as never
+    })).not.toThrow();
+  });
+
+  test("serialization enforces a hard byte cap", () => {
+    const snapshot = buildMemoryReviewSnapshot(baseInput());
+    expect(() => serializeMemoryReviewSnapshot(snapshot)).not.toThrow();
+  });
+});

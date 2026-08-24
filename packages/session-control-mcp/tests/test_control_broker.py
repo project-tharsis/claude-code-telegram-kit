@@ -98,6 +98,50 @@ class ControlBrokerTests(unittest.TestCase):
         secure.assert_any_call(Path("/usr/local/sbin/fixed-helper"), (0o755,), "reset helper")
         secure.assert_any_call(broker.TITLE_OAUTH_ENV_FILE, (0o600,), "title OAuth environment")
 
+    def test_memory_review_is_a_fixed_authenticated_one_shot_job(self):
+        run = Runner()
+        result = request({"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": SESSION, "prompt_id": "prompt-1"}, run)
+        argv, timeout = run.calls[0]
+        self.assertEqual(timeout, 10.0)
+        self.assertEqual(argv[0], "/usr/bin/systemd-run")
+        self.assertIn(f"--property=EnvironmentFile={broker.TITLE_OAUTH_ENV_FILE}", argv)
+        self.assertEqual(argv[3:6], ["--collect", "--no-block", "/usr/local/sbin/fixed-helper"])
+        self.assertEqual(argv[argv.index("--action") + 1], "memory-review")
+        self.assertEqual(argv[argv.index("--session-id") + 1], SESSION)
+        self.assertEqual(argv[argv.index("--prompt-id") + 1], "prompt-1")
+        self.assertNotIn("--chat-id", argv)
+        self.assertNotIn("--request-id", argv)
+        self.assertRegex(result["unit"], r"^claude-session-memory-review-[0-9a-f]{24}$")
+
+    def test_memory_review_verifies_the_fixed_root_owned_oauth_environment(self):
+        run = Runner()
+        with mock.patch.object(broker, "_secure_file") as secure:
+            broker.process_request(
+                json.dumps({"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": SESSION, "prompt_id": "prompt-1"}).encode(),
+                os.getuid(),
+                config_path=Path("/etc/fixed-reset.json"),
+                helper=Path("/usr/local/sbin/fixed-helper"),
+                run=run,
+                reserve=lambda _runner: None,
+                service_uid=os.getuid(),
+                verify_files=True,
+            )
+        secure.assert_any_call(Path("/usr/local/sbin/fixed-helper"), (0o755,), "reset helper")
+        secure.assert_any_call(broker.TITLE_OAUTH_ENV_FILE, (0o600,), "title OAuth environment")
+
+    def test_memory_review_rejects_extra_fields_and_malformed_identity(self):
+        run = Runner()
+        bad = [
+            {"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": SESSION, "prompt_id": "prompt-1", "chat_id": "123"},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": "not-a-uuid", "prompt_id": "prompt-1"},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": SESSION, "prompt_id": "../../etc/passwd"},
+            {"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": SESSION},
+        ]
+        for payload in bad:
+            with self.assertRaises((ValueError, KeyError)):
+                request(payload, run)
+        self.assertEqual(run.calls, [])
+
     def test_rejects_malformed_capability_shapes_and_root_path_flags(self):
         for payload in (
             '{"protocol":5,"protocol":5,"actions":["reset","resume","model"],"models":["opus","sonnet","haiku","inherit"],"helper":"x"}',
@@ -151,6 +195,7 @@ class ControlBrokerTests(unittest.TestCase):
             pending_argv = pending.calls[0][0]
             self.assertIn("claude-session-reset*.service", pending_argv)
             self.assertIn("claude-session-title*.service", pending_argv)
+            self.assertIn("claude-session-memory-review*.service", pending_argv)
 
     def test_rejects_root_as_the_service_user(self):
         with tempfile.TemporaryDirectory() as td:

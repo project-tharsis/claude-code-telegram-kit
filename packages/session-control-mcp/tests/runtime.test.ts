@@ -134,6 +134,19 @@ describe("session scheduler broker contract", () => {
     expect(seen).toEqual([{ protocol: BROKER_PROTOCOL_VERSION, action: "title", session_id: SESSION }]);
   });
 
+  test("schedules an authenticated one-shot memory review job", async () => {
+    const seen: unknown[] = [];
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-memory-review-${"d".repeat(24)}` }, seen) });
+    await expect(scheduler.scheduleMemoryReview(SESSION, "prompt-1")).resolves.toMatch(/^claude-session-memory-review-/);
+    expect(seen).toEqual([{ protocol: BROKER_PROTOCOL_VERSION, action: "memory-review", session_id: SESSION, prompt_id: "prompt-1" }]);
+  });
+
+  test("rejects a malformed memory review identity before contacting the broker", async () => {
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-memory-review-${"d".repeat(24)}` }) });
+    await expect(scheduler.scheduleMemoryReview("not-a-uuid", "prompt-1")).rejects.toThrow("session UUID");
+    await expect(scheduler.scheduleMemoryReview(SESSION, "../../etc/passwd")).rejects.toThrow("prompt ID");
+  });
+
   test("rejects malformed identity and broker receipts", async () => {
     const schedule = createResetScheduler({ callBroker: broker({ status: "scheduled", unit: "evil.service" }) });
     await expect(schedule("123", "51", SESSION)).rejects.toThrow("rejected");
