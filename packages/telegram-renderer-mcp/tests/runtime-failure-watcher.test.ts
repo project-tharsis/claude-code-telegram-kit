@@ -23,6 +23,22 @@ const failure = (
   message: { role: "assistant", content: [{ type: "text", text: content }] },
   ...(resetsAt === undefined ? {} : { quotaLimits: { resetsAt } })
 }) + "\n";
+const liveRateLimitFailure = JSON.stringify({
+  type: "assistant",
+  error: "rate_limit",
+  isApiErrorMessage: true,
+  message: { role: "assistant", content: [{ type: "text", text: "provider prose" }] },
+  quotaLimits: {
+    status: "rejected",
+    resetsAt: 1_787_573_400,
+    unifiedRateLimitFallbackAvailable: false,
+    rateLimitType: "five_hour",
+    overageStatus: "rejected",
+    overageDisabledReason: "org_level_disabled",
+    upgradePaths: ["upgrade_plan"],
+    isUsingOverage: false
+  }
+}) + "\n";
 const normal = JSON.stringify({ type: "assistant", message: { content: "hello" } }) + "\n";
 
 function fixture(initial = "") {
@@ -93,9 +109,9 @@ describe("bounded runtime-failure transcript watcher", () => {
     watchRuntimeFailureTranscript({ session_id: f.sessionId, transcript_path: f.transcriptPath }, {
       expectedRoot: f.root, onFailure: failure => { seen = failure; }, scheduler: timers
     });
-    writeFileSync(f.transcriptPath, failure("secret", "rate_limit", 1_787_555_400), { flag: "a" });
+    writeFileSync(f.transcriptPath, liveRateLimitFailure, { flag: "a" });
     timers.runNext();
-    expect(seen).toEqual({ error: "rate_limit", resetsAt: 1_787_555_400 });
+    expect(seen).toEqual({ error: "rate_limit", resetsAt: 1_787_573_400 });
   });
 
   test("ignores normal rows and malformed or oversized lines", () => {

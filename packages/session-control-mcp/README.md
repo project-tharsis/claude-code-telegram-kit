@@ -16,6 +16,8 @@ The server advertises only `dispatch_command`. Legacy model-callable reset, bind
 
 `/usage` reads a private service-user-owned cache written from Claude's documented `statusLine.rate_limits`; it starts no extra Claude process and calls neither the LLM nor the OAuth usage endpoint. Delivery uses Telegram-safe HTML with bold percentages, reset timestamps, and a compact ten-cell micro-bar. `/resume` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot; `/sessions` remains a compatibility alias. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
 
+The descriptor-pinned append rail also restores structured future quota state and acknowledges later ordinary messages with a fixed quoted reset notice. It never parses failed-task summary prose.
+
 ## Control-plane order
 
 1. The official Channel remains the only Telegram poller. In an activation-attested runtime, the session-control MCP baselines secure existing transcript descriptors at EOF and polls only their appended bytes for exact fresh `/usage` enqueue rows; no other control is accepted there.

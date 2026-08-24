@@ -44,7 +44,9 @@ import {
   watchQueuedUsageControls
 } from "./usage-queue-watcher.js";
 import {
+  assertAuthorizedChat,
   finalizeTelegramReaction,
+  formatRateLimitNotice,
   loadRuntimeConfig
 } from "@project-tharsis/claude-code-telegram-shared";
 
@@ -147,7 +149,13 @@ if (usageQueueAttested) {
   if (projectSessionsDir === undefined) throw new Error("project sessions directory is not configured");
   const watcher = watchQueuedUsageControls({
     directory: projectSessionsDir,
-    dispatch: input => dispatchControlCommand(input, "queue")
+    dispatch: input => dispatchControlCommand(input, "queue"),
+    sendQuotaNotice: async ({ chatId, messageId, resetsAt }) => {
+      const config = loadConfig();
+      assertAuthorizedChat(config, chatId);
+      await sendTelegramMessage(config, chatId, formatRateLimitNotice(resetsAt), fetch, messageId);
+      try { await finalizeTelegramReaction(config, chatId, messageId, "success"); } catch { /* reply is authoritative */ }
+    }
   });
   process.once("exit", watcher.close);
 }

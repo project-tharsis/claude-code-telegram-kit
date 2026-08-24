@@ -32,6 +32,16 @@ function row(content = '<channel source="plugin:telegram:telegram" chat_id="123"
   });
 }
 
+function rateLimitRow(resetsAt: number) {
+  return JSON.stringify({
+    type: "assistant",
+    error: "rate_limit",
+    isApiErrorMessage: true,
+    message: { role: "assistant", content: [{ type: "text", text: "ignored" }] },
+    quotaLimits: { resetsAt }
+  });
+}
+
 describe("queued usage control wire", () => {
   test("enables only under a complete activation attestation", () => {
     expect(isAttestedUsageQueueRuntime({})).toBe(false);
@@ -86,6 +96,37 @@ describe("queued usage control wire", () => {
 
     await watcher.poll();
     expect(seen).toEqual(["queue:644"]);
+    watcher.close();
+  });
+
+  test("restores quota state and answers later ordinary messages", async () => {
+    const root = mkdtempSync(join(tmpdir(), "quota-queue-watcher-"));
+    roots.push(root);
+    chmodSync(root, 0o755);
+    const resetsAt = Math.floor(NOW / 1_000) + 3_600;
+    const transcript = join(root, `${SESSION}.jsonl`);
+    writeFileSync(transcript, `${rateLimitRow(resetsAt)}\n`, { mode: 0o600 });
+    const notices: unknown[] = [];
+    const watcher = watchQueuedUsageControls({
+      directory: root,
+      expectedUid: process.getuid!(),
+      now: () => NOW,
+      dispatch: async () => undefined,
+      sendQuotaNotice: async notice => { notices.push(notice); },
+      schedule: () => ({ cancel: () => undefined })
+    });
+    appendFileSync(transcript, `${row(
+      '<channel source="plugin:telegram:telegram" chat_id="123" message_id="645">hello</channel>'
+    )}\n`);
+    await watcher.poll();
+    expect(notices).toEqual([{ chatId: "123", messageId: "645", resetsAt }]);
+
+    const laterReset = resetsAt + 3_600;
+    appendFileSync(transcript, `${rateLimitRow(laterReset)}\n${row(
+      '<channel source="plugin:telegram:telegram" chat_id="123" message_id="646">again</channel>'
+    )}\n`);
+    await watcher.poll();
+    expect(notices.at(-1)).toEqual({ chatId: "123", messageId: "646", resetsAt: laterReset });
     watcher.close();
   });
 

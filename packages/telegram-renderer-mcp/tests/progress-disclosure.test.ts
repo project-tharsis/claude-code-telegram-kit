@@ -40,6 +40,7 @@ interface Harness {
   delays: number[];
   tick: () => Promise<void>;
   pending: () => boolean;
+  fireRuntimeFailure: (failure: RuntimeFailure) => Promise<void>;
 }
 
 function harness(options: {
@@ -62,6 +63,7 @@ function harness(options: {
   const typingStops = { count: 0 };
   const delays: number[] = [];
   let queued: (() => Promise<void>) | null = null;
+  let runtimeFailureCallback: ((failure: RuntimeFailure) => Promise<void>) | null = null;
 
   const disclosure = createTurnDisclosure({
     loadConfig: () => options.config ?? config,
@@ -69,6 +71,10 @@ function harness(options: {
     startTyping: chatId => {
       typingStarts.push(chatId);
       return () => { typingStops.count += 1; };
+    },
+    startRuntimeFailureWatch: (_input, onFailure) => {
+      runtimeFailureCallback = onFailure;
+      return () => { runtimeFailureCallback = null; };
     },
     startArtifactTracking: () => ({
       collect: () => [...(options.artifacts ?? [])],
@@ -116,6 +122,10 @@ function harness(options: {
     typingStarts,
     typingStops,
     delays,
+    fireRuntimeFailure: async failure => {
+      if (runtimeFailureCallback === null) throw new Error("runtime failure watcher is not active");
+      await runtimeFailureCallback(failure);
+    },
     pending: () => queued !== null,
     tick: async () => {
       const run = queued;
@@ -506,6 +516,43 @@ describe("turn disclosure lifecycle", () => {
     expect(h.finalDeliveries).toEqual([]);
   });
 
+
+  test("structured reset metadata wins the typed rate-limit StopFailure race", async () => {
+    const h = harness();
+    bind(h);
+    const stopping = h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      last_assistant_message: "",
+      error: "rate_limit",
+      hook_event_name: "StopFailure"
+    });
+    await Promise.resolve();
+    expect(h.runtimeFailures).toEqual([]);
+    expect(h.pending()).toBe(true);
+    await h.fireRuntimeFailure({ error: "rate_limit", resetsAt: 1_787_573_400 });
+    await stopping;
+    expect(h.runtimeFailures).toEqual([{
+      chatId: "123", messageId: "9", error: "rate_limit", resetsAt: 1_787_573_400
+    }]);
+  });
+
+  test("typed rate-limit falls back after the structured grace expires", async () => {
+    const h = harness();
+    bind(h);
+    const stopping = h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      last_assistant_message: "",
+      error: "rate_limit",
+      hook_event_name: "StopFailure"
+    });
+    await Promise.resolve();
+    expect(h.pending()).toBe(true);
+    await h.tick();
+    await stopping;
+    expect(h.runtimeFailures).toEqual([{ chatId: "123", messageId: "9", error: "rate_limit" }]);
+  });
 
   test("typed StopFailure sends one operational notice and never delivers assistant text", async () => {
     const h = harness();
