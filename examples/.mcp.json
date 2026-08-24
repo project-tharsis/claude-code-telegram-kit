@@ -20,7 +20,8 @@
       "env": {
         "CLAUDE_PROJECT_SESSIONS_DIR": "/home/USER/.claude/projects/-home-USER-claude-bot-workspace",
         "CLAUDE_WORKSPACE_DIR": "/home/USER/claude-bot-workspace",
-        "TELEGRAM_COMMAND_MENU_ENABLED": "true"
+        "TELEGRAM_COMMAND_MENU_ENABLED": "true",
+        "CLAUDE_OAUTH_USAGE_ENABLED": "false"
       }
     }
   }

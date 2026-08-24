@@ -15,6 +15,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `/usage` no longer presents stale percentages as current during an active quota window. It always shows structured reached-window/reset state; an explicit opt-in on-demand OAuth GET may add realtime bars, while 429/auth/network failure hides percentages instead of falling back to stale ones.
 - Quota handling now prefers live structured `quotaLimits.resetsAt` over a typed generic StopFailure. A 250 ms grace lets the transcript watcher win, and the activation-attested queue sidecar restores future quota state and replies to later ordinary messages with the same quoted reset notice.
 - Background disclosure no longer reports `Done` when only observed child agents have stopped. Claude's PostToolUse `status + agentId` now binds the originating tool route to task-only terminal notifications; the bubble shows `Finalizing…` until exact terminal parent-task authority is consumed.
 - `/usage` no longer stalls behind a Claude Code quota/auth modal or a blocking-hook race. In an activation-attested service generation, the existing session-control MCP baselines secure existing transcript descriptors at EOF and consumes only fresh exact `/usage` enqueue appends, while the official Channel remains the sole Telegram poller. UserPromptSubmit becomes block-only for `/usage` in that runtime, so watcher/hook races and restarts cannot duplicate or replay replies; no mutation control enters the append rail.

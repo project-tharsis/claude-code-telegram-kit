@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, test } from "bun:test";
-import { formatUsageSnapshot, parseUsageSnapshot, readSubscriptionUsage } from "../src/subscription-usage.js";
+import {
+  formatUnavailableUsage,
+  formatUsageSnapshot,
+  parseUsageSnapshot,
+  readSubscriptionUsage
+} from "../src/subscription-usage.js";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -28,6 +33,44 @@ describe("subscription usage cache", () => {
     expect(html).toContain("<code>█░░░░░░░░░</code> <b>1%</b>");
     expect(html).toContain("<b>7-day limit (all models)</b>");
     expect(html).toContain("<b>11.5%</b>");
+  });
+
+  test("hides stale percentages under active quota state", () => {
+    const parsed = parseUsageSnapshot(JSON.stringify(snapshot()), 1_100_000);
+    const html = formatUsageSnapshot(parsed, 1_100_000, { resetsAt: 2_000, window: "five_hour" });
+    expect(html).toContain("<b>Current status</b>");
+    expect(html).toContain("<b>5-hour limit reached</b>");
+    expect(html).not.toContain("<b>1%</b>");
+    expect(html).not.toContain("last known");
+  });
+
+  test("labels weekly active quota from structured window", () => {
+    const current = { ...snapshot(), windows: { ...snapshot().windows, five_hour: { used_percentage: 100, resets_at: 2_000 } } };
+    const parsed = parseUsageSnapshot(JSON.stringify(current), 1_050_000);
+    const html = formatUsageSnapshot(parsed, 1_050_000, { resetsAt: 3_000, window: "seven_day" });
+    expect(html).toContain("<b>Weekly limit reached</b>");
+    expect(html).not.toContain("<b>100%</b>");
+  });
+
+  test("shows OAuth live percentages under active quota", () => {
+    const current = { ...snapshot(), windows: { ...snapshot().windows, five_hour: { used_percentage: 100, resets_at: 2_000 } } };
+    const parsed = parseUsageSnapshot(JSON.stringify(current), 1_050_000);
+    const html = formatUsageSnapshot(
+      parsed, 1_050_000, { resetsAt: 2_000, window: "five_hour" }, true
+    );
+    expect(html).toContain("<b>5-hour limit reached</b>");
+    expect(html).toContain("<b>100%</b>");
+    expect(html).toContain("<b>11.5%</b>");
+  });
+
+  test("does not fall back to cached bars when OAuth is unavailable", () => {
+    expect(formatUnavailableUsage(undefined, 1_050_000)).toBe(
+      "<b>Claude Code subscription usage</b>\n\n<i>Live usage unavailable.</i>"
+    );
+    const active = formatUnavailableUsage({ resetsAt: 3_000, window: "seven_day" }, 1_050_000);
+    expect(active).toContain("<b>Weekly limit reached</b>");
+    expect(active).not.toContain("unavailable");
+    expect(active).not.toContain("%");
   });
 
   test("renders truthful zero and full micro-bar endpoints", () => {

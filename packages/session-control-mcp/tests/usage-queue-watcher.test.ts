@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   createControlMessageClaims,
   isAttestedUsageQueueRuntime,
+  mergeActiveQuotaState,
   parseQueuedUsageEvent,
   watchQueuedUsageControls
 } from "../src/usage-queue-watcher.js";
@@ -38,7 +39,7 @@ function rateLimitRow(resetsAt: number) {
     error: "rate_limit",
     isApiErrorMessage: true,
     message: { role: "assistant", content: [{ type: "text", text: "ignored" }] },
-    quotaLimits: { resetsAt }
+    quotaLimits: { resetsAt, rateLimitType: "five_hour" }
   });
 }
 
@@ -52,6 +53,15 @@ describe("queued usage control wire", () => {
     expect(() => isAttestedUsageQueueRuntime({
       CLAUDE_RUNTIME_RELEASE_SHA: "a".repeat(40)
     })).toThrow("runtime attestation is incomplete");
+  });
+
+  test("merges active quota by expiry, latest reset, and known window", () => {
+    const weekly = { resetsAt: 3_000, window: "seven_day" as const };
+    const fiveHour = { resetsAt: 2_500, window: "five_hour" as const };
+    expect(mergeActiveQuotaState(undefined, weekly, 1_000_000)).toEqual(weekly);
+    expect(mergeActiveQuotaState(weekly, fiveHour, 1_000_000)).toEqual(weekly);
+    expect(mergeActiveQuotaState({ resetsAt: 900 }, fiveHour, 1_000_000)).toEqual(fiveHour);
+    expect(mergeActiveQuotaState({ resetsAt: 2_500 }, fiveHour, 1_000_000)).toEqual(fiveHour);
   });
 
   test("accepts only an exact fresh usage enqueue for the transcript session", () => {
@@ -107,14 +117,17 @@ describe("queued usage control wire", () => {
     const transcript = join(root, `${SESSION}.jsonl`);
     writeFileSync(transcript, `${rateLimitRow(resetsAt)}\n`, { mode: 0o600 });
     const notices: unknown[] = [];
+    const quotaStates: unknown[] = [];
     const watcher = watchQueuedUsageControls({
       directory: root,
       expectedUid: process.getuid!(),
       now: () => NOW,
       dispatch: async () => undefined,
+      onQuotaState: state => { quotaStates.push(state); },
       sendQuotaNotice: async notice => { notices.push(notice); },
       schedule: () => ({ cancel: () => undefined })
     });
+    expect(quotaStates).toEqual([{ resetsAt, window: "five_hour" }]);
     appendFileSync(transcript, `${row(
       '<channel source="plugin:telegram:telegram" chat_id="123" message_id="645">hello</channel>'
     )}\n`);
@@ -127,6 +140,7 @@ describe("queued usage control wire", () => {
     )}\n`);
     await watcher.poll();
     expect(notices.at(-1)).toEqual({ chatId: "123", messageId: "646", resetsAt: laterReset });
+    expect(quotaStates.at(-1)).toEqual({ resetsAt: laterReset, window: "five_hour" });
     watcher.close();
   });
 

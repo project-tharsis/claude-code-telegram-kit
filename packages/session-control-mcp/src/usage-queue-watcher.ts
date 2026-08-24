@@ -10,7 +10,8 @@ import {
 import { basename, isAbsolute } from "node:path";
 import {
   parseDirectTelegramEnvelope,
-  parseRuntimeFailureRow
+  parseRuntimeFailureRow,
+  type QuotaWindow
 } from "@project-tharsis/claude-code-telegram-shared";
 import { parseControlCommand } from "./control-command.js";
 import type { ControlHookInput } from "./control-input.js";
@@ -107,6 +108,21 @@ const MAX_QUOTA_FUTURE_MS = 7 * 24 * 60 * 60_000;
 interface ScheduleHandle { cancel: () => void }
 type Schedule = (callback: () => void, delayMs: number) => ScheduleHandle;
 
+export interface ActiveQuotaState {
+  resetsAt: number;
+  window?: QuotaWindow;
+}
+
+export function mergeActiveQuotaState(
+  current: ActiveQuotaState | undefined,
+  next: ActiveQuotaState,
+  nowMs = Date.now()
+): ActiveQuotaState {
+  if (current === undefined || current.resetsAt * 1_000 <= nowMs || next.resetsAt > current.resetsAt) return next;
+  if (next.resetsAt === current.resetsAt && current.window === undefined && next.window !== undefined) return next;
+  return current;
+}
+
 export interface QuotaTakeoverNotice {
   chatId: string;
   messageId: string;
@@ -117,6 +133,7 @@ export interface QueuedUsageWatcherOptions {
   directory: string;
   dispatch: (input: ControlHookInput) => Promise<unknown>;
   sendQuotaNotice?: (notice: QuotaTakeoverNotice) => Promise<void>;
+  onQuotaState?: (state: ActiveQuotaState) => void;
   expectedUid?: number;
   now?: () => number;
   schedule?: Schedule;
@@ -135,6 +152,7 @@ interface TrackedTranscript {
   pending: Buffer;
   skipOversizedLine: boolean;
   quotaResetsAt?: number;
+  quotaWindow?: QuotaWindow;
 }
 
 function defaultSchedule(callback: () => void, delayMs: number): ScheduleHandle {
@@ -205,9 +223,13 @@ function updateQuotaState(transcript: TrackedTranscript, line: string, nowMs: nu
   const failure = parseRuntimeFailureRow(value);
   if (failure?.error !== "rate_limit" || failure.resetsAt === undefined) return;
   const resetMs = failure.resetsAt * 1_000;
-  if (resetMs > nowMs && resetMs <= nowMs + MAX_QUOTA_FUTURE_MS
-    && (transcript.quotaResetsAt === undefined || failure.resetsAt > transcript.quotaResetsAt)) {
+  if (resetMs <= nowMs || resetMs > nowMs + MAX_QUOTA_FUTURE_MS) return;
+  if (transcript.quotaResetsAt === undefined || failure.resetsAt > transcript.quotaResetsAt) {
     transcript.quotaResetsAt = failure.resetsAt;
+    if (failure.quotaWindow === undefined) delete transcript.quotaWindow;
+    else transcript.quotaWindow = failure.quotaWindow;
+  } else if (failure.resetsAt === transcript.quotaResetsAt && failure.quotaWindow !== undefined) {
+    transcript.quotaWindow = failure.quotaWindow;
   }
 }
 
@@ -286,6 +308,10 @@ export function watchQueuedUsageControls(options: QueuedUsageWatcherOptions): Qu
       const transcript = openTranscript(directoryFd, name, expectedUid);
       if (transcript === null) throw new Error("transcript metadata is invalid");
       restoreQuotaState(transcript, options.now?.() ?? Date.now());
+      if (transcript.quotaResetsAt !== undefined) options.onQuotaState?.({
+        resetsAt: transcript.quotaResetsAt,
+        ...(transcript.quotaWindow === undefined ? {} : { window: transcript.quotaWindow })
+      });
       tracked.set(name, transcript);
     }
   } catch (error) {
@@ -326,7 +352,16 @@ export function watchQueuedUsageControls(options: QueuedUsageWatcherOptions): Qu
       }
       for (const line of lines) {
         const currentNow = options.now?.() ?? Date.now();
+        const previousQuotaReset = transcript.quotaResetsAt;
+        const previousQuotaWindow = transcript.quotaWindow;
         updateQuotaState(transcript, line, currentNow);
+        if (transcript.quotaResetsAt !== undefined
+          && (transcript.quotaResetsAt !== previousQuotaReset || transcript.quotaWindow !== previousQuotaWindow)) {
+          options.onQuotaState?.({
+            resetsAt: transcript.quotaResetsAt,
+            ...(transcript.quotaWindow === undefined ? {} : { window: transcript.quotaWindow })
+          });
+        }
         const event = parseQueuedChannelEvent(line, transcript.sessionId, currentNow);
         if (event === null) continue;
         const command = parseControlCommand(event.body);
@@ -345,6 +380,7 @@ export function watchQueuedUsageControls(options: QueuedUsageWatcherOptions): Qu
         if (resetsAt === undefined) continue;
         if (resetsAt * 1_000 <= currentNow) {
           delete transcript.quotaResetsAt;
+          delete transcript.quotaWindow;
           continue;
         }
         if (!quotaClaims.claim(event.chatId, event.messageId)) continue;

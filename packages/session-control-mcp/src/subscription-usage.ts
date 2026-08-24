@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { escapeTelegramHtml } from "./telegram-html.js";
+import type { QuotaWindow } from "@project-tharsis/claude-code-telegram-shared";
 
 export const DEFAULT_SUBSCRIPTION_USAGE_CACHE = join(
   homedir(), ".local", "state", "claude-code-telegram-kit", "subscription-usage.json"
@@ -13,7 +14,8 @@ const WINDOW_NAMES = ["five_hour", "seven_day"] as const;
 
 type WindowName = (typeof WINDOW_NAMES)[number];
 interface UsageWindow { used_percentage: number; resets_at: number }
-interface UsageSnapshot { version: 1; captured_at: number; windows: Partial<Record<WindowName, UsageWindow>> }
+export interface UsageSnapshot { version: 1; captured_at: number; windows: Partial<Record<WindowName, UsageWindow>> }
+export interface ActiveUsageQuota { resetsAt: number; window?: QuotaWindow }
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   return Object.keys(value).every(key => allowed.includes(key)) && new Set(Object.keys(value)).size === Object.keys(value).length;
@@ -80,8 +82,41 @@ function usageBar(value: number): string {
   return `${"█".repeat(filled)}${"░".repeat(10 - filled)}`;
 }
 
-export function formatUsageSnapshot(snapshot: UsageSnapshot, nowMs = Date.now()): string {
+function activeQuotaLines(activeQuota: ActiveUsageQuota | undefined, nowMs: number): string[] | null {
+  const candidateReset = activeQuota?.resetsAt;
+  const activeReset = typeof candidateReset === "number" && Number.isSafeInteger(candidateReset)
+    && candidateReset * 1_000 > nowMs
+    && candidateReset * 1_000 <= nowMs + 8 * 24 * 60 * 60_000
+    ? candidateReset : undefined;
+  if (activeReset === undefined) return null;
+  const status = activeQuota?.window === "five_hour"
+    ? "5-hour limit reached"
+    : activeQuota?.window === "seven_day"
+      ? "Weekly limit reached"
+      : "Usage limit reached";
+  return ["", "<b>Current status</b>", `<b>${status}</b>`, `<i>${escapeTelegramHtml(resetText(activeReset))}</i>`];
+}
+
+export function formatUnavailableUsage(activeQuota?: ActiveUsageQuota, nowMs = Date.now()): string {
   const lines = ["<b>Claude Code subscription usage</b>"];
+  const active = activeQuotaLines(activeQuota, nowMs);
+  if (active !== null) lines.push(...active);
+  else lines.push("", "<i>Live usage unavailable.</i>");
+  return lines.join("\n");
+}
+
+export function formatUsageSnapshot(
+  snapshot: UsageSnapshot,
+  nowMs = Date.now(),
+  activeQuota?: ActiveUsageQuota,
+  percentagesAreLive = false
+): string {
+  const lines = ["<b>Claude Code subscription usage</b>"];
+  const active = activeQuotaLines(activeQuota, nowMs);
+  if (active !== null) {
+    lines.push(...active);
+    if (!percentagesAreLive) return lines.join("\n");
+  }
   const labels: Array<[WindowName, string]> = [
     ["five_hour", "5-hour limit"],
     ["seven_day", "7-day limit (all models)"],
@@ -102,7 +137,12 @@ export function formatUsageSnapshot(snapshot: UsageSnapshot, nowMs = Date.now())
   return lines.join("\n");
 }
 
-export interface SubscriptionUsageOptions { path?: string; now?: () => number; expectedUid?: number }
+export interface SubscriptionUsageOptions {
+  path?: string;
+  now?: () => number;
+  expectedUid?: number;
+  activeQuota?: ActiveUsageQuota;
+}
 
 export async function readSubscriptionUsage(options: SubscriptionUsageOptions = {}): Promise<string> {
   const path = options.path ?? process.env.CLAUDE_SUBSCRIPTION_USAGE_CACHE ?? DEFAULT_SUBSCRIPTION_USAGE_CACHE;
@@ -122,7 +162,7 @@ export async function readSubscriptionUsage(options: SubscriptionUsageOptions = 
     }
     const text = readFileSync(fd, "utf8");
     const nowMs = options.now?.() ?? Date.now();
-    return formatUsageSnapshot(parseUsageSnapshot(text, nowMs), nowMs);
+    return formatUsageSnapshot(parseUsageSnapshot(text, nowMs), nowMs, options.activeQuota);
   } finally {
     closeSync(fd);
   }

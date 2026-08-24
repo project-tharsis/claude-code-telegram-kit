@@ -111,7 +111,7 @@ describe("bounded runtime-failure transcript watcher", () => {
     });
     writeFileSync(f.transcriptPath, liveRateLimitFailure, { flag: "a" });
     timers.runNext();
-    expect(seen).toEqual({ error: "rate_limit", resetsAt: 1_787_573_400 });
+    expect(seen).toEqual({ error: "rate_limit", resetsAt: 1_787_573_400, quotaWindow: "five_hour" });
   });
 
   test("ignores normal rows and malformed or oversized lines", () => {
