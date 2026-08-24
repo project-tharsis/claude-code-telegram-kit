@@ -7,10 +7,13 @@ import {
 import {
   type BindTurnInput,
   type FinishTurnInput,
+  type RecordSubagentStartInput,
+  type RecordSubagentStopInput,
   type RecordToolFailureInput,
   type RecordToolInput,
   type RecordToolSuccessInput
 } from "./hook-contract.js";
+import { BackgroundProgress } from "./background-progress.js";
 import { buildProgressStep, type ToolDisclosureMode } from "./progress-preview.js";
 import { TurnProgress } from "./progress-state.js";
 import { MAX_UNIFIED_CONTENT_CHARACTERS } from "./unified-contract.js";
@@ -27,8 +30,10 @@ export const PROGRESS_DEBOUNCE_MS = 1_500;
  * drain continues in the background.
  */
 export const FINAL_DRAIN_TIMEOUT_MS = 2_000;
-/** Ephemeral turn state only. */
+/** Ordinary ephemeral turn state. Active background turns have their own bounded allowance. */
 export const MAX_RETAINED_TURNS = 32;
+export const MAX_ACTIVE_BACKGROUND_TURNS = 16;
+export const MAX_BACKGROUND_CHAIN_DEPTH = 2;
 /** Routes survive the foreground Stop so a later internal completion can recover its Telegram authority. */
 export const BACKGROUND_TASK_ROUTE_TTL_MS = 6 * 60 * 60 * 1_000;
 export const MAX_BACKGROUND_TASK_ROUTES = 128;
@@ -95,12 +100,16 @@ export interface TurnDisclosureDeps {
  * the one action that can duplicate it. `abandoned` is terminal for a definitive refusal.
  */
 type BubbleState = "none" | "have" | "unknown" | "abandoned";
+type ProgressPhase = "foreground" | "background-agents";
 
 interface Turn {
   chatId: string;
   quoteMessageId: string;
   background: boolean;
+  backgroundDepth: number;
   progress: TurnProgress;
+  backgroundProgress: BackgroundProgress;
+  progressPhase: ProgressPhase;
   bubbleMessageId: number | null;
   state: BubbleState;
   replacementUsed: boolean;
@@ -118,6 +127,7 @@ interface Turn {
 interface BackgroundTaskRoute {
   chatId: string;
   quoteMessageId: string;
+  depth: number;
   expiresAt: number;
 }
 
@@ -164,11 +174,13 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   }
 
   function rememberBackgroundTaskRoute(sessionId: string, toolUseId: string, turn: Turn): void {
+    if (turn.backgroundDepth >= MAX_BACKGROUND_CHAIN_DEPTH) return;
     const key = backgroundRouteKey(sessionId, toolUseId);
     backgroundTaskRoutes.delete(key);
     backgroundTaskRoutes.set(key, {
       chatId: turn.chatId,
       quoteMessageId: turn.quoteMessageId,
+      depth: turn.backgroundDepth + 1,
       expiresAt: now() + BACKGROUND_TASK_ROUTE_TTL_MS
     });
     pruneBackgroundTaskRoutes();
@@ -187,19 +199,49 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     turn.state = "abandoned";
   }
 
-  function evict(): void {
-    while (turns.size > MAX_RETAINED_TURNS) {
-      const oldest = turns.keys().next();
-      if (oldest.done === true) return;
-      const stale = turns.get(oldest.value);
-      if (stale !== undefined) drop(stale);
-      turns.delete(oldest.value);
+  function isActiveBackground(turn: Turn): boolean {
+    return turn.progressPhase === "background-agents" && turn.backgroundProgress.hasActive;
+  }
+
+  function evictOldest(predicate: (turn: Turn) => boolean): boolean {
+    for (const [key, candidate] of turns) {
+      if (!predicate(candidate)) continue;
+      drop(candidate);
+      turns.delete(key);
+      return true;
     }
+    return false;
+  }
+
+  function evict(): void {
+    const inactive = (turn: Turn) => !isActiveBackground(turn);
+    while (Array.from(turns.values()).filter(isActiveBackground).length > MAX_ACTIVE_BACKGROUND_TURNS) {
+      if (!evictOldest(isActiveBackground)) break;
+    }
+    while (Array.from(turns.values()).filter(inactive).length > MAX_RETAINED_TURNS) {
+      if (!evictOldest(inactive)) break;
+    }
+  }
+
+  function visibleProgress(turn: Turn): { hasSteps: boolean; closed: boolean; text: string } {
+    if (turn.progressPhase === "background-agents") {
+      return {
+        hasSteps: turn.backgroundProgress.hasAgents,
+        closed: false,
+        text: turn.backgroundProgress.render()
+      };
+    }
+    return {
+      hasSteps: turn.progress.hasSteps,
+      closed: turn.progress.closed,
+      text: turn.progress.render()
+    };
   }
 
   async function flush(turn: Turn): Promise<void> {
     if (turn.state === "unknown" || turn.state === "abandoned") return;
-    if (!turn.progress.hasSteps) return;
+    const visible = visibleProgress(turn);
+    if (!visible.hasSteps) return;
 
     let config: RuntimeConfig;
     try {
@@ -210,7 +252,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       return;
     }
 
-    const text = turn.progress.render();
+    const text = visible.text;
     if (text === turn.lastSentText) return;
 
     // At most two transport calls: one edit, plus one replacement send if the bubble is gone.
@@ -268,8 +310,9 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   }
 
   function touch(turn: Turn): void {
+    const visible = visibleProgress(turn);
     if (
-      turn.progress.closed
+      visible.closed
       || turn.cancel !== null
       || turn.state === "unknown"
       || turn.state === "abandoned"
@@ -312,6 +355,23 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
     }
   }
 
+  async function beginBackgroundAgentDisclosure(turn: Turn): Promise<boolean> {
+    if (!turn.backgroundProgress.hasActive) return false;
+    if (turn.progressPhase === "background-agents") return true;
+    turn.progressPhase = "background-agents";
+    turn.cancel?.();
+    turn.cancel = null;
+    turn.bubbleMessageId = null;
+    turn.state = "none";
+    turn.replacementUsed = false;
+    turn.lastSentText = null;
+    turn.artifactTracker?.close();
+    turn.artifactTracker = null;
+    turn.artifacts = [];
+    await enqueue(turn);
+    return true;
+  }
+
   return {
     get size(): number {
       return turns.size;
@@ -325,6 +385,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         let chatId: string;
         let quoteMessageId: string;
         let background = false;
+        let backgroundDepth = 0;
         let routeToConsume: string | null = null;
         if (envelope !== null) {
           // Session-control commands already have their own ACK/list/permission/completion UX.
@@ -339,6 +400,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           chatId = route.chatId;
           quoteMessageId = route.quoteMessageId;
           background = true;
+          backgroundDepth = route.depth;
         }
         assertAuthorizedChat(deps.loadConfig(), chatId);
         if (routeToConsume !== null) backgroundTaskRoutes.delete(routeToConsume);
@@ -347,7 +409,9 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         // retain their own route and must not clobber or be clobbered by foreground work.
         if (!background) {
           for (const [existingKey, existing] of turns) {
-            if (existing.chatId === chatId && !existing.background) {
+            const activeBackground = existing.progressPhase === "background-agents"
+              && existing.backgroundProgress.hasActive;
+            if (existing.chatId === chatId && !existing.background && !activeBackground) {
               drop(existing);
               turns.delete(existingKey);
             }
@@ -362,12 +426,15 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           chatId,
           quoteMessageId,
           background,
+          backgroundDepth,
           progress: new TurnProgress({
             chatId,
             messageId: quoteMessageId,
             sessionId: input.session_id,
             promptId: input.prompt_id
           }),
+          backgroundProgress: new BackgroundProgress(),
+          progressPhase: "foreground",
           bubbleMessageId: null,
           state: "none",
           replacementUsed: false,
@@ -426,23 +493,61 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
-        if (!turn.background && BACKGROUND_ROUTE_TOOLS.has(input.tool_name)) {
+        if (BACKGROUND_ROUTE_TOOLS.has(input.tool_name)) {
           rememberBackgroundTaskRoute(input.session_id, input.tool_use_id, turn);
         }
-        if (turn.background) return;
         const display = buildProgressStep(input.tool_name, input, deps.mode, input.agent_id);
         if (display === null) return;
+        const backgroundChanged = input.agent_id === undefined
+          ? false
+          : turn.backgroundProgress.recordTool(input.agent_id, input.tool_use_id, display);
+        if (turn.progressPhase === "background-agents") {
+          if (backgroundChanged) touch(turn);
+          return;
+        }
+        if (turn.background) return;
         if (turn.progress.recordTool(input.tool_use_id, display)) touch(turn);
       } catch {
         // Never surface a disclosure failure to the agent.
       }
     },
 
+    recordSubagentStart(input: RecordSubagentStartInput): void {
+      try {
+        const turn = lookup(input.session_id, input.prompt_id);
+        if (turn === undefined || turn.backgroundDepth >= MAX_BACKGROUND_CHAIN_DEPTH) return;
+        if (turn.backgroundProgress.recordStart(input.agent_id, input.agent_type)
+          && turn.progressPhase === "background-agents") {
+          touch(turn);
+        }
+      } catch {
+        // Never surface a disclosure failure to the agent.
+      }
+    },
+
+    recordSubagentStop(input: RecordSubagentStopInput): void {
+      try {
+        const turn = lookup(input.session_id, input.prompt_id);
+        if (turn === undefined) return;
+        if (!turn.backgroundProgress.recordStop(input.agent_id)) return;
+        if (turn.progressPhase !== "background-agents") return;
+        turn.cancel?.();
+        turn.cancel = null;
+        void enqueue(turn).catch(() => undefined);
+      } catch {
+        // Never surface a disclosure failure to the agent.
+      }
+    },
 
     recordSuccess(input: RecordToolSuccessInput): void {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
+        const backgroundChanged = turn.backgroundProgress.recordSuccess(input.tool_use_id);
+        if (turn.progressPhase === "background-agents") {
+          if (backgroundChanged) touch(turn);
+          return;
+        }
         if (turn.progress.recordSuccess(input.tool_use_id)) touch(turn);
       } catch {
         // Never surface a disclosure failure to the agent.
@@ -453,6 +558,11 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
+        const backgroundChanged = turn.backgroundProgress.recordFailure(input.tool_use_id);
+        if (turn.progressPhase === "background-agents") {
+          if (backgroundChanged) touch(turn);
+          return;
+        }
         if (turn.progress.recordFailure(input.tool_use_id)) touch(turn);
       } catch {
         // Never surface a disclosure failure to the agent.
@@ -464,15 +574,17 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         const key = turnKey(input.session_id, input.prompt_id);
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return "finished";
+        if (turn.progressPhase === "background-agents") return "finished";
         await finalize(turn, input.hook_event_name);
         if (turns.get(key) !== turn) return "finished";
         if (input.hook_event_name === "StopFailure") return "finished";
+        if (turn.finalDeliveryAttempted) return "finished";
         if (
-          turn.finalDeliveryAttempted
-          || deps.deliverFinal === undefined
+          deps.deliverFinal === undefined
           || input.last_assistant_message === undefined
           || input.last_assistant_message.trim() === ""
         ) {
+          if (await beginBackgroundAgentDisclosure(turn)) return "finished";
           drop(turn);
           if (turns.get(key) === turn) turns.delete(key);
           return "finished";
@@ -527,6 +639,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             }
           }
         }
+        if (await beginBackgroundAgentDisclosure(turn)) return "finished";
         drop(turn);
         if (turns.get(key) === turn) turns.delete(key);
         return "finished";

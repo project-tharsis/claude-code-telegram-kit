@@ -5,7 +5,8 @@ import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
   parseDirectTelegramEnvelope,
-
+  RecordSubagentStartInputSchema,
+  RecordSubagentStopInputSchema,
   RecordToolFailureInputSchema,
   RecordToolInputSchema
 } from "../src/hook-contract.js";
@@ -143,6 +144,29 @@ describe("internal hook tool schemas", () => {
     expect(() => RecordToolInputSchema.parse({ ...base, hook_event_name: "PostToolUse" })).toThrow();
   });
 
+  test("subagent lifecycle accepts bounded identity only and rejects model prose", () => {
+    const start = {
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      agent_id: "agent-1",
+      agent_type: "code-review",
+      hook_event_name: "SubagentStart" as const
+    };
+    expect(RecordSubagentStartInputSchema.parse(start)).toEqual(start);
+    expect(RecordSubagentStopInputSchema.parse({
+      ...start,
+      hook_event_name: "SubagentStop"
+    }).agent_type).toBe("code-review");
+    expect(() => RecordSubagentStopInputSchema.parse({
+      ...start,
+      hook_event_name: "SubagentStop",
+      last_assistant_message: "private subagent output"
+    })).toThrow();
+    expect(() => RecordSubagentStartInputSchema.parse({
+      ...start,
+      agent_type: "reviewer with spaces"
+    })).toThrow();
+  });
 
   test("record_tool_failure keys on tool_use_id and its own event", () => {
     const base = {

@@ -3,6 +3,8 @@ import {
   BACKGROUND_TASK_ROUTE_TTL_MS,
   createTurnDisclosure,
   FINAL_DRAIN_TIMEOUT_MS,
+  MAX_ACTIVE_BACKGROUND_TURNS,
+  MAX_RETAINED_TURNS,
   PROGRESS_DEBOUNCE_MS
 } from "../src/progress-disclosure.js";
 import type { FinalDeliveryOutcome } from "../src/progress-disclosure.js";
@@ -47,6 +49,7 @@ function harness(options: {
   config?: RuntimeConfig;
   artifacts?: readonly ArtifactCandidate[];
   now?: () => number;
+  mode?: "safe" | "all" | "verbose";
 } = {}): Harness {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
@@ -58,7 +61,7 @@ function harness(options: {
 
   const disclosure = createTurnDisclosure({
     loadConfig: () => options.config ?? config,
-    mode: "safe",
+    mode: options.mode ?? "safe",
     startTyping: chatId => {
       typingStarts.push(chatId);
       return () => { typingStops.count += 1; };
@@ -135,6 +138,33 @@ function tool(h: Harness, toolUseId: string, toolName: string, agentId?: string)
   });
 }
 
+function agentStart(h: Harness, agentId = "agent-1", agentType = "code-review", promptId = PROMPT): void {
+  h.disclosure.recordSubagentStart({
+    session_id: SESSION,
+    prompt_id: promptId,
+    agent_id: agentId,
+    agent_type: agentType,
+    hook_event_name: "SubagentStart"
+  });
+}
+
+async function agentStop(
+  h: Harness,
+  agentId = "agent-1",
+  agentType = "code-review",
+  promptId = PROMPT
+): Promise<void> {
+  const result = h.disclosure.recordSubagentStop({
+    session_id: SESSION,
+    prompt_id: promptId,
+    agent_id: agentId,
+    agent_type: agentType,
+    hook_event_name: "SubagentStop"
+  });
+  expect(result).toBeUndefined();
+  await Promise.resolve();
+}
+
 async function finish(
   h: Harness,
   event: "Stop" | "StopFailure" = "Stop",
@@ -163,6 +193,84 @@ describe("turn disclosure lifecycle", () => {
     expect(h.finalDeliveries).toHaveLength(1);
   });
 
+  test("opens a separate background bubble after the parent final and updates it from agent events", async () => {
+    const h = harness({ mode: "verbose" });
+    bind(h);
+    tool(h, "toolu_background_1", "Skill");
+    agentStart(h);
+    await h.tick();
+
+    await finish(h, "Stop", "Code review kicked off.");
+    expect(h.finalDeliveries[0]?.content).toBe("Code review kicked off.");
+    expect(h.pending()).toBe(false);
+    expect(h.sends.at(-1)?.text).toBe([
+      "Background work · 1 running…",
+      "👥 code-review · Running"
+    ].join("\n"));
+
+    h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "agent-tool-1",
+      tool_name: "Edit",
+      agent_id: "agent-1",
+      file_path: "/repo/broker.test.ts",
+      hook_event_name: "PreToolUse"
+    });
+    await h.tick();
+    expect(h.edits.at(-1)?.text).toBe([
+      "Background work · 1 running…",
+      "👥 code-review · Running",
+      "└ 🔧 Editing broker.test.ts"
+    ].join("\n"));
+
+    await agentStop(h);
+    expect(h.edits.at(-1)?.text).toBe([
+      "Background work · Done",
+      "✅ code-review · Done",
+      "└ 🔧 Editing broker.test.ts"
+    ].join("\n"));
+  });
+
+  test("does not open background disclosure when the subagent stopped before the parent", async () => {
+    const h = harness();
+    bind(h);
+    tool(h, "toolu_foreground_agent", "Agent");
+    agentStart(h);
+    await agentStop(h);
+    await h.tick();
+    await finish(h, "Stop", "Done.");
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]?.text).toContain("Delegating");
+  });
+
+  test("a newer direct turn does not retire an active background disclosure", async () => {
+    const allowedChatIds = new Set(["123", ...Array.from({ length: 40 }, (_, index) => String(1_000 + index))]);
+    const h = harness({ mode: "verbose", config: { token: "1:tok", allowedChatIds } });
+    bind(h);
+    tool(h, "toolu_background_1", "Agent");
+    agentStart(h);
+    await h.tick();
+    await finish(h, "Stop", "Started.");
+
+    bind(h, '<channel source="telegram" chat_id="123" message_id="10">another task', "p2");
+    for (let index = 0; index < 40; index += 1) {
+      bind(h, `<channel source="telegram" chat_id="${1_000 + index}" message_id="10">noise`, `noise-${index}`);
+    }
+    expect(h.disclosure.size).toBeLessThanOrEqual(MAX_RETAINED_TURNS + MAX_ACTIVE_BACKGROUND_TURNS);
+    h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "agent-tool-2",
+      tool_name: "Read",
+      agent_id: "agent-1",
+      file_path: "/repo/router.ts",
+      hook_event_name: "PreToolUse"
+    });
+    await h.tick();
+    expect(h.edits.at(-1)?.text).toContain("Reading router.ts");
+  });
+
   test("routes a completed background task final through its original tool authority", async () => {
     const h = harness();
     bind(h);
@@ -186,6 +294,52 @@ describe("turn disclosure lifecycle", () => {
       session_id: SESSION, prompt_id: "p-background-replay", last_assistant_message: "duplicate", hook_event_name: "Stop"
     });
     expect(h.finalDeliveries).toHaveLength(2);
+  });
+
+  test("a trusted background completion turn may disclose and route a downstream subagent", async () => {
+    const h = harness();
+    bind(h);
+    tool(h, "toolu_parent", "Skill");
+    await finish(h, "Stop", "Initial review started.");
+
+    bind(h, "<task-notification><task-id>task-parent</task-id><tool-use-id>toolu_parent</tool-use-id><status>completed</status></task-notification>", "p-background");
+    h.disclosure.recordTool({
+      session_id: SESSION,
+      prompt_id: "p-background",
+      tool_use_id: "toolu_child",
+      tool_name: "Skill",
+      hook_event_name: "PreToolUse"
+    });
+    agentStart(h, "agent-child", "code-review", "p-background");
+    await h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: "p-background",
+      last_assistant_message: "Re-review started.",
+      hook_event_name: "Stop"
+    });
+    expect(h.finalDeliveries.at(-1)).toMatchObject({
+      content: "Re-review started.",
+      background: true
+    });
+    expect(h.sends.at(-1)?.text).toContain("code-review · Running");
+
+    bind(h, "<task-notification><task-id>task-child</task-id><tool-use-id>toolu_child</tool-use-id><status>completed</status></task-notification>", "p-child-complete");
+    h.disclosure.recordTool({ session_id: SESSION, prompt_id: "p-child-complete", tool_use_id: "toolu_overflow", tool_name: "Agent", hook_event_name: "PreToolUse" });
+    agentStart(h, "agent-overflow", "reviewer", "p-child-complete");
+    await h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: "p-child-complete",
+      last_assistant_message: "Re-review clean.",
+      hook_event_name: "Stop"
+    });
+    expect(h.finalDeliveries.at(-1)).toMatchObject({
+      content: "Re-review clean.",
+      background: true
+    });
+    const deliveriesAtLimit = h.finalDeliveries.length;
+    bind(h, "<task-notification><task-id>overflow</task-id><tool-use-id>toolu_overflow</tool-use-id><status>completed</status></task-notification>", "p-overflow");
+    await h.disclosure.finishTurn({ session_id: SESSION, prompt_id: "p-overflow", last_assistant_message: "must not route", hook_event_name: "Stop" });
+    expect(h.finalDeliveries).toHaveLength(deliveriesAtLimit);
   });
 
   test("expires background task routes instead of retaining authority forever", async () => {
@@ -235,6 +389,31 @@ describe("turn disclosure lifecycle", () => {
     await expect(first).resolves.toBe("finished");
     await expect(replay).resolves.toBe("finished");
     expect(h.finalDeliveries).toHaveLength(1);
+  });
+
+  test("only the final-delivery owner may open the background phase", async () => {
+    let release!: (outcome: FinalDeliveryOutcome) => void;
+    let markStarted!: () => void;
+    const pending = new Promise<FinalDeliveryOutcome>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const h = harness({
+      finalOutcome: () => {
+        markStarted();
+        return pending;
+      }
+    });
+    bind(h);
+    tool(h, "toolu_background_race", "Agent");
+    agentStart(h);
+    await h.tick();
+    const first = finish(h, "Stop", "Started.");
+    await started;
+    await finish(h, "Stop", "Started.");
+    expect(h.sends).toHaveLength(1);
+    release("delivered");
+    await first;
+    expect(h.sends).toHaveLength(2);
+    expect(h.sends[1]?.text).toContain("Background work");
   });
 
   test("a Stop awaiting progress drain cannot deliver after a newer turn supersedes it", async () => {

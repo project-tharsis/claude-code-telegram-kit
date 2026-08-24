@@ -45,6 +45,13 @@ describe("Telegram progress HTML", () => {
       .toBe("<b>✓ Cogitated</b>\n\n📖 Reading");
   });
 
+  test("marks background lifecycle headers as active and complete", () => {
+    expect(formatProgressHtml("Background work · 1 running…\n👥 reviewer · Running"))
+      .toStartWith("<b>✦ Background work · 1 running…</b>");
+    expect(formatProgressHtml("Background work · Done\n✅ reviewer · Done"))
+      .toStartWith("<b>✓ Background work · Done</b>");
+  });
+
   test("treats a command that equals a closing fence as content", () => {
     expect(formatProgressHtml("Tinkering…\n💻 terminal\n```shell\n```\n```"))
       .toContain("<pre><code class=\"language-shell\">```</code></pre>");

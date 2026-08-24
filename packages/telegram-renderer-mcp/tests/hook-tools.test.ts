@@ -17,6 +17,12 @@ function recorder() {
     recordTool: (input: unknown) => {
       calls.push({ kind: "tool", input });
     },
+    recordSubagentStart: (input: unknown) => {
+      calls.push({ kind: "agent-start", input });
+    },
+    recordSubagentStop: (input: unknown) => {
+      calls.push({ kind: "agent-stop", input });
+    },
 
     recordSuccess: (input: unknown) => {
       calls.push({ kind: "success", input });
@@ -35,7 +41,8 @@ function recorder() {
 describe("internal hook tool declarations", () => {
   test("advertise only the internal hook tools", () => {
     expect(HOOK_TOOL_NAMES).toEqual([
-      "bind_turn", "record_tool", "record_tool_success", "record_tool_failure", "finish_turn"
+      "bind_turn", "record_tool", "record_tool_success", "record_tool_failure",
+      "record_subagent_start", "record_subagent_stop", "finish_turn"
     ]);
     expect(HOOK_TOOL_NAMES).not.toContain("send_reply");
 
@@ -95,7 +102,8 @@ describe("internal hook tool handler", () => {
     const handle = createHookToolHandler({
       bindTurn: () => undefined,
       recordTool: () => undefined,
-
+      recordSubagentStart: () => undefined,
+      recordSubagentStop: () => undefined,
       recordSuccess: () => undefined,
       recordFailure: () => undefined,
       finishTurn: async () => "retry"
@@ -143,13 +151,29 @@ describe("internal hook tool handler", () => {
       tool_use_id: "t1",
       hook_event_name: "PostToolUseFailure"
     });
+    await handle("record_subagent_start", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      agent_id: "agent-1",
+      agent_type: "code-review",
+      hook_event_name: "SubagentStart"
+    });
+    await handle("record_subagent_stop", {
+      session_id: SESSION,
+      prompt_id: "p1",
+      agent_id: "agent-1",
+      agent_type: "code-review",
+      hook_event_name: "SubagentStop"
+    });
     await handle("finish_turn", {
       session_id: SESSION,
       prompt_id: "p1",
       last_assistant_message: "",
       hook_event_name: "Stop"
     });
-    expect(calls.map(call => call.kind)).toEqual(["bind", "tool", "success", "failure", "finish"]);
+    expect(calls.map(call => call.kind)).toEqual([
+      "bind", "tool", "success", "failure", "agent-start", "agent-stop", "finish"
+    ]);
   });
 
   test("returns a non-blocking empty receipt so no hook output enters the transcript", async () => {
@@ -284,7 +308,12 @@ describe("internal hook tool handler", () => {
       recordTool: () => {
         throw new Error("boom");
       },
-
+      recordSubagentStart: () => {
+        throw new Error("boom");
+      },
+      recordSubagentStop: () => {
+        throw new Error("boom");
+      },
       recordSuccess: () => {
         throw new Error("boom");
       },
