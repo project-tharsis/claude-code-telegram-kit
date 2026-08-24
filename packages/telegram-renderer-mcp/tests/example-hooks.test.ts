@@ -130,7 +130,7 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("PostToolUse")[1]!.input).toMatchObject({
       tool_name: "TaskStop",
       task_status: "killed",
-      task_id: "${tool_response.task_id}"
+      task_id: "${tool_input.task_id}"
     });
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
     expect(toolsFor("SubagentStart").map(hook => hook.tool)).toEqual(["record_subagent_start"]);
