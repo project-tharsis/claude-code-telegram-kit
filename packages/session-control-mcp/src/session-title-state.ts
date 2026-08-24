@@ -4,7 +4,6 @@ import {
   fstatSync,
   fsyncSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readSync,
   renameSync,
@@ -14,6 +13,7 @@ import {
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { openDirectoryFd } from "@project-tharsis/claude-code-telegram-shared";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_BYTES = 8 * 1024;
@@ -95,41 +95,7 @@ function expectedDirectory(options: SessionTitleStateOptions): { path: string; e
 }
 
 function openDirectory(path: string, expectedUid: number | undefined): number {
-  const absolute = resolve(path);
-  const parts = absolute.split("/").filter(Boolean);
-  let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try {
-    for (const part of parts) {
-      const child = `/proc/self/fd/${fd}/${part}`;
-      let before;
-      try {
-        before = lstatSync(child);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        mkdirSync(child, DIRECTORY_MODE);
-        before = lstatSync(child);
-      }
-      if (!before.isDirectory() || before.isSymbolicLink()) {
-        throw new Error("state directory is not a real directory");
-      }
-      const next = openSync(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      const opened = fstatSync(next);
-      if (!opened.isDirectory() || opened.ino !== before.ino || opened.dev !== before.dev) {
-        closeSync(next);
-        throw new Error("state directory changed");
-      }
-      closeSync(fd);
-      fd = next;
-    }
-    const final = fstatSync(fd);
-    if ((final.mode & 0o7777) !== DIRECTORY_MODE || (expectedUid !== undefined && final.uid !== expectedUid)) {
-      throw new Error("state directory validation failed");
-    }
-    return fd;
-  } catch (error) {
-    closeSync(fd);
-    throw error;
-  }
+  return openDirectoryFd(path, expectedUid, DIRECTORY_MODE, "state directory");
 }
 
 function statePath(directory: string, sessionId: string): string {

@@ -7,11 +7,11 @@ import { readFileSync } from "fs";
 // packages/shared/src/credential-patterns.ts
 var CREDENTIAL_PATTERN_SOURCES = [
   { source: "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----", flags: "" },
+  { source: "\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}", flags: "i" },
   {
     source: `(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)["']?\\s*[:=]\\s*["']?[^\\s,;"']+`,
     flags: "i"
   },
-  { source: "\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}", flags: "i" },
   { source: "\\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\\b", flags: "" },
   { source: "\\b[A-Fa-f0-9]{32,}\\b", flags: "" },
   { source: "\\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\\b", flags: "" },
@@ -22,6 +22,137 @@ var CREDENTIAL_PATTERN_SOURCES = [
 ];
 function containsCredentialShape(value) {
   return CREDENTIAL_PATTERN_SOURCES.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
+}
+// packages/shared/src/fs-safety.ts
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from "fs";
+import { resolve } from "path";
+function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "directory") {
+  const absolute = resolve(path);
+  const parts = absolute.split("/").filter(Boolean);
+  let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    for (const part of parts) {
+      const child = `/proc/self/fd/${fd}/${part}`;
+      let before;
+      try {
+        before = lstatSync(child);
+      } catch (error) {
+        if (error.code !== "ENOENT")
+          throw error;
+        mkdirSync(child, directoryMode);
+        before = lstatSync(child);
+      }
+      if (!before.isDirectory() || before.isSymbolicLink()) {
+        throw new Error(`${label} is not a real directory`);
+      }
+      const next = openSync(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      const opened = fstatSync(next);
+      if (!opened.isDirectory() || opened.ino !== before.ino || opened.dev !== before.dev) {
+        closeSync(next);
+        throw new Error(`${label} changed during open`);
+      }
+      closeSync(fd);
+      fd = next;
+    }
+    const final = fstatSync(fd);
+    if ((final.mode & 4095) !== directoryMode || expectedUid !== undefined && final.uid !== expectedUid) {
+      throw new Error(`${label} validation failed`);
+    }
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+// packages/shared/src/isolated-cli-runner.ts
+var ISOLATED_CLI_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LC_ALL",
+  "TMPDIR",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL"
+];
+function isolatedCliEnvironment() {
+  const env = {};
+  for (const key of ISOLATED_CLI_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (typeof value === "string")
+      env[key] = value;
+  }
+  return env;
+}
+function concat(chunks) {
+  const result = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+async function readBoundedStream(stream, maxBytes) {
+  if (!stream)
+    return "";
+  const reader = stream.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (size <= maxBytes) {
+      const part = await reader.read();
+      if (part.done)
+        break;
+      const remaining = maxBytes + 1 - size;
+      const chunk = part.value.slice(0, remaining);
+      chunks.push(chunk);
+      size += chunk.byteLength;
+      if (part.value.byteLength > remaining)
+        break;
+    }
+  } finally {
+    await reader.cancel().catch(() => {
+      return;
+    });
+  }
+  return new TextDecoder().decode(concat(chunks)).slice(0, maxBytes);
+}
+
+class IsolatedCliTimeoutError extends Error {
+  constructor() {
+    super("isolated CLI process timed out");
+    this.name = "IsolatedCliTimeoutError";
+  }
+}
+async function runIsolatedCli(argv, options) {
+  const child = Bun.spawn(argv, { cwd: options.cwd ?? "/tmp", env: isolatedCliEnvironment(), stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, options.timeoutMs);
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      readBoundedStream(child.stdout, options.maxOutputBytes),
+      readBoundedStream(child.stderr, options.maxOutputBytes)
+    ]);
+    if (timedOut)
+      throw new IsolatedCliTimeoutError;
+    return { exitCode, stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 // packages/shared/src/memory-review-proposal.ts
 var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
@@ -125,13 +256,12 @@ var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
 });
 // packages/shared/src/memory-review-receipt.ts
 import {
-  closeSync,
-  constants,
-  fstatSync,
+  closeSync as closeSync2,
+  constants as constants2,
+  fstatSync as fstatSync2,
   fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
+  lstatSync as lstatSync2,
+  openSync as openSync2,
   readdirSync,
   readSync,
   renameSync,
@@ -140,7 +270,7 @@ import {
 } from "fs";
 import { createHash as nodeCreateHash } from "crypto";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { join, resolve as resolve2 } from "path";
 var SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var PROMPT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 var SHA256_RE = /^[0-9a-f]{64}$/;
@@ -161,45 +291,10 @@ function uid() {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 function openDirectory(path, expectedUid) {
-  const absolute = resolve(path);
-  const parts = absolute.split("/").filter(Boolean);
-  let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try {
-    for (const part of parts) {
-      const child = `/proc/self/fd/${fd}/${part}`;
-      let before;
-      try {
-        before = lstatSync(child);
-      } catch (error) {
-        if (error.code !== "ENOENT")
-          throw error;
-        mkdirSync(child, DIRECTORY_MODE);
-        before = lstatSync(child);
-      }
-      if (!before.isDirectory() || before.isSymbolicLink()) {
-        throw new Error("receipt directory is not a real directory");
-      }
-      const next = openSync(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      const opened = fstatSync(next);
-      if (!opened.isDirectory() || opened.ino !== before.ino || opened.dev !== before.dev) {
-        closeSync(next);
-        throw new Error("receipt directory changed during open");
-      }
-      closeSync(fd);
-      fd = next;
-    }
-    const final = fstatSync(fd);
-    if ((final.mode & 4095) !== DIRECTORY_MODE || expectedUid !== undefined && final.uid !== expectedUid) {
-      throw new Error("receipt directory validation failed");
-    }
-    return fd;
-  } catch (error) {
-    closeSync(fd);
-    throw error;
-  }
+  return openDirectoryFd(path, expectedUid, DIRECTORY_MODE, "receipt directory");
 }
 function resolveDirectory(options) {
-  return { path: resolve(options.directory ?? defaultMemoryReviewReceiptDirectory()), expectedUid: options.expectedUid ?? uid() };
+  return { path: resolve2(options.directory ?? defaultMemoryReviewReceiptDirectory()), expectedUid: options.expectedUid ?? uid() };
 }
 function withDirectory(options, action) {
   const { path, expectedUid } = resolveDirectory(options);
@@ -207,7 +302,7 @@ function withDirectory(options, action) {
   try {
     return action(dirfd, expectedUid);
   } finally {
-    closeSync(dirfd);
+    closeSync2(dirfd);
   }
 }
 function assertBounds(receipt) {
@@ -275,7 +370,7 @@ function readLeaf(dirfd, name, expectedUid) {
   const path = join(`/proc/self/fd/${dirfd}`, name);
   let before;
   try {
-    before = lstatSync(path);
+    before = lstatSync2(path);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -284,9 +379,9 @@ function readLeaf(dirfd, name, expectedUid) {
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 4095) !== FILE_MODE || expectedUid !== undefined && before.uid !== expectedUid || before.size > MAX_BYTES) {
     throw new Error("unsafe receipt file");
   }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW);
   try {
-    const opened = fstatSync(fd);
+    const opened = fstatSync2(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE || expectedUid !== undefined && opened.uid !== expectedUid || opened.size > MAX_BYTES) {
       throw new Error("receipt file changed during read");
     }
@@ -300,7 +395,7 @@ function readLeaf(dirfd, name, expectedUid) {
     }
     return validateMemoryReviewReceiptShape(JSON.parse(buffer.toString("utf8")));
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function readMemoryReviewReceipt(sessionId, promptId, options = {}) {
@@ -319,16 +414,16 @@ function transitionMemoryReviewReceipt(sessionId, promptId, status, options = {}
     const tempName = `.${key}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
     const temp = join(anchoredDirectory, tempName);
     const target = join(anchoredDirectory, name);
-    const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, FILE_MODE);
+    const fd = openSync2(temp, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, FILE_MODE);
     try {
       writeAll(fd, canonicalBytes(next));
       fsyncSync(fd);
-      closeSync(fd);
+      closeSync2(fd);
       renameSync(temp, target);
       fsyncSync(dirfd);
     } catch (error) {
       try {
-        closeSync(fd);
+        closeSync2(fd);
       } catch {}
       try {
         unlinkSync(temp);
@@ -380,82 +475,13 @@ function buildPrompt(snapshot) {
   ].join(`
 `);
 }
-async function readBounded(stream) {
-  if (!stream)
-    return "";
-  const reader = stream.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (size <= MAX_OUTPUT_BYTES) {
-      const part = await reader.read();
-      if (part.done)
-        break;
-      const remaining = MAX_OUTPUT_BYTES + 1 - size;
-      const chunk = part.value.slice(0, remaining);
-      chunks.push(chunk);
-      size += chunk.byteLength;
-      if (part.value.byteLength > remaining)
-        break;
-    }
-  } finally {
-    await reader.cancel().catch(() => {
-      return;
-    });
-  }
-  const merged = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(merged).slice(0, MAX_OUTPUT_BYTES);
-}
-function reviewEnvironment() {
-  const env = {};
-  for (const key of [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "LC_ALL",
-    "TMPDIR",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL"
-  ]) {
-    const value = process.env[key];
-    if (typeof value === "string")
-      env[key] = value;
-  }
-  return env;
-}
 async function defaultRunner(argv, options) {
-  const child = Bun.spawn(argv, { cwd: "/tmp", env: reviewEnvironment(), stdout: "pipe", stderr: "pipe" });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill();
-  }, options.timeoutMs);
   try {
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      readBounded(child.stdout),
-      readBounded(child.stderr)
-    ]);
-    if (timedOut)
+    return await runIsolatedCli(argv, { timeoutMs: options.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES });
+  } catch (error) {
+    if (error instanceof IsolatedCliTimeoutError)
       throw new MemoryReviewGenerationError("generate", "timeout", true);
-    return { exitCode, stdout, stderr };
-  } finally {
-    clearTimeout(timer);
+    throw error;
   }
 }
 function parseProposal(stdout) {

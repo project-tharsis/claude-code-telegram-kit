@@ -106,6 +106,19 @@ describe("bounded memory review snapshot builder (handoff doc A4)", () => {
     expect(snapshot.assistantFinal).not.toContain("abcdefghij1234567890zzzz");
   });
 
+  test("never exceeds the per-field char cap even when a credential match straddles the truncation boundary", () => {
+    // "token=x" is a 7-char credential-shaped match (shorter than the 10-char "[redacted]"
+    // marker it gets replaced with); placing it exactly at the 1200-char field boundary means
+    // a naive truncate-then-redact ordering would let redaction grow the final string past
+    // maxChars. Redact-then-truncate must clip the already-redacted text back down to exactly
+    // the cap.
+    const field = "a".repeat(1193) + "token=x";
+    expect(field.length).toBe(1_200);
+    const snapshot = buildMemoryReviewSnapshot({ ...baseInput(), userMessage: field });
+    expect(snapshot.userMessage.length).toBeLessThanOrEqual(1_200);
+    expect(snapshot.userMessage).not.toContain("token=x");
+  });
+
   test("rejects an invalid release SHA rather than passing it through", () => {
     const snapshot = buildMemoryReviewSnapshot({ ...baseInput(), releaseSha: "not-a-sha; rm -rf" });
     expect(snapshot.releaseSha).toBe("0".repeat(40));

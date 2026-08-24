@@ -1,4 +1,10 @@
-import { MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA, parseMemoryReviewProposal, type MemoryReviewProposal } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  IsolatedCliTimeoutError,
+  MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA,
+  parseMemoryReviewProposal,
+  runIsolatedCli,
+  type MemoryReviewProposal
+} from "@project-tharsis/claude-code-telegram-shared";
 import type { MemoryReviewSnapshot } from "./memory-review-snapshot.js";
 
 export interface MemoryReviewCommandResult {
@@ -55,58 +61,16 @@ function buildPrompt(snapshot: MemoryReviewSnapshot): string {
   ].join("\n");
 }
 
-async function readBounded(stream: ReadableStream<Uint8Array> | null): Promise<string> {
-  if (!stream) return "";
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (size <= MAX_OUTPUT_BYTES) {
-      const part = await reader.read();
-      if (part.done) break;
-      const remaining = MAX_OUTPUT_BYTES + 1 - size;
-      const chunk = part.value.slice(0, remaining);
-      chunks.push(chunk);
-      size += chunk.byteLength;
-      if (part.value.byteLength > remaining) break;
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  const merged = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
-  let offset = 0;
-  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(merged).slice(0, MAX_OUTPUT_BYTES);
-}
-
-function reviewEnvironment(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of [
-    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-    "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"
-  ]) {
-    const value = process.env[key];
-    if (typeof value === "string") env[key] = value;
-  }
-  return env;
-}
-
+// The spawn/timeout/env-allowlist/output-bounding logic itself lives in
+// @project-tharsis/claude-code-telegram-shared (isolated-cli-runner.ts) so this reviewer's
+// isolated-execution security boundary can never independently drift from the session-title
+// generator's identical one.
 async function defaultRunner(argv: string[], options: { timeoutMs: number }): Promise<MemoryReviewCommandResult> {
-  const child = Bun.spawn(argv, { cwd: "/tmp", env: reviewEnvironment(), stdout: "pipe", stderr: "pipe" });
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; child.kill(); }, options.timeoutMs);
   try {
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      readBounded(child.stdout),
-      readBounded(child.stderr)
-    ]);
-    if (timedOut) throw new MemoryReviewGenerationError("generate", "timeout", true);
-    return { exitCode, stdout, stderr };
-  } finally {
-    clearTimeout(timer);
+    return await runIsolatedCli(argv, { timeoutMs: options.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES });
+  } catch (error) {
+    if (error instanceof IsolatedCliTimeoutError) throw new MemoryReviewGenerationError("generate", "timeout", true);
+    throw error;
   }
 }
 

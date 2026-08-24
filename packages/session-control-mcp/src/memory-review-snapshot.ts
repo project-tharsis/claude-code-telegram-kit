@@ -31,7 +31,13 @@ function redact(value: string): string {
 
 function bounded(value: unknown, maxChars = MAX_FIELD_CHARS): string {
   const text = typeof value === "string" ? value : "";
-  return redact(Array.from(text).slice(0, maxChars).join(""));
+  // Redact first, then truncate: a credential-shaped match that straddles the maxChars
+  // boundary can expand under redaction (the raw matched text can be shorter than the
+  // "[redacted]" marker), so truncating before redacting can let the final string exceed
+  // maxChars. Truncating again after redaction keeps the output truly bounded and never cuts
+  // a redaction marker itself in half, since the truncation is applied to the already-final
+  // redacted text.
+  return Array.from(redact(text)).slice(0, maxChars).join("");
 }
 
 export type MemoryReviewToolClassification = "success" | "failure";

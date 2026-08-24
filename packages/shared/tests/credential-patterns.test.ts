@@ -29,6 +29,13 @@ describe("shared credential pattern source", () => {
     expect(containsCredentialShape(value)).toBe(true);
   });
 
+  test("redacts the actual bearer token, not just the literal word Bearer, in an Authorization header", () => {
+    const value = "Authorization: Bearer abcdef1234567890secret";
+    const redacted = redactCredentials(value);
+    expect(redacted).not.toContain("abcdef1234567890secret");
+    expect(containsCredentialShape(value)).toBe(true);
+  });
+
   test("leaves ordinary text untouched", () => {
     const value = "please remember I prefer concise answers";
     expect(redactCredentials(value)).toBe(value);

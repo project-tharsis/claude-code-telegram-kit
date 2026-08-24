@@ -195,7 +195,64 @@ class ControlBrokerTests(unittest.TestCase):
             pending_argv = pending.calls[0][0]
             self.assertIn("claude-session-reset*.service", pending_argv)
             self.assertIn("claude-session-title*.service", pending_argv)
+            # The default (interactive) pending-job query must never fold memory-review units
+            # into the same budget -- see test_memory_review_jobs_have_their_own_separate_quota
+            # and test_memory_review_pressure_never_starves_interactive_commands below.
+            self.assertNotIn("claude-session-memory-review*.service", pending_argv)
+
+    def test_memory_review_jobs_have_their_own_separate_quota(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "rate.json"
+            pending = Runner(stdout="a\nb\n")
+            with self.assertRaisesRegex(RuntimeError, "memory review"):
+                broker._reserve_mutation(pending, action="memory-review", state_path=state, now=100.0, expected_uid=os.getuid())
+            pending_argv = pending.calls[0][0]
             self.assertIn("claude-session-memory-review*.service", pending_argv)
+            self.assertNotIn("claude-session-reset*.service", pending_argv)
+            self.assertNotIn("claude-session-title*.service", pending_argv)
+
+    def test_memory_review_pressure_never_starves_interactive_commands(self):
+        # A burst of pending automatic memory-review jobs (well past MAX_PENDING_JOBS) must
+        # never cause a concurrent, user-initiated reset/resume/model/title request to be
+        # rejected: the two quotas are partitioned, not shared from one pool. Unlike the plain
+        # Runner (which ignores argv and always returns its fixed stdout), this fake actually
+        # filters by the unit-glob patterns systemctl was asked for, so it can distinguish "the
+        # interactive query saw memory-review units" from "it correctly never asked for them."
+        units = [f"claude-session-memory-review-{i}.service" for i in range(10)]
+
+        class FilteringRunner(Runner):
+            def __call__(self, argv: list[str], timeout: float):
+                self.calls.append((argv, timeout))
+                patterns = argv[argv.index("--plain") + 1:]
+                matched = [unit for unit in units for pattern in patterns if Path(unit).match(pattern)]
+                return subprocess.CompletedProcess(argv, 0, "\n".join(matched) + ("\n" if matched else ""), "")
+
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "rate.json"
+            run = FilteringRunner()
+            broker._reserve_mutation(run, action="reset", state_path=state, now=100.0, expected_uid=os.getuid())
+            pending_argv = run.calls[0][0]
+            self.assertNotIn("claude-session-memory-review*.service", pending_argv)
+
+    def test_process_request_threads_the_action_into_the_default_reserve_end_to_end(self):
+        # process_request's default (reserve=None) path must bind the actual request action into
+        # _reserve_mutation, not always fall back to the interactive quota. A memory-review
+        # request should be counted and rejected against the memory-review quota even though a
+        # burst of pending memory-review units would never trip the interactive one.
+        heavy = Runner(stdout="\n".join(f"claude-session-memory-review-{i}.service" for i in range(10)) + "\n")
+        with self.assertRaisesRegex(RuntimeError, "memory review"):
+            broker.process_request(
+                json.dumps({"protocol": broker.BROKER_PROTOCOL, "action": "memory-review", "session_id": SESSION, "prompt_id": "prompt-1"}).encode(),
+                os.getuid(),
+                config_path=Path("/etc/fixed-reset.json"),
+                helper=Path("/usr/local/sbin/fixed-helper"),
+                run=heavy,
+                service_uid=os.getuid(),
+                verify_files=False,
+            )
+        pending_argv = heavy.calls[0][0]
+        self.assertIn("claude-session-memory-review*.service", pending_argv)
+        self.assertNotIn("claude-session-reset*.service", pending_argv)
 
     def test_rejects_root_as_the_service_user(self):
         with tempfile.TemporaryDirectory() as td:

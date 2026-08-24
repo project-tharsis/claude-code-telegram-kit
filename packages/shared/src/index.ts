@@ -1,4 +1,6 @@
 export * from "./credential-patterns.js";
+export * from "./fs-safety.js";
+export * from "./isolated-cli-runner.js";
 export * from "./memory-review-proposal.js";
 export * from "./memory-review-receipt.js";
 export * from "./memory-review-trigger.js";

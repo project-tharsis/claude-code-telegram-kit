@@ -23,7 +23,6 @@ import {
   constants,
   fstatSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readSync,
   renameSync,
@@ -31,7 +30,7 @@ import {
   fsyncSync,
   unlinkSync
 } from "node:fs";
-import { sha256Hex } from "@project-tharsis/claude-code-telegram-shared";
+import { openDirectoryFd, sha256Hex } from "@project-tharsis/claude-code-telegram-shared";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -59,45 +58,12 @@ function uid(): number | undefined {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 
-// Identical directory-anchoring discipline to memory-review-receipt.ts's openDirectory: every
-// path segment is opened through /proc/self/fd/<fd>/<segment> so a symlink swap mid-walk can
-// never redirect a later segment outside the intended tree.
+// Identical directory-anchoring discipline to memory-review-receipt.ts's openDirectory, factored
+// into the shared openDirectoryFd helper so all three call sites can never independently drift:
+// every path segment is opened through /proc/self/fd/<fd>/<segment> so a symlink swap mid-walk
+// can never redirect a later segment outside the intended tree.
 function openDirectory(path: string, expectedUid: number | undefined): number {
-  const absolute = resolve(path);
-  const parts = absolute.split("/").filter(Boolean);
-  let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try {
-    for (const part of parts) {
-      const child = `/proc/self/fd/${fd}/${part}`;
-      let before;
-      try {
-        before = lstatSync(child);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        mkdirSync(child, DIRECTORY_MODE);
-        before = lstatSync(child);
-      }
-      if (!before.isDirectory() || before.isSymbolicLink()) {
-        throw new Error("snapshot directory is not a real directory");
-      }
-      const next = openSync(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      const opened = fstatSync(next);
-      if (!opened.isDirectory() || opened.ino !== before.ino || opened.dev !== before.dev) {
-        closeSync(next);
-        throw new Error("snapshot directory changed during open");
-      }
-      closeSync(fd);
-      fd = next;
-    }
-    const final = fstatSync(fd);
-    if ((final.mode & 0o7777) !== DIRECTORY_MODE || (expectedUid !== undefined && final.uid !== expectedUid)) {
-      throw new Error("snapshot directory validation failed");
-    }
-    return fd;
-  } catch (error) {
-    closeSync(fd);
-    throw error;
-  }
+  return openDirectoryFd(path, expectedUid, DIRECTORY_MODE, "snapshot directory");
 }
 
 function resolveDirectory(options: MemoryReviewSnapshotStoreOptions): { path: string; expectedUid: number | undefined } {

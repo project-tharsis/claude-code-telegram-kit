@@ -162,6 +162,31 @@ describe("memory review Stop-hook enqueue seam", () => {
     expect(scheduled).toBe(false);
   });
 
+  test("transitions the receipt to failed (not left stuck queued) when the snapshot write throws after receipt creation", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    await expect(handleMemoryReviewCommand(basePayload(), baseOptions({
+      writeSnapshot: () => { throw new Error("disk full"); },
+      schedule: async () => { throw new Error("schedule should never be reached"); }
+    }))).rejects.toThrow("disk full");
+    const receipt = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
+    expect(receipt?.status).toBe("failed");
+  });
+
+  test("transitions the receipt to failed (not left stuck queued) when the broker schedule call throws after the snapshot is written", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    await expect(handleMemoryReviewCommand(basePayload(), baseOptions({
+      schedule: async () => { throw new Error("broker unreachable"); }
+    }))).rejects.toThrow("broker unreachable");
+    const receipt = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
+    expect(receipt?.status).toBe("failed");
+  });
+
+  test("rejects a prompt_id outside the receipt store's strict charset at the earliest validation point (fails fast, not deep)", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    await expect(handleMemoryReviewCommand(basePayload({ prompt_id: "prompt with spaces" }), baseOptions()))
+      .rejects.toThrow("invalid prompt identity");
+  });
+
   test("rejects a transcript path outside the configured sessions directory", async () => {
     process.env.MEMORY_REVIEW_ENABLED = "true";
     await expect(handleMemoryReviewCommand(basePayload({ transcript_path: "/tmp/evil/" + SESSION_ID + ".jsonl" }), baseOptions()))

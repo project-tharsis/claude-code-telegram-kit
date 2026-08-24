@@ -5,8 +5,10 @@ import {
   createMemoryReviewReceipt,
   evaluateMemoryReviewTrigger,
   loadMemoryReviewPolicy,
+  PROMPT_ID_RE,
   readMemoryReviewReceipt,
   sha256Hex,
+  transitionMemoryReviewReceipt,
   type MemoryReviewTriggerInput
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createSessionScheduler } from "./runtime.js";
@@ -64,6 +66,7 @@ export interface MemoryReviewCommandOptions {
   readReceipt?: (sessionId: string, promptId: string) => ReturnType<typeof readMemoryReviewReceipt>;
   createReceipt?: typeof createMemoryReviewReceipt;
   writeSnapshot?: typeof writeMemoryReviewSnapshot;
+  transitionReceipt?: typeof transitionMemoryReviewReceipt;
 }
 
 function canonicalDirectory(path: string | undefined, label: string): string {
@@ -99,7 +102,12 @@ export async function handleMemoryReviewCommand(
   if (typeof payload.session_id !== "string" || !SESSION_UUID.test(payload.session_id)) {
     throw new Error("invalid session identity");
   }
-  if (typeof payload.prompt_id !== "string" || payload.prompt_id.length < 1 || payload.prompt_id.length > 128) {
+  // Validated against the exact same PROMPT_ID_RE createMemoryReviewReceipt's assertBounds
+  // enforces deeper in the call stack, so a malformed prompt_id (outside the receipt's
+  // charset but within the old shallow length-only check, e.g. containing whitespace) fails
+  // fast and visibly here instead of failing deep inside receipt creation, where main()'s
+  // catch-all would otherwise swallow it silently.
+  if (typeof payload.prompt_id !== "string" || !PROMPT_ID_RE.test(payload.prompt_id)) {
     throw new Error("invalid prompt identity");
   }
   const projectSessionsDir = canonicalDirectory(options.projectSessionsDir ?? process.env.CLAUDE_PROJECT_SESSIONS_DIR, "configured sessions directory");
@@ -148,22 +156,43 @@ export async function handleMemoryReviewCommand(
   // (session_id, prompt_id) the receipt uses; root's memory_review_session() reads those exact
   // bytes and pipes them, unparsed, to the isolated worker's stdin (see memory-review-worker.ts's
   // readSnapshotFromStdin). Root never builds or interprets a snapshot itself.
-  const snapshot = buildMemoryReviewSnapshot({
-    userMessage: options.userMessage ?? "",
-    assistantFinal: assistantText,
-    currentMemoryIndex: options.currentMemoryIndex ?? "",
-    releaseSha,
-    packageVersion: PACKAGE_VERSION
-  });
-  const write = options.writeSnapshot ?? writeMemoryReviewSnapshot;
-  write(
-    payload.session_id,
-    payload.prompt_id,
-    Buffer.from(serializeMemoryReviewSnapshot(snapshot), "utf8"),
-    options.snapshotDirectory === undefined ? {} : { directory: options.snapshotDirectory }
-  );
+  //
+  // From here on, the receipt already exists as "queued". If either the snapshot write or the
+  // broker schedule call throws, no worker will ever be scheduled for it, so it must not be
+  // left "queued" -- indistinguishable from a review that is genuinely in flight, with zero
+  // operator visibility, until TTL reclaims it. Transition it to the same terminal "failed"
+  // status the worker's own retry-semantics distinction uses for a non-retryable outcome, so
+  // the failure is immediately visible instead of silently orphaned.
+  try {
+    const snapshot = buildMemoryReviewSnapshot({
+      userMessage: options.userMessage ?? "",
+      assistantFinal: assistantText,
+      currentMemoryIndex: options.currentMemoryIndex ?? "",
+      releaseSha,
+      packageVersion: PACKAGE_VERSION
+    });
+    const write = options.writeSnapshot ?? writeMemoryReviewSnapshot;
+    write(
+      payload.session_id,
+      payload.prompt_id,
+      Buffer.from(serializeMemoryReviewSnapshot(snapshot), "utf8"),
+      options.snapshotDirectory === undefined ? {} : { directory: options.snapshotDirectory }
+    );
 
-  await (options.schedule ?? ((sessionId, promptId) => createSessionScheduler().scheduleMemoryReview(sessionId, promptId)))(payload.session_id, payload.prompt_id);
+    await (options.schedule ?? ((sessionId, promptId) => createSessionScheduler().scheduleMemoryReview(sessionId, promptId)))(payload.session_id, payload.prompt_id);
+  } catch (error) {
+    try {
+      (options.transitionReceipt ?? transitionMemoryReviewReceipt)(
+        payload.session_id,
+        payload.prompt_id,
+        "failed",
+        options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory }
+      );
+    } catch {
+      // Best-effort: the original error below is what matters and must not be masked.
+    }
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {

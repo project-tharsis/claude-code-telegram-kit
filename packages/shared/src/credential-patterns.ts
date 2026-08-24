@@ -17,11 +17,16 @@ interface CredentialPatternSource {
 
 const CREDENTIAL_PATTERN_SOURCES: CredentialPatternSource[] = [
   { source: "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----", flags: "" },
+  // The bearer-token pattern must run before the generic credential-keyword pattern below: the
+  // generic pattern's value match stops at the first whitespace, so on
+  // "Authorization: Bearer <token>" it would otherwise consume only the literal word "Bearer"
+  // (replacing it with the marker) and leave the actual token untouched -- and, worse, now
+  // unmatchable by this pattern since the literal word "bearer" it requires is already gone.
+  { source: "\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}", flags: "i" },
   {
     source: "(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)[\"']?\\s*[:=]\\s*[\"']?[^\\s,;\"']+",
     flags: "i"
   },
-  { source: "\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}", flags: "i" },
   { source: "\\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\\b", flags: "" },
   { source: "\\b[A-Fa-f0-9]{32,}\\b", flags: "" },
   { source: "\\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\\b", flags: "" },

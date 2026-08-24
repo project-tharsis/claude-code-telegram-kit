@@ -32,6 +32,13 @@ RATE_STATE = Path("/run/claude-code-telegram-kit/mutation-rate.json")
 RATE_WINDOW_SECONDS = 60
 RATE_BURST = 12
 MAX_PENDING_JOBS = 4
+# Automatic Memory Harness review jobs get their own small, separate quota rather than sharing
+# MAX_PENDING_JOBS with the interactive reset/resume/model/title commands. evaluateMemoryReviewTrigger
+# can fire on every correction turn (or every Nth turn) in a chatty session, unlike the interactive
+# actions, which only ever run on explicit user action; without partitioning, a burst of automatic
+# memory-review jobs could fill the shared pool and starve a concurrent, user-initiated reset/resume
+# /model/title request of capacity it previously had exclusively.
+MAX_PENDING_MEMORY_REVIEW_JOBS = 2
 MODELS = {"opus", "sonnet", "haiku", "inherit"}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 DIGITS_RE = re.compile(r"^[0-9]+$")
@@ -102,28 +109,41 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _pending_jobs(run: Runner) -> int:
+def _pending_jobs(run: Runner, *patterns: str) -> int:
     result = run([
         "/usr/bin/systemctl", "list-units", "--type=service",
         "--state=activating,running", "--no-legend", "--plain",
-        "claude-session-reset*.service",
-        "claude-session-title*.service",
-        "claude-session-memory-review*.service",
+        *patterns,
     ], 5.0)
     if result.returncode != 0:
         raise RuntimeError("unable to count control jobs")
     return sum(1 for line in result.stdout.splitlines() if line.strip())
 
 
+def _pending_interactive_jobs(run: Runner) -> int:
+    # Excludes memory-review units on purpose: this budget is exclusively for the
+    # user-initiated reset/resume/model/title actions, and must never be reduced by automatic
+    # memory-review job pressure.
+    return _pending_jobs(run, "claude-session-reset*.service", "claude-session-title*.service")
+
+
+def _pending_memory_review_jobs(run: Runner) -> int:
+    return _pending_jobs(run, "claude-session-memory-review*.service")
+
+
 def _reserve_mutation(
     run: Runner,
     *,
+    action: str = "reset",
     state_path: Path = RATE_STATE,
     now: float | None = None,
     burst: int = RATE_BURST,
     expected_uid: int = 0,
 ) -> None:
-    if _pending_jobs(run) >= MAX_PENDING_JOBS:
+    if action == "memory-review":
+        if _pending_memory_review_jobs(run) >= MAX_PENDING_MEMORY_REVIEW_JOBS:
+            raise RuntimeError("too many pending memory review jobs")
+    elif _pending_interactive_jobs(run) >= MAX_PENDING_JOBS:
         raise RuntimeError("too many pending control jobs")
     current = time.time() if now is None else now
     state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -295,7 +315,7 @@ def process_request(
         if action in ("title", "memory-review"):
             _secure_file(TITLE_OAUTH_ENV_FILE, (0o600,), "title OAuth environment")
     unit, argv = _mutation_argv(request, helper, config_path)
-    (reserve or _reserve_mutation)(run)
+    (reserve or (lambda runner: _reserve_mutation(runner, action=action)))(run)
     result = run(argv, 10.0)
     if result.returncode != 0:
         raise RuntimeError("systemd rejected control job")
