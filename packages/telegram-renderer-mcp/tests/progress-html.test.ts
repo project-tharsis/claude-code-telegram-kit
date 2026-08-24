@@ -48,6 +48,8 @@ describe("Telegram progress HTML", () => {
   test("marks background lifecycle headers as active and complete", () => {
     expect(formatProgressHtml("Background work · 1 running…\n👥 reviewer · Running"))
       .toStartWith("<b>✦ Background work · 1 running…</b>");
+    expect(formatProgressHtml("Background work · Finalizing…\n✅ reviewer · Done"))
+      .toStartWith("<b>✦ Background work · Finalizing…</b>");
     expect(formatProgressHtml("Background work · Done\n✅ reviewer · Done"))
       .toStartWith("<b>✓ Background work · Done</b>");
   });

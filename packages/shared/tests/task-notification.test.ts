@@ -21,6 +21,15 @@ describe("terminal internal task notification", () => {
     });
   });
 
+  test("accepts a task-only terminal notification", () => {
+    const taskOnly = completed.replace(/\n<tool-use-id>.*<\/tool-use-id>/, "");
+    expect(parseTerminalTaskNotification(taskOnly)).toEqual({
+      taskId: "ab6fa8c8413c80c31",
+      status: "completed"
+    });
+    expect(parseCompletedTaskNotification(taskOnly)).toBeNull();
+  });
+
   test("accepts a failed notification without ingesting its summary", () => {
     const failed = completed.replace("<status>completed</status>", "<status>failed</status>");
     expect(parseTerminalTaskNotification(failed)).toEqual({

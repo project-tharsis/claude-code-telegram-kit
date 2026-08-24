@@ -45,7 +45,7 @@ Tool names map to a fixed allowlist of human labels, so a vendor-controlled tool
 
 Disclosure is configurable as `safe`, `all`, or `verbose`. Every accepted preview field is bounded; credential-shaped values are replaced with fixed markers before truncation or delivery.
 
-When a subagent is still active after the parent final, the renderer opens one quoted `Background work` bubble. Official subagent lifecycle and nested tool events edit that bubble with bounded agent identity and the latest verified action. There is no interval, transcript polling, extra model turn, fabricated percentage, or raw subagent output. Completion still returns automatically through the separately bound final-delivery path; if that authority-bound completion turn forks another verified subagent, the same bounded contract continues for the descendant phase without exposing the completion turn's own foreground tools.
+When a subagent is still active after the parent final, the renderer opens one quoted `Background work` bubble. Official subagent lifecycle and nested tool events edit that bubble with bounded agent identity and the latest verified action. Agent type labels come from Claude Code lifecycle metadata. When all children stop, the bubble stays `Finalizing…` until the parent task terminal event. There is no interval, transcript polling, extra model turn, fabricated percentage, or raw subagent output. Completion still returns automatically through the separately bound final-delivery path; if that authority-bound completion turn forks another verified subagent, the same bounded contract continues for the descendant phase without exposing the completion turn's own foreground tools.
 
 ## Operational failures
 

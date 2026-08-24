@@ -3,6 +3,7 @@ import { MAX_PROGRESS_CHARACTERS } from "./progress-state.js";
 
 export const MAX_BACKGROUND_AGENTS = 16;
 export const MAX_BACKGROUND_TOOL_IDS = 256;
+export const MAX_BACKGROUND_TASK_IDS = 16;
 
 type AgentStatus = "running" | "done";
 type ToolStatus = "running" | "done" | "failed";
@@ -30,6 +31,7 @@ function renderStep(step: ProgressStep, status: ToolStatus): string {
 export class BackgroundProgress {
   #agents = new Map<string, AgentState>();
   #toolAgents = new Map<string, string>();
+  #pendingTasks = new Set<string>();
   #generation = 0;
 
   get generation(): number {
@@ -42,6 +44,23 @@ export class BackgroundProgress {
 
   get hasActive(): boolean {
     return Array.from(this.#agents.values()).some(agent => agent.status === "running");
+  }
+
+  get hasPendingTasks(): boolean {
+    return this.#pendingTasks.size > 0;
+  }
+
+  recordTaskStart(toolUseId: string): boolean {
+    if (this.#pendingTasks.has(toolUseId) || this.#pendingTasks.size >= MAX_BACKGROUND_TASK_IDS) return false;
+    this.#pendingTasks.add(toolUseId);
+    this.#generation += 1;
+    return true;
+  }
+
+  recordTaskTerminal(toolUseId: string): boolean {
+    if (!this.#pendingTasks.delete(toolUseId)) return false;
+    this.#generation += 1;
+    return true;
   }
 
   recordStart(agentId: string, agentType: string): boolean {
@@ -110,9 +129,11 @@ export class BackgroundProgress {
     if (!this.hasAgents) return "";
     const active = Array.from(this.#agents.values())
       .filter(agent => agent.status === "running").length;
-    const header = active === 0
-      ? "Background work · Done"
-      : `Background work · ${active} running…`;
+    const header = active > 0
+      ? `Background work · ${active} running…`
+      : this.#pendingTasks.size > 0
+        ? "Background work · Finalizing…"
+        : "Background work · Done";
     const lines = [header];
     for (const agent of this.#agents.values()) {
       const status = agent.status === "running" ? "Running" : "Done";

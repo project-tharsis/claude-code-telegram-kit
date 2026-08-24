@@ -8,7 +8,8 @@ import {
   RecordSubagentStartInputSchema,
   RecordSubagentStopInputSchema,
   RecordToolFailureInputSchema,
-  RecordToolInputSchema
+  RecordToolInputSchema,
+  RecordToolSuccessInputSchema
 } from "../src/hook-contract.js";
 
 const SESSION = "3fcbaf06-4378-4339-b026-8c2e026a65e7";
@@ -154,6 +155,18 @@ describe("internal hook tool schemas", () => {
     expect(() => RecordToolInputSchema.parse({ ...base, skill: "x".repeat(129) })).toThrow();
     expect(() => RecordToolInputSchema.parse({ ...base, tool_input: { file_path: "/etc/passwd" } })).toThrow();
     expect(() => RecordToolInputSchema.parse({ ...base, hook_event_name: "PostToolUse" })).toThrow();
+  });
+
+  test("record_tool_success accepts only bounded background launch identity", () => {
+    const base = { session_id: SESSION, prompt_id: PROMPT, tool_use_id: "toolu_01ABC", hook_event_name: "PostToolUse" };
+    expect(RecordToolSuccessInputSchema.parse({ ...base, task_status: "forked", task_id: "a45f9e515aa99f8c5" }))
+      .toMatchObject({ task_status: "forked", task_id: "a45f9e515aa99f8c5" });
+    expect(RecordToolSuccessInputSchema.parse({ ...base, task_status: "", task_id: "" }))
+      .toMatchObject({ task_status: undefined, task_id: undefined });
+    expect(RecordToolSuccessInputSchema.parse({ ...base, task_status: "completed", task_id: "" }).task_status)
+      .toBe("completed");
+    expect(() => RecordToolSuccessInputSchema.parse({ ...base, task_status: "x".repeat(65) })).toThrow();
+    expect(() => RecordToolSuccessInputSchema.parse({ ...base, tool_response: { content: "private" } })).toThrow();
   });
 
   test("subagent lifecycle accepts bounded identity only and rejects model prose", () => {

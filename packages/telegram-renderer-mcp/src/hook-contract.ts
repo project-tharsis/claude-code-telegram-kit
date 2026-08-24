@@ -35,6 +35,10 @@ const prompt = boundedText(1_000_000);
 const optionalIdentifier = z.union([z.literal(""), identifier])
   .optional()
   .transform(value => (value === undefined || value === "" ? undefined : value));
+const optionalTaskStatus = z.union([
+  z.literal(""),
+  boundedText(64)
+]).optional().transform(value => (value === undefined || value === "" ? undefined : value));
 
 function optionalText(maxLength: number) {
   return boundedText(maxLength).optional()
@@ -80,6 +84,8 @@ export const RecordToolInputSchema = z.object({
 export const RecordToolSuccessInputSchema = z.object({
   ...turnKey,
   tool_use_id: identifier,
+  task_status: optionalTaskStatus,
+  task_id: optionalIdentifier,
   hook_event_name: z.literal("PostToolUse")
 }).strict();
 

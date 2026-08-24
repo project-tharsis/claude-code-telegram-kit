@@ -363,18 +363,25 @@ function contentBlocks(value: unknown): Array<Record<string, unknown>> {
   );
 }
 
-function updateBackgroundTaskState(row: Record<string, unknown>, taskIds: Set<string>): boolean {
+function updateBackgroundTaskState(
+  row: Record<string, unknown>,
+  taskIds: Set<string>,
+  taskAliases: Map<string, string>
+): boolean {
   if (row.type !== "user") return false;
   const message = typeof row.message === "object" && row.message !== null
     ? row.message as Record<string, unknown> : null;
   if (message === null) return false;
   const result = typeof row.toolUseResult === "object" && row.toolUseResult !== null
     ? row.toolUseResult as Record<string, unknown> : null;
-  if (result?.status === "forked") {
+  if (result?.status === "forked" || result?.status === "async_launched") {
+    const agentId = typeof result.agentId === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(result.agentId)
+      ? result.agentId : null;
     for (const block of contentBlocks(message.content)) {
       if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
       if (taskIds.size >= MAX_TRACKED_BACKGROUND_TASKS && !taskIds.has(block.tool_use_id)) return true;
       taskIds.add(block.tool_use_id);
+      if (agentId !== null && !taskAliases.has(agentId)) taskAliases.set(agentId, block.tool_use_id);
     }
   }
   const values = typeof message.content === "string" ? [message.content] : contentBlocks(message.content)
@@ -382,7 +389,11 @@ function updateBackgroundTaskState(row: Record<string, unknown>, taskIds: Set<st
     .map(block => block.text as string);
   for (const value of values) {
     const notification = parseTerminalTaskNotification(value);
-    if (notification !== null) taskIds.delete(notification.toolUseId);
+    if (notification === null) continue;
+    const toolUseId = notification.toolUseId
+      ?? (notification.taskId === undefined ? undefined : taskAliases.get(notification.taskId));
+    if (toolUseId !== undefined) taskIds.delete(toolUseId);
+    if (notification.taskId !== undefined) taskAliases.delete(notification.taskId);
   }
   return false;
 }
@@ -405,6 +416,7 @@ function scanIncompleteBackgroundTasks(options: {
   );
   if (opened === null) return true;
   const taskIds = new Set<string>();
+  const taskAliases = new Map<string, string>();
   let overflow = false;
   let pending = Buffer.alloc(0);
   let skipOversizedLine = false;
@@ -412,7 +424,8 @@ function scanIncompleteBackgroundTasks(options: {
     if (line.length === 0 || line.length > MAX_TASK_SCAN_LINE_BYTES) return;
     try {
       const row = JSON.parse(line.toString("utf8")) as unknown;
-      if (typeof row === "object" && row !== null && updateBackgroundTaskState(row as Record<string, unknown>, taskIds)) {
+      if (typeof row === "object" && row !== null
+        && updateBackgroundTaskState(row as Record<string, unknown>, taskIds, taskAliases)) {
         overflow = true;
       }
     } catch { /* malformed transcript rows are ignored */ }

@@ -99,7 +99,7 @@ export const RECORD_TOOL_TOOL = {
 export const RECORD_TOOL_SUCCESS_TOOL = {
   name: "record_tool_success",
   description:
-    `${INTERNAL_PREFIX} Wired to PostToolUse. Marks an already-recorded tool_use_id as completed. Tool output is never accepted.`,
+    `${INTERNAL_PREFIX} Wired to PostToolUse. Marks an already-recorded tool_use_id as completed and accepts only bounded task status plus task identity. Tool output is never accepted.`,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   inputSchema: {
     type: "object",
@@ -108,6 +108,8 @@ export const RECORD_TOOL_SUCCESS_TOOL = {
     properties: {
       ...turnKeyProperties,
       tool_use_id: { type: "string", pattern: IDENTIFIER_PATTERN },
+      task_status: { type: "string", maxLength: 64 },
+      task_id: { type: "string", pattern: `^(?:|${IDENTIFIER_PATTERN.slice(1, -1)})$` },
       hook_event_name: { type: "string", const: "PostToolUse" }
     }
   }

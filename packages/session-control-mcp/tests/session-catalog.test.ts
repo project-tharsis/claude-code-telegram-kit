@@ -62,10 +62,28 @@ describe("bounded resumable session catalog", () => {
     expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
     writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
       type: "user", message: { content:
-        '<task-notification><task-id>task-1</task-id><tool-use-id>skill-1</tool-use-id><status>completed</status><summary>done</summary></task-notification>'
+        '<task-notification><task-id>agent-1</task-id><status>completed</status><summary>done</summary></task-notification>'
       }
     })}\n`);
     expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
+  });
+
+  test("task alias collision never clears every pending fork", () => {
+    const root = makeRoot();
+    const id = uuid(18);
+    const path = writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "user", toolUseResult: { status: "forked", agentId: "same-agent" }, message: { content: [
+        { type: "tool_result", tool_use_id: "skill-first", content: "launched" }
+      ] } }),
+      JSON.stringify({ type: "user", toolUseResult: { status: "forked", agentId: "same-agent" }, message: { content: [
+        { type: "tool_result", tool_use_id: "skill-second", content: "launched" }
+      ] } })
+    ] });
+    writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
+      type: "user", message: { content: "<task-notification><task-id>same-agent</task-id><status>completed</status></task-notification>" }
+    })}
+`);
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
   });
 
   test("clears a fork after a failed terminal notification", () => {
