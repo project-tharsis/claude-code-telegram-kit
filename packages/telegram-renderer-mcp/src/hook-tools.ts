@@ -3,13 +3,15 @@ import {
   BindTurnInputSchema,
   FinishTurnInputSchema,
   MAX_HOOK_FINAL_CHARACTERS,
-
+  RecordSubagentStartInputSchema,
+  RecordSubagentStopInputSchema,
   RecordToolFailureInputSchema,
   RecordToolInputSchema,
   RecordToolSuccessInputSchema,
   type BindTurnInput,
   type FinishTurnInput,
-
+  type RecordSubagentStartInput,
+  type RecordSubagentStopInput,
   type RecordToolFailureInput,
   type RecordToolInput,
   type RecordToolSuccessInput
@@ -127,6 +129,44 @@ export const RECORD_TOOL_FAILURE_TOOL = {
   }
 } as const;
 
+const subagentLifecycleProperties = {
+  ...turnKeyProperties,
+  agent_id: { type: "string", pattern: IDENTIFIER_PATTERN },
+  agent_type: { type: "string", pattern: IDENTIFIER_PATTERN }
+} as const;
+
+export const RECORD_SUBAGENT_START_TOOL = {
+  name: "record_subagent_start",
+  description:
+    `${INTERNAL_PREFIX} Wired to SubagentStart. Records bounded agent identity only; no prompt or transcript content is accepted.`,
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id", "prompt_id", "agent_id", "agent_type", "hook_event_name"],
+    properties: {
+      ...subagentLifecycleProperties,
+      hook_event_name: { type: "string", const: "SubagentStart" }
+    }
+  }
+} as const;
+
+export const RECORD_SUBAGENT_STOP_TOOL = {
+  name: "record_subagent_stop",
+  description:
+    `${INTERNAL_PREFIX} Wired to SubagentStop. Marks a known bounded agent identity complete; final subagent text is never accepted.`,
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id", "prompt_id", "agent_id", "agent_type", "hook_event_name"],
+    properties: {
+      ...subagentLifecycleProperties,
+      hook_event_name: { type: "string", const: "SubagentStop" }
+    }
+  }
+} as const;
+
 export const FINISH_TURN_TOOL = {
   name: "finish_turn",
   description:
@@ -149,6 +189,8 @@ export const INTERNAL_HOOK_TOOLS = [
   RECORD_TOOL_TOOL,
   RECORD_TOOL_SUCCESS_TOOL,
   RECORD_TOOL_FAILURE_TOOL,
+  RECORD_SUBAGENT_START_TOOL,
+  RECORD_SUBAGENT_STOP_TOOL,
   FINISH_TURN_TOOL
 ] as const;
 
@@ -159,7 +201,8 @@ export interface HookDisclosure {
   /** Binds the submitted prompt as a disclosure turn, or ignores it silently. */
   bindTurn: (input: BindTurnInput) => void;
   recordTool: (input: RecordToolInput) => void;
-
+  recordSubagentStart: (input: RecordSubagentStartInput) => void;
+  recordSubagentStop: (input: RecordSubagentStopInput) => void;
   recordSuccess: (input: RecordToolSuccessInput) => void;
   recordFailure: (input: RecordToolFailureInput) => void;
   finishTurn: (input: FinishTurnInput) => Promise<FinishTurnDisposition>;
@@ -192,7 +235,12 @@ export function createHookToolHandler(disclosure: HookDisclosure) {
         case RECORD_TOOL_TOOL.name:
           disclosure.recordTool(RecordToolInputSchema.parse(arguments_));
           break;
-
+        case RECORD_SUBAGENT_START_TOOL.name:
+          disclosure.recordSubagentStart(RecordSubagentStartInputSchema.parse(arguments_));
+          break;
+        case RECORD_SUBAGENT_STOP_TOOL.name:
+          disclosure.recordSubagentStop(RecordSubagentStopInputSchema.parse(arguments_));
+          break;
         case RECORD_TOOL_SUCCESS_TOOL.name:
           disclosure.recordSuccess(RecordToolSuccessInputSchema.parse(arguments_));
           break;

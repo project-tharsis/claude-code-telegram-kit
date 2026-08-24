@@ -12,6 +12,8 @@
       "mcp__telegram-renderer__record_tool",
       "mcp__telegram-renderer__record_tool_success",
       "mcp__telegram-renderer__record_tool_failure",
+      "mcp__telegram-renderer__record_subagent_start",
+      "mcp__telegram-renderer__record_subagent_stop",
       "mcp__telegram-renderer__finish_turn",
       "mcp__session-control__dispatch_command"
     ]
@@ -130,6 +132,42 @@
               "prompt_id": "${prompt_id}",
               "tool_use_id": "${tool_use_id}",
               "hook_event_name": "PostToolUseFailure"
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_subagent_start",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "hook_event_name": "SubagentStart"
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "telegram-renderer",
+            "tool": "record_subagent_stop",
+            "input": {
+              "session_id": "${session_id}",
+              "prompt_id": "${prompt_id}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "hook_event_name": "SubagentStop"
             }
           }
         ]

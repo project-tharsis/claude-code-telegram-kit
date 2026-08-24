@@ -122,6 +122,15 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("PreToolUse").map(hook => hook.tool)).toEqual(["record_tool"]);
     expect(toolsFor("PostToolUse").map(hook => hook.tool)).toEqual(["record_tool_success"]);
     expect(toolsFor("PostToolUseFailure").map(hook => hook.tool)).toEqual(["record_tool_failure"]);
+    expect(toolsFor("SubagentStart").map(hook => hook.tool)).toEqual(["record_subagent_start"]);
+    expect(toolsFor("SubagentStop").map(hook => hook.tool)).toEqual(["record_subagent_stop"]);
+    expect(toolsFor("SubagentStart")[0]!.input).toEqual({
+      session_id: "${session_id}",
+      prompt_id: "${prompt_id}",
+      agent_id: "${agent_id}",
+      agent_type: "${agent_type}",
+      hook_event_name: "SubagentStart"
+    });
     expect(toolsFor("Stop").map(hook => hook.tool)).toEqual(["finish_turn"]);
     expect(toolsFor("Stop")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
@@ -133,7 +142,10 @@ describe("supported Claude Code hook configuration", () => {
       tool.name,
       new Set(Object.keys(tool.inputSchema.properties))
     ]));
-    for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure"]) {
+    for (const event of [
+      "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+      "SubagentStart", "SubagentStop", "Stop", "StopFailure"
+    ]) {
       for (const hook of toolsFor(event).filter(item => item.server === "telegram-renderer")) {
         expect(declared.has(hook.tool), `${event}:${hook.tool}`).toBe(true);
         for (const key of Object.keys(hook.input)) {

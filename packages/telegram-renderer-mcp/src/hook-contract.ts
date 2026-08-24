@@ -88,6 +88,22 @@ export const RecordToolFailureInputSchema = z.object({
   hook_event_name: z.literal("PostToolUseFailure")
 }).strict();
 
+const subagentLifecycle = {
+  ...turnKey,
+  agent_id: identifier,
+  agent_type: identifier
+};
+
+export const RecordSubagentStartInputSchema = z.object({
+  ...subagentLifecycle,
+  hook_event_name: z.literal("SubagentStart")
+}).strict();
+
+export const RecordSubagentStopInputSchema = z.object({
+  ...subagentLifecycle,
+  hook_event_name: z.literal("SubagentStop")
+}).strict();
+
 export const FinishTurnInputSchema = z.object({
   ...turnKey,
   last_assistant_message: requiredTemplateText(MAX_HOOK_FINAL_CHARACTERS),
@@ -99,4 +115,6 @@ export type RecordToolInput = z.infer<typeof RecordToolInputSchema>;
 
 export type RecordToolSuccessInput = z.infer<typeof RecordToolSuccessInputSchema>;
 export type RecordToolFailureInput = z.infer<typeof RecordToolFailureInputSchema>;
+export type RecordSubagentStartInput = z.infer<typeof RecordSubagentStartInputSchema>;
+export type RecordSubagentStopInput = z.infer<typeof RecordSubagentStopInputSchema>;
 export type FinishTurnInput = z.infer<typeof FinishTurnInputSchema>;
