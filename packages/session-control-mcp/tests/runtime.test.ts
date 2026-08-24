@@ -35,7 +35,7 @@ function capabilities(overrides: Record<string, unknown> = {}) {
     status: "ok",
     capabilities: {
       protocol: HELPER_PROTOCOL_VERSION,
-      actions: ["reset", "resume", "model", "title"],
+      actions: ["reset", "resume", "model", "title", "memory-review"],
       models: ["opus", "sonnet", "haiku", "inherit"],
       ...overrides
     }
@@ -161,7 +161,7 @@ describe("broker capability preflight", () => {
   test("accepts the current helper protocol and required actions/models", async () => {
     expect(await probeHelperCapabilities({ callBroker: broker(capabilities()) })).toEqual({
       protocol: HELPER_PROTOCOL_VERSION,
-      actions: ["reset", "resume", "model", "title"],
+      actions: ["reset", "resume", "model", "title", "memory-review"],
       models: ["opus", "sonnet", "haiku", "inherit"]
     });
   });
@@ -170,5 +170,10 @@ describe("broker capability preflight", () => {
     await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ protocol: 3 })) })).rejects.toThrow("protocol mismatch");
     await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ actions: ["reset"] })) })).rejects.toThrow("actions");
     await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ models: ["opus"] })) })).rejects.toThrow("models");
+  });
+
+  test("fails closed when the deployed helper has not been reinstalled with memory-review support (version-mismatched deploy)", async () => {
+    await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ actions: ["reset", "resume", "model", "title"] })) }))
+      .rejects.toThrow("actions");
   });
 });

@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryReviewReceipt, readMemoryReviewReceipt } from "@project-tharsis/claude-code-telegram-shared";
-import { runMemoryReviewWorker } from "../src/memory-review-worker.js";
-import { buildMemoryReviewSnapshot } from "../src/memory-review-snapshot.js";
+import { parseSnapshotFromStdin, runMemoryReviewWorker } from "../src/memory-review-worker.js";
+import { buildMemoryReviewSnapshot, serializeMemoryReviewSnapshot } from "../src/memory-review-snapshot.js";
 import { MemoryReviewGenerationError } from "../src/memory-review-generator.js";
 
 const SESSION_ID = "33333333-3333-4333-8333-333333333333";
@@ -30,6 +30,37 @@ function seedReceipt(directory: string, promptId = "prompt-1") {
   if (result.outcome !== "created") throw new Error("fixture setup failed");
   return result.receipt;
 }
+
+describe("producer/consumer snapshot wire shape round-trip", () => {
+  test("the real serialized snapshot bytes parse back through the real stdin reader unchanged", () => {
+    const built = buildMemoryReviewSnapshot({
+      userMessage: "remember I like concise answers",
+      assistantFinal: "Noted, I will keep it concise.",
+      currentMemoryIndex: "- no-em-dash.md",
+      releaseSha: "e".repeat(40),
+      packageVersion: "0.3.0"
+    });
+    const bytes = Buffer.from(serializeMemoryReviewSnapshot(built), "utf8");
+    const parsed = parseSnapshotFromStdin(bytes);
+    expect(parsed).toEqual(built);
+  });
+
+  test("rejects empty stdin", () => {
+    expect(() => parseSnapshotFromStdin(Buffer.alloc(0))).toThrow("invalid snapshot input");
+  });
+
+  test("rejects a bare (unwrapped) snapshot object -- the wire shape must be {snapshot: ...}", () => {
+    const built = buildMemoryReviewSnapshot({
+      userMessage: "hi",
+      assistantFinal: "hello",
+      currentMemoryIndex: "",
+      releaseSha: "e".repeat(40),
+      packageVersion: "0.3.0"
+    });
+    const bareBytes = Buffer.from(JSON.stringify(built), "utf8");
+    expect(() => parseSnapshotFromStdin(bareBytes)).toThrow("invalid snapshot input");
+  });
+});
 
 describe("immutable memory review worker boundary", () => {
   let directory: string;
@@ -94,7 +125,7 @@ describe("immutable memory review worker boundary", () => {
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("reviewed");
   });
 
-  test("a timeout produces only a private failed receipt, never a thrown crash", async () => {
+  test("a timeout leaves the receipt queued for retry, never a thrown crash or a permanent failure", async () => {
     seedReceipt(directory);
     const result = await runMemoryReviewWorker({
       sessionId: SESSION_ID,
@@ -104,10 +135,14 @@ describe("immutable memory review worker boundary", () => {
       review: async () => { throw new MemoryReviewGenerationError("generate", "timeout", true); }
     });
     expect(result.outcome).toBe("failed");
-    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("failed");
+    // A timeout is retryable (AGENTS.md / design-invariants: only a proven local or permanent
+    // rejection may finalize a failure state), so the receipt must stay "queued", not "failed" --
+    // a permanently "failed" receipt could never be reviewed again (createMemoryReviewReceipt's
+    // singleflight refuses to create a second receipt for the same session/prompt).
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
   });
 
-  test("a 429/rate-limited outcome produces only a private failed receipt", async () => {
+  test("a 429/rate-limited outcome leaves the receipt queued for retry, not permanently failed", async () => {
     seedReceipt(directory);
     const result = await runMemoryReviewWorker({
       sessionId: SESSION_ID,
@@ -117,7 +152,45 @@ describe("immutable memory review worker boundary", () => {
       review: async () => { throw new MemoryReviewGenerationError("generate", "rate_limited", true); }
     });
     expect(result.outcome).toBe("failed");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
+  });
+
+  test("a retryable failure followed by a successful retry reviews the same queued receipt", async () => {
+    seedReceipt(directory);
+    const timedOut = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      review: async () => { throw new MemoryReviewGenerationError("generate", "timeout", true); }
+    });
+    expect(timedOut.outcome).toBe("failed");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
+
+    const retried = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      review: async () => ({ decision: "no_op", target: "managed_memory", topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" })
+    });
+    expect(retried.outcome).toBe("no_op");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("reviewed");
+  });
+
+  test("a non-retryable command failure finalizes the receipt to failed, blocking further retry", async () => {
+    seedReceipt(directory);
+    const result = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      review: async () => { throw new MemoryReviewGenerationError("parse", "invalid_output", false); }
+    });
+    expect(result.outcome).toBe("failed");
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("failed");
+    await expect(runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory }))
+      .rejects.toThrow("no queued review receipt");
   });
 
   test("malformed model output produces only a private failed receipt, never a schema escape", async () => {

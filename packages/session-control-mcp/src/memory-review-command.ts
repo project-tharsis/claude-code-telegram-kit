@@ -10,6 +10,10 @@ import {
   type MemoryReviewTriggerInput
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createSessionScheduler } from "./runtime.js";
+import { buildMemoryReviewSnapshot, serializeMemoryReviewSnapshot } from "./memory-review-snapshot.js";
+import { writeMemoryReviewSnapshot } from "./memory-review-snapshot-store.js";
+
+const PACKAGE_VERSION = "0.3.0";
 
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -41,9 +45,25 @@ export interface MemoryReviewCommandOptions {
   userCorrection?: boolean;
   turnOrdinal?: number;
   receiptDirectory?: string;
+  /**
+   * The confirmed outcome of the foreground Telegram delivery for this exact turn ("delivered",
+   * "rejected", "uncertain", or "too_large" -- see FinalDeliveryOutcome in the renderer MCP's
+   * progress-disclosure.ts, the module that actually computes this today). No such signal
+   * currently reaches this Stop-hook seam (it and the renderer's finishTurn are separate
+   * processes reacting to the same Stop event with no shared channel between them); until a
+   * later PR wires a real one through, this MUST default to "uncertain", never "delivered" --
+   * evaluateMemoryReviewTrigger's fail-closed not_delivered gate depends on that.
+   */
+  deliveryOutcome?: "delivered" | "rejected" | "uncertain" | "too_large";
+  /** Threaded into the bounded snapshot; see MemoryReviewSnapshotInput.userMessage. */
+  userMessage?: string;
+  /** Threaded into the bounded snapshot; see MemoryReviewSnapshotInput.currentMemoryIndex. */
+  currentMemoryIndex?: string;
+  snapshotDirectory?: string;
   schedule?: (sessionId: string, promptId: string) => Promise<unknown>;
   readReceipt?: (sessionId: string, promptId: string) => ReturnType<typeof readMemoryReviewReceipt>;
   createReceipt?: typeof createMemoryReviewReceipt;
+  writeSnapshot?: typeof writeMemoryReviewSnapshot;
 }
 
 function canonicalDirectory(path: string | undefined, label: string): string {
@@ -92,7 +112,9 @@ export async function handleMemoryReviewCommand(
   const hasExistingReceipt = readReceipt(payload.session_id, payload.prompt_id) !== null;
 
   const triggerInput: MemoryReviewTriggerInput = {
-    deliveryOutcome: "delivered",
+    // Fail closed: absent a real confirmed-delivery signal at this call site, "uncertain" is
+    // never treated as due. See the deliveryOutcome doc comment on MemoryReviewCommandOptions.
+    deliveryOutcome: options.deliveryOutcome ?? "uncertain",
     backgroundTasksActive,
     hasExistingReceipt,
     isReviewAuthorityTurn: false,
@@ -118,6 +140,28 @@ export async function handleMemoryReviewCommand(
     toolIterations: options.toolIterations ?? 0
   }, options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory });
   if (result.outcome !== "created") return;
+
+  // The bounded snapshot is built here -- unprivileged, at Stop-hook time -- because this is
+  // the only point in the whole pipeline where the untrusted transcript-derived text (the
+  // verified assistant final, at minimum) is actually available. It is written to a durable,
+  // directory-fd-anchored, single-writer/single-reader store keyed by the exact same
+  // (session_id, prompt_id) the receipt uses; root's memory_review_session() reads those exact
+  // bytes and pipes them, unparsed, to the isolated worker's stdin (see memory-review-worker.ts's
+  // readSnapshotFromStdin). Root never builds or interprets a snapshot itself.
+  const snapshot = buildMemoryReviewSnapshot({
+    userMessage: options.userMessage ?? "",
+    assistantFinal: assistantText,
+    currentMemoryIndex: options.currentMemoryIndex ?? "",
+    releaseSha,
+    packageVersion: PACKAGE_VERSION
+  });
+  const write = options.writeSnapshot ?? writeMemoryReviewSnapshot;
+  write(
+    payload.session_id,
+    payload.prompt_id,
+    Buffer.from(serializeMemoryReviewSnapshot(snapshot), "utf8"),
+    options.snapshotDirectory === undefined ? {} : { directory: options.snapshotDirectory }
+  );
 
   await (options.schedule ?? ((sessionId, promptId) => createSessionScheduler().scheduleMemoryReview(sessionId, promptId)))(payload.session_id, payload.prompt_id);
 }

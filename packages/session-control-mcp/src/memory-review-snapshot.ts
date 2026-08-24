@@ -13,6 +13,8 @@
  * not by a filter — there is no field here wide enough to hold them.
  */
 
+import { redactCredentials } from "@project-tharsis/claude-code-telegram-shared";
+
 const MAX_FIELD_CHARS = 1_200;
 const MAX_TOTAL_CHARS = 6_000;
 const MAX_EARLIER_DIGESTS = 6;
@@ -20,23 +22,11 @@ const MAX_TOOL_ENTRIES = 20;
 const MAX_TOPIC_EXCERPTS = 4;
 const MAX_TOOL_NAME_CHARS = 60;
 
-const CREDENTIAL_PATTERNS: RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  /(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)\s*[:=]\s*[^\s,;]+/gi,
-  /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
-  /\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\b/g,
-  /\b[A-Fa-f0-9]{32,}\b/g,
-  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
-  /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/g,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
-  /https?:\/\/[^:\s/@]+:[^@\s/]+@/gi
-];
-
+// The credential pattern source lives in @project-tharsis/claude-code-telegram-shared
+// (credential-patterns.ts) so this redaction pass and the strict proposal validator's rejection
+// check can never independently drift from each other again.
 function redact(value: string): string {
-  let result = value;
-  for (const pattern of CREDENTIAL_PATTERNS) result = result.replace(pattern, "[redacted]");
-  return result;
+  return redactCredentials(value);
 }
 
 function bounded(value: unknown, maxChars = MAX_FIELD_CHARS): string {
@@ -129,22 +119,48 @@ export function buildMemoryReviewSnapshot(input: MemoryReviewSnapshotInput): Mem
   };
 
   // A hard total-character budget independent of the per-field caps above, so a snapshot
-  // built from many maximally-sized fields still cannot grow past a fixed size.
-  let total = snapshot.userMessage.length + snapshot.assistantFinal.length
+  // built from many maximally-sized fields still cannot grow past a fixed size. Every
+  // contributing field is scaled down by the same factor rather than only trimming
+  // assistantFinal, so the cap holds regardless of which combination of fields is maxed out.
+  const total = snapshot.userMessage.length + snapshot.assistantFinal.length
     + snapshot.recentCorrections.reduce((sum, value) => sum + value.length, 0)
     + snapshot.earlierTurnDigests.reduce((sum, value) => sum + value.length, 0)
     + snapshot.currentMemoryIndex.length
     + snapshot.relevantTopics.reduce((sum, topic) => sum + topic.excerpt.length, 0)
     + snapshot.nativeMemoryChangeSummary.length;
   if (total > MAX_TOTAL_CHARS) {
-    const overflow = total - MAX_TOTAL_CHARS;
-    snapshot.assistantFinal = snapshot.assistantFinal.slice(0, Math.max(0, snapshot.assistantFinal.length - overflow));
+    const factor = MAX_TOTAL_CHARS / total;
+    snapshot.userMessage = scaleField(snapshot.userMessage, factor);
+    snapshot.assistantFinal = scaleField(snapshot.assistantFinal, factor);
+    snapshot.recentCorrections = snapshot.recentCorrections.map(value => scaleField(value, factor));
+    snapshot.earlierTurnDigests = snapshot.earlierTurnDigests.map(value => scaleField(value, factor));
+    snapshot.currentMemoryIndex = scaleField(snapshot.currentMemoryIndex, factor);
+    snapshot.relevantTopics = snapshot.relevantTopics.map(topic => ({ ...topic, excerpt: scaleField(topic.excerpt, factor) }));
+    snapshot.nativeMemoryChangeSummary = scaleField(snapshot.nativeMemoryChangeSummary, factor);
   }
   return snapshot;
 }
 
+/** Proportionally shrinks a string toward the total-character budget; never grows it. */
+function scaleField(value: string, factor: number): string {
+  if (factor >= 1) return value;
+  const chars = Array.from(value);
+  const keep = Math.max(0, Math.floor(chars.length * factor));
+  return chars.slice(0, keep).join("");
+}
+
+interface SerializedMemoryReviewSnapshot {
+  snapshot: MemoryReviewSnapshot;
+}
+
+/**
+ * Wraps the snapshot in the exact `{"snapshot": ...}` envelope readSnapshotFromStdin (the
+ * worker's stdin reader) expects. The two must always agree on this shape: see
+ * memory-review-worker.test.ts's producer/consumer round-trip test.
+ */
 export function serializeMemoryReviewSnapshot(snapshot: MemoryReviewSnapshot): string {
-  const bytes = JSON.stringify(snapshot);
+  const payload: SerializedMemoryReviewSnapshot = { snapshot };
+  const bytes = JSON.stringify(payload);
   if (Buffer.byteLength(bytes, "utf8") > 32 * 1024) throw new Error("snapshot exceeds byte limit");
   return bytes;
 }

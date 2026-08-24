@@ -6,6 +6,8 @@
  * unsupported target is rejected before host code ever sees a validated proposal.
  */
 
+import { containsCredentialShape } from "./credential-patterns.js";
+
 export const MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"] as const;
 export type MemoryReviewDecision = (typeof MEMORY_REVIEW_DECISIONS)[number];
 
@@ -34,25 +36,10 @@ const TOPIC_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const PATH_LIKE_RE = /(?:^|[\s"'`])(?:\.\.[\\/]|~[\\/]|\/(?:home|Users|srv|etc|var|opt|tmp|root)\/|[A-Za-z]:[\\/]|\\\\)/;
 const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
 
-// The same shape of secret patterns the session-title generator redacts before display; here
-// they are used to reject a proposal outright rather than to redact it, because a reviewer
-// that emits a credential-shaped string has already broken containment.
-const CREDENTIAL_PATTERNS: RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)\s*[:=]\s*\S/i,
-  /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
-  /\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\b/,
-  /\b[A-Fa-f0-9]{32,}\b/,
-  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
-  /https?:\/\/[^:\s/@]+:[^@\s/]+@/i
-];
-
-function containsCredentialShape(value: string): boolean {
-  return CREDENTIAL_PATTERNS.some(pattern => pattern.test(value));
-}
+// containsCredentialShape is the shared source of truth (credential-patterns.ts, also used by
+// the bounded snapshot builder's redaction pass); a reviewer that emits a credential-shaped
+// string has already broken containment, so this rejects the proposal outright rather than
+// redacting it.
 
 function isBoundedString(value: unknown, maxChars: number, minChars = 1): value is string {
   if (typeof value !== "string") return false;

@@ -140,4 +140,30 @@ describe("durable memory review receipt store", () => {
     const second = createMemoryReviewReceipt(baseInput({ createdAt: Date.now() }), { directory });
     expect(second.outcome).toBe("created");
   });
+
+  test("does not scan or prune an unrelated expired receipt while the store is far from its cap", () => {
+    const now = Date.now();
+    const old = now - 40 * 24 * 60 * 60 * 1_000;
+    const expired = createMemoryReviewReceipt(baseInput({ promptId: "prompt-expired", createdAt: old }), { directory, maxEntries: 1_000 });
+    expect(expired.outcome).toBe("created");
+
+    // A single existing entry is nowhere near a 1,000-entry cap, so this create must not run
+    // the full validating prune pass over the whole store -- the unrelated expired entry (a
+    // different key) is left exactly as-is, not physically removed by this call.
+    const fresh = createMemoryReviewReceipt(baseInput({ promptId: "prompt-fresh", createdAt: now }), { directory, maxEntries: 1_000 });
+    expect(fresh.outcome).toBe("created");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-expired", { directory })).not.toBeNull();
+  });
+
+  test("prunes an unrelated expired receipt once the store is within the margin of its cap", () => {
+    const now = Date.now();
+    const old = now - 40 * 24 * 60 * 60 * 1_000;
+    const cap = 3;
+    const expired = createMemoryReviewReceipt(baseInput({ promptId: "prompt-expired", createdAt: old }), { directory, maxEntries: cap });
+    expect(expired.outcome).toBe("created");
+
+    const fresh = createMemoryReviewReceipt(baseInput({ promptId: "prompt-fresh", createdAt: now }), { directory, maxEntries: cap });
+    expect(fresh.outcome).toBe("created");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-expired", { directory })).toBeNull();
+  });
 });

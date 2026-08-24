@@ -18,7 +18,15 @@ const UNIT = /^claude-session-(?:reset(?:-(?:resume|model))?|title|memory-review
 const PROMPT_ID = /^[A-Za-z0-9._-]{1,128}$/;
 export const BROKER_PROTOCOL_VERSION = 2;
 export const HELPER_PROTOCOL_VERSION = 6;
-export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model", "title"] as const;
+// "memory-review" is required unconditionally, the same as "reset"/"resume"/"model"/"title":
+// this reflects what the deployed root helper binary supports (a build-time property verified
+// once at boot), not whether MEMORY_REVIEW_ENABLED is currently set (a runtime policy toggle
+// read fresh on every Stop hook by loadMemoryReviewPolicy). A helper that has not been
+// reinstalled to the matching protocol/actions must fail the boot capability probe fast --
+// exactly like it already does for "title", which likewise has no independent enable flag --
+// rather than passing boot and only surfacing the version mismatch later, the first time
+// scheduleMemoryReview() actually runs.
+export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model", "title", "memory-review"] as const;
 
 interface TelegramEnvelope {
   ok?: unknown;

@@ -1493,14 +1493,32 @@ def model_session(
         os.close(lock_fd)
 
 
-def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> dict[str, Any]:
-    """Run the fixed title worker once as the authenticated Claude service user."""
-    if os.geteuid() != 0:
-        raise PermissionError("session title helper must run as root")
-    _validate_uuid(session_id)
-    transcript = config.project_sessions / f"{session_id}.jsonl"
-    _secure_regular_file(transcript, config.service_uid, 0o600, "session transcript")
-    account = pwd.getpwnam(config.service_user)
+def _run_isolated_worker(
+    config: ResetConfig,
+    account: Any,
+    *,
+    worker_path: Path,
+    worker_kind: str,
+    auth_source_label: str,
+    argv_tail: list[str],
+    extra_env: dict[str, str],
+    load_input: Callable[[], bytes],
+    timeout: float,
+    failure_message: str,
+) -> None:
+    """Runs one fixed, immutable isolated worker once as the authenticated service user.
+
+    Shared by title_session and memory_review_session (handoff doc section A5): the same
+    manifest load / validate, the same digest-verified Bun runtime opened via /proc/self/fd,
+    the same drop-privileges-before-exec discipline, and the same allowlisted-only OAuth
+    environment. This is the root-privileged, supply-chain-verifying code path; keeping it in
+    exactly one place means a future hardening fix can never be applied to one isolated worker
+    and forgotten in the other. `load_input` is called only after the authenticated-source
+    check below succeeds, immediately before the worker is spawned, so a caller whose input
+    requires its own I/O (memory_review_session reading the durable snapshot store) never pays
+    that cost -- or risks a differently-shaped failure -- ahead of the same auth gate every
+    other isolated worker enforces first.
+    """
     _secure_regular_file(ROOT_ASSET_MANIFEST, 0, 0o600, "installed root asset manifest")
     manifest = json.loads(_read_secure_regular(ROOT_ASSET_MANIFEST, 0, 0o600, "installed root asset manifest"))
     if (not isinstance(manifest, dict)
@@ -1539,22 +1557,22 @@ def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> di
             raise ValueError("bun runtime digest mismatch")
         os.lseek(bun_fd, 0, os.SEEK_SET)
         os.set_inheritable(bun_fd, True)
-        title_assets = [item for item in manifest["assets"]
-                        if isinstance(item, dict) and item.get("destination") == str(TITLE_WORKER_PATH)]
-        if len(title_assets) != 1:
-            raise ValueError("installed manifest has no title worker asset")
-        asset = title_assets[0]
+        worker_assets = [item for item in manifest["assets"]
+                         if isinstance(item, dict) and item.get("destination") == str(worker_path)]
+        if len(worker_assets) != 1:
+            raise ValueError(f"installed manifest has no {worker_kind} worker asset")
+        asset = worker_assets[0]
         if (set(asset) != {"destination", "sha256", "mode"}
                 or not isinstance(asset.get("sha256"), str)
                 or SHA256_RE.fullmatch(asset["sha256"]) is None):
-            raise ValueError("invalid installed title worker asset")
+            raise ValueError(f"invalid installed {worker_kind} worker asset")
         if asset.get("mode") != "0o444":
-            raise ValueError("installed manifest title worker mode is not immutable")
-        _secure_regular_file(TITLE_WORKER_PATH, 0, 0o444, "session title worker")
+            raise ValueError(f"installed manifest {worker_kind} worker mode is not immutable")
+        _secure_regular_file(worker_path, 0, 0o444, f"{worker_kind} worker")
 
-        worker_digest = hashlib.sha256(TITLE_WORKER_PATH.read_bytes()).hexdigest()
+        worker_digest = hashlib.sha256(worker_path.read_bytes()).hexdigest()
         if worker_digest != asset.get("sha256"):
-            raise ValueError("session title worker digest mismatch")
+            raise ValueError(f"{worker_kind} worker digest mismatch")
         env = {
             "PATH": f"{account.pw_dir}/.local/bin:{account.pw_dir}/.bun/bin:/usr/bin:/bin",
             "HOME": account.pw_dir,
@@ -1563,8 +1581,7 @@ def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> di
             "LANG": "C.UTF-8",
             "CLAUDE_WORKSPACE_DIR": str(config.workspace),
             "CLAUDE_PROJECT_SESSIONS_DIR": str(config.project_sessions),
-            "TELEGRAM_STATE_DIR": str(config.channel_state),
-            "CLAUDE_TITLE_CLI": f"{account.pw_dir}/.local/bin/claude",
+            **extra_env,
         }
         auth_keys = (
             "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
@@ -1576,14 +1593,16 @@ def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> di
             if value:
                 env[key] = value
         if not any(env.get(key) for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")):
-            raise RuntimeError("authenticated title source is unavailable")
+            raise RuntimeError(f"authenticated {auth_source_label} is unavailable")
+
         def drop_privileges() -> None:
             os.setgroups([])
             os.setgid(account.pw_gid)
             os.setuid(config.service_uid)
+
         result = subprocess.run(
-            [f"/proc/self/fd/{bun_fd}", str(TITLE_WORKER_PATH), session_id],
-            input=b"",
+            [f"/proc/self/fd/{bun_fd}", str(worker_path), *argv_tail],
+            input=load_input(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
@@ -1595,21 +1614,93 @@ def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> di
             pass_fds=(bun_fd,),
         )
         if result.returncode != 0:
-            raise RuntimeError("session title job failed")
-        return {"status": "title_complete"}
+            raise RuntimeError(failure_message)
     finally:
         os.close(bun_fd)
+
+
+MEMORY_REVIEW_SNAPSHOT_MAX_BYTES = 32 * 1024
+
+
+def _memory_review_snapshot_key(session_id: str, prompt_id: str) -> str:
+    return hashlib.sha256(f"{session_id} {prompt_id}".encode()).hexdigest()
+
+
+def _read_memory_review_snapshot(config: ResetConfig, account: Any, *, session_id: str, prompt_id: str) -> bytes:
+    """Reads the exact bounded-snapshot bytes handleMemoryReviewCommand (the unprivileged
+    control MCP, at Stop-hook time -- the only point in the pipeline where the untrusted
+    transcript-derived text is actually available) already built, bounded, redacted, and wrote
+    via writeMemoryReviewSnapshot. Root never builds or interprets a snapshot itself: it only
+    feeds these exact bytes, unparsed, to the isolated worker's stdin (memory-review-worker.ts's
+    readSnapshotFromStdin). Missing, corrupt, wrongly owned, or oversized -- fail closed; a
+    review that cannot get a real snapshot must not silently run with none.
+    """
+    directory = Path(account.pw_dir) / ".local/state/claude-code-telegram-kit/memory-review/snapshots"
+    try:
+        before = directory.lstat()
+    except OSError as exc:
+        raise ValueError("memory review snapshot is not available") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise ValueError("memory review snapshot directory must be a real directory")
+    if before.st_uid != config.service_uid or stat.S_IMODE(before.st_mode) != 0o700:
+        raise ValueError("memory review snapshot directory must be owned by the service user with mode 0700")
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(dir_fd)
+        if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+            raise ValueError("memory review snapshot directory changed during validation")
+        if opened.st_uid != config.service_uid or stat.S_IMODE(opened.st_mode) != 0o700:
+            raise ValueError("memory review snapshot directory must be owned by the service user with mode 0700")
+        name = f"{_memory_review_snapshot_key(session_id, prompt_id)}.json"
+        try:
+            text = _read_secure_at(
+                dir_fd, name, config.service_uid, 0o600, "memory review snapshot",
+                max_bytes=MEMORY_REVIEW_SNAPSHOT_MAX_BYTES,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError("memory review snapshot is not available") from exc
+    finally:
+        os.close(dir_fd)
+    return text.encode("utf-8")
+
+
+def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> dict[str, Any]:
+    """Run the fixed title worker once as the authenticated Claude service user."""
+    if os.geteuid() != 0:
+        raise PermissionError("session title helper must run as root")
+    _validate_uuid(session_id)
+    transcript = config.project_sessions / f"{session_id}.jsonl"
+    _secure_regular_file(transcript, config.service_uid, 0o600, "session transcript")
+    account = pwd.getpwnam(config.service_user)
+    _run_isolated_worker(
+        config,
+        account,
+        worker_path=TITLE_WORKER_PATH,
+        worker_kind="title",
+        auth_source_label="title source",
+        argv_tail=[session_id],
+        extra_env={
+            "TELEGRAM_STATE_DIR": str(config.channel_state),
+            "CLAUDE_TITLE_CLI": f"{account.pw_dir}/.local/bin/claude",
+        },
+        load_input=lambda: b"",
+        timeout=timeout,
+        failure_message="session title job failed",
+    )
+    return {"status": "title_complete"}
 
 
 def memory_review_session(config: ResetConfig, *, session_id: str, prompt_id: str, timeout: float) -> dict[str, Any]:
     """Run the fixed, immutable Memory Harness reviewer worker once as the service user.
 
-    This mirrors title_session's root bundle / manifest / pinned Bun FD execution pattern
-    exactly (handoff doc section A5): the same manifest, the same digest-verified Bun
-    runtime, the same drop-privileges-before-exec discipline, and the same allowlisted-only
-    OAuth environment. It never grants Bash/Read/Edit/Write, never resumes or forks the
-    caller's session, and never touches the memory tree itself -- the worker only reads one
-    queued receipt and validates one model call's strict JSON output.
+    This shares title_session's root bundle / manifest / pinned Bun FD execution pattern
+    exactly via _run_isolated_worker (handoff doc section A5): the same manifest, the same
+    digest-verified Bun runtime, the same drop-privileges-before-exec discipline, and the same
+    allowlisted-only OAuth environment. It never grants Bash/Read/Edit/Write, never resumes or
+    forks the caller's session, and never touches the memory tree itself -- the worker only
+    reads one queued receipt, one bounded snapshot fed on its stdin (never argv/env, since it
+    may legitimately contain arbitrary transcript-derived characters those channels are not
+    safe for), and validates one model call's strict JSON output.
     """
     if os.geteuid() != 0:
         raise PermissionError("memory review helper must run as root")
@@ -1619,108 +1710,19 @@ def memory_review_session(config: ResetConfig, *, session_id: str, prompt_id: st
     transcript = config.project_sessions / f"{session_id}.jsonl"
     _secure_regular_file(transcript, config.service_uid, 0o600, "session transcript")
     account = pwd.getpwnam(config.service_user)
-    _secure_regular_file(ROOT_ASSET_MANIFEST, 0, 0o600, "installed root asset manifest")
-    manifest = json.loads(_read_secure_regular(ROOT_ASSET_MANIFEST, 0, 0o600, "installed root asset manifest"))
-    if (not isinstance(manifest, dict)
-            or set(manifest) != {"commit", "service_user", "bun", "backup", "assets"}
-            or not isinstance(manifest.get("commit"), str)
-            or COMMIT_RE.fullmatch(manifest["commit"]) is None
-            or manifest.get("service_user") != config.service_user
-            or not isinstance(manifest.get("backup"), str)
-            or not isinstance(manifest.get("assets"), list)):
-        raise ValueError("invalid installed root asset manifest")
-    bun_record = manifest.get("bun")
-    if (not isinstance(bun_record, dict)
-            or set(bun_record) != {"path", "sha256", "mode"}
-            or not isinstance(bun_record.get("sha256"), str)
-            or SHA256_RE.fullmatch(bun_record["sha256"]) is None):
-        raise ValueError("installed manifest has no Bun runtime record")
-    if bun_record.get("mode") != "0755":
-        raise ValueError("installed manifest Bun mode is not 0755")
-    bun_path = Path(bun_record.get("path", ""))
-    expected_bun = Path(account.pw_dir) / ".bun/bin/bun"
-    if bun_path != expected_bun or not bun_path.is_absolute():
-        raise ValueError("installed manifest Bun path is not the fixed service runtime")
-    bun_info = _secure_regular_file(bun_path, config.service_uid, 0o755, "bun runtime")
-
-    bun_fd = os.open(bun_path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        opened_bun = os.fstat(bun_fd)
-        _validate_file_info(opened_bun, config.service_uid, 0o755, "bun runtime")
-        if opened_bun.st_dev != bun_info.st_dev or opened_bun.st_ino != bun_info.st_ino:
-            raise ValueError("bun runtime changed during validation")
-        digest = hashlib.sha256()
-        os.lseek(bun_fd, 0, os.SEEK_SET)
-        while chunk := os.read(bun_fd, 1024 * 1024):
-            digest.update(chunk)
-        if digest.hexdigest() != bun_record.get("sha256"):
-            raise ValueError("bun runtime digest mismatch")
-        os.lseek(bun_fd, 0, os.SEEK_SET)
-        os.set_inheritable(bun_fd, True)
-        review_assets = [item for item in manifest["assets"]
-                          if isinstance(item, dict) and item.get("destination") == str(MEMORY_REVIEW_WORKER_PATH)]
-        if len(review_assets) != 1:
-            raise ValueError("installed manifest has no memory review worker asset")
-        asset = review_assets[0]
-        if (set(asset) != {"destination", "sha256", "mode"}
-                or not isinstance(asset.get("sha256"), str)
-                or SHA256_RE.fullmatch(asset["sha256"]) is None):
-            raise ValueError("invalid installed memory review worker asset")
-        if asset.get("mode") != "0o444":
-            raise ValueError("installed manifest memory review worker mode is not immutable")
-        _secure_regular_file(MEMORY_REVIEW_WORKER_PATH, 0, 0o444, "memory review worker")
-
-        worker_digest = hashlib.sha256(MEMORY_REVIEW_WORKER_PATH.read_bytes()).hexdigest()
-        if worker_digest != asset.get("sha256"):
-            raise ValueError("memory review worker digest mismatch")
-        env = {
-            "PATH": f"{account.pw_dir}/.local/bin:{account.pw_dir}/.bun/bin:/usr/bin:/bin",
-            "HOME": account.pw_dir,
-            "USER": config.service_user,
-            "LOGNAME": config.service_user,
-            "LANG": "C.UTF-8",
-            "CLAUDE_WORKSPACE_DIR": str(config.workspace),
-            "CLAUDE_PROJECT_SESSIONS_DIR": str(config.project_sessions),
-        }
-        auth_keys = (
-            "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-            "SSL_CERT_FILE", "SSL_CERT_DIR",
-        )
-        for key in auth_keys:
-            value = os.environ.get(key)
-            if value:
-                env[key] = value
-        if not any(env.get(key) for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")):
-            raise RuntimeError("authenticated review source is unavailable")
-
-        def drop_privileges() -> None:
-            os.setgroups([])
-            os.setgid(account.pw_gid)
-            os.setuid(config.service_uid)
-
-        # The bounded snapshot is fed on stdin, not argv: it may legitimately contain
-        # arbitrary transcript-derived characters that argv/env are not a safe channel for.
-        snapshot_stdin = b""
-        result = subprocess.run(
-            [f"/proc/self/fd/{bun_fd}", str(MEMORY_REVIEW_WORKER_PATH), session_id, prompt_id],
-            input=snapshot_stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-            text=False,
-            cwd=config.workspace,
-            env=env,
-            preexec_fn=drop_privileges,
-            pass_fds=(bun_fd,),
-        )
-        if result.returncode != 0:
-            raise RuntimeError("memory review job failed")
-        return {"status": "memory_review_complete"}
-    finally:
-        os.close(bun_fd)
-
+    _run_isolated_worker(
+        config,
+        account,
+        worker_path=MEMORY_REVIEW_WORKER_PATH,
+        worker_kind="memory review",
+        auth_source_label="review source",
+        argv_tail=[session_id, prompt_id],
+        extra_env={},
+        load_input=lambda: _read_memory_review_snapshot(config, account, session_id=session_id, prompt_id=prompt_id),
+        timeout=timeout,
+        failure_message="memory review job failed",
+    )
+    return {"status": "memory_review_complete"}
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

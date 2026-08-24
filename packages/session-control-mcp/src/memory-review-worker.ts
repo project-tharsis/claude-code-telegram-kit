@@ -46,8 +46,17 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
     if (!transitioned) throw new Error("review receipt transition failed");
     return proposal.decision === "no_op" ? { outcome: "no_op" } : { outcome: "reviewed", proposal };
   } catch (error) {
-    transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
-    const reason = error instanceof MemoryReviewGenerationError ? `${error.phase}:${error.reason}` : "unknown";
+    // A retryable generation error (timeout, rate_limited, or a transient command failure) must
+    // leave the receipt exactly as it was -- still "queued" -- so a later retry can still run.
+    // createMemoryReviewReceipt's singleflight check would otherwise treat any pre-existing
+    // receipt, including one wrongly finalized to "failed" by a transient error, as permanently
+    // un-reviewable. Only a proven-permanent error (e.g. schema/parse failure) finalizes to
+    // "failed"; see AGENTS.md / docs/design-invariants.md.
+    const generationError = error instanceof MemoryReviewGenerationError ? error : null;
+    if (generationError === null || !generationError.retryable) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+    }
+    const reason = generationError ? `${generationError.phase}:${generationError.reason}` : "unknown";
     return { outcome: "failed", reason };
   }
 }
@@ -56,14 +65,22 @@ interface WorkerStdin {
   snapshot: MemoryReviewSnapshot;
 }
 
-function readSnapshotFromStdin(): MemoryReviewSnapshot {
-  const raw = readFileSync(0);
+/**
+ * Parses the exact `{"snapshot": ...}` wire shape serializeMemoryReviewSnapshot produces
+ * (memory-review-snapshot.ts). Exported so the producer/consumer round-trip can be exercised
+ * directly against real bytes in tests, without spawning a subprocess.
+ */
+export function parseSnapshotFromStdin(raw: Buffer): MemoryReviewSnapshot {
   if (raw.byteLength === 0 || raw.byteLength > MAX_SNAPSHOT_BYTES) throw new Error("invalid snapshot input");
   const parsed = JSON.parse(raw.toString("utf8")) as WorkerStdin;
-  if (typeof parsed !== "object" || parsed === null || typeof parsed.snapshot !== "object") {
+  if (typeof parsed !== "object" || parsed === null || typeof parsed.snapshot !== "object" || parsed.snapshot === null) {
     throw new Error("invalid snapshot input");
   }
   return parsed.snapshot;
+}
+
+function readSnapshotFromStdin(): MemoryReviewSnapshot {
+  return parseSnapshotFromStdin(readFileSync(0));
 }
 
 if (import.meta.main) {

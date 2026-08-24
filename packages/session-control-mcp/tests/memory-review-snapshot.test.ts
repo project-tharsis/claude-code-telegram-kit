@@ -43,6 +43,30 @@ describe("bounded memory review snapshot builder (handoff doc A4)", () => {
     expect(total).toBeLessThanOrEqual(6_000);
   });
 
+  test("enforces the total budget by scaling every contributing field, not by crushing only assistantFinal", () => {
+    const snapshot = buildMemoryReviewSnapshot({
+      ...baseInput(),
+      userMessage: "a".repeat(1_200),
+      assistantFinal: "b".repeat(1_200),
+      recentCorrections: Array.from({ length: 4 }, () => "c".repeat(1_200)),
+      earlierTurnDigests: Array.from({ length: 6 }, () => "d".repeat(240)),
+      currentMemoryIndex: "e".repeat(1_200),
+      relevantTopics: [{ path: "topic.md", contentHash: "f".repeat(64), excerpt: "g".repeat(1_200) }],
+      nativeMemoryChangeSummary: "h".repeat(400)
+    });
+    const total = snapshot.userMessage.length + snapshot.assistantFinal.length
+      + snapshot.recentCorrections.join("").length + snapshot.earlierTurnDigests.join("").length
+      + snapshot.currentMemoryIndex.length + snapshot.relevantTopics.map(t => t.excerpt).join("").length
+      + snapshot.nativeMemoryChangeSummary.length;
+    expect(total).toBeLessThanOrEqual(6_000);
+    // Every field shrank by roughly the same proportion instead of only assistantFinal being
+    // trimmed to fit -- none of the maxed-out fields is crushed to (near) zero while another
+    // stays at its full per-field cap.
+    expect(snapshot.assistantFinal.length).toBeGreaterThan(0);
+    expect(snapshot.userMessage.length).toBeGreaterThan(0);
+    expect(snapshot.currentMemoryIndex.length).toBeGreaterThan(0);
+  });
+
   test("caps the number of tool entries and earlier-turn digests independent of content size", () => {
     const snapshot = buildMemoryReviewSnapshot({
       ...baseInput(),
@@ -70,6 +94,16 @@ describe("bounded memory review snapshot builder (handoff doc A4)", () => {
     expect(snapshot.userMessage).not.toContain("sk-live-abcdefghijklmnop");
     expect(snapshot.assistantFinal).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaa");
     expect(snapshot.userMessage).toContain("[redacted]");
+  });
+
+  test("redacts a quoted-JSON-style credential shape, not just bare key: value prose", () => {
+    const snapshot = buildMemoryReviewSnapshot({
+      ...baseInput(),
+      userMessage: 'here is the config: {"password": "hunter2value"}',
+      assistantFinal: 'and the header: {"api_key":"abcdefghij1234567890zzzz"}'
+    });
+    expect(snapshot.userMessage).not.toContain("hunter2value");
+    expect(snapshot.assistantFinal).not.toContain("abcdefghij1234567890zzzz");
   });
 
   test("rejects an invalid release SHA rather than passing it through", () => {

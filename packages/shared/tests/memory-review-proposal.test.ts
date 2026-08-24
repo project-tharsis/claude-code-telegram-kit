@@ -34,4 +34,18 @@ describe("strict memory review proposal schema", () => {
     const hostile = JSON.parse('{"decision":"create","target":"managed_memory","topic":"a","evidence":[],"content":"c","reason":"r","freshness":"standing","__proto__":{"polluted":true}}');
     expect(() => validateMemoryReviewProposal(hostile)).toThrow();
   });
+
+  test("rejects content carrying a quoted-JSON-style credential shape, not just bare key: value prose", () => {
+    const withPassword = {
+      decision: "create", target: "managed_memory", topic: "a", evidence: [],
+      content: 'user shared config: {"password": "hunter2value"}', reason: "r", freshness: "standing"
+    };
+    expect(() => validateMemoryReviewProposal(withPassword)).toThrow("credential-shaped");
+
+    const withApiKey = {
+      decision: "create", target: "managed_memory", topic: "a", evidence: [],
+      content: "c", reason: 'saw header {"api_key":"abcdefghij1234567890zzzz"}', freshness: "standing"
+    };
+    expect(() => validateMemoryReviewProposal(withApiKey)).toThrow("credential-shaped");
+  });
 });

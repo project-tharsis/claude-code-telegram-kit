@@ -412,12 +412,28 @@ class MemoryReviewSessionTests(unittest.TestCase):
         }))
         return bun, worker, manifest
 
+    def _write_snapshot(self, home: Path, session_id: str, prompt_id: str, payload: bytes, *, mode: int = 0o600) -> Path:
+        """Mirrors what handleMemoryReviewCommand's writeMemoryReviewSnapshot (TS) persists:
+        the same directory layout, key derivation (sha256 of "session_id prompt_id"), and file
+        mode -- this is the exact file _read_memory_review_snapshot reads."""
+        directory = home / ".local/state/claude-code-telegram-kit/memory-review/snapshots"
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o700)
+        key = hashlib.sha256(f"{session_id} {prompt_id}".encode()).hexdigest()
+        path = directory / f"{key}.json"
+        path.write_bytes(payload)
+        path.chmod(mode)
+        return path
+
     def test_passes_only_allowlisted_auth_to_the_dropped_worker(self):
         with tempfile.TemporaryDirectory() as td:
             config = _make_config(Path(td))
             _write_transcript(config.project_sessions, NEW_SESSION)
             bun, worker, manifest = self._review_assets(Path(td), Path(td) / "home")
-            account = SimpleNamespace(pw_dir=str(Path(td) / "home"), pw_gid=os.getgid())
+            home = Path(td) / "home"
+            snapshot_bytes = json.dumps({"snapshot": {"userMessage": "hi", "assistantFinal": "hello"}}).encode()
+            self._write_snapshot(home, NEW_SESSION, "prompt-1", snapshot_bytes)
+            account = SimpleNamespace(pw_dir=str(home), pw_gid=os.getgid())
             completed = subprocess.CompletedProcess([], 0, b"", b"")
             with mock.patch.object(reset.os, "geteuid", return_value=0), \
                     mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
@@ -443,6 +459,30 @@ class MemoryReviewSessionTests(unittest.TestCase):
             # No renderer/control MCP identity and no Telegram/channel authority reaches the
             # isolated reviewer's environment.
             self.assertNotIn("TELEGRAM_STATE_DIR", kwargs["env"])
+            # The real snapshot bytes handleMemoryReviewCommand wrote are fed to the worker's
+            # stdin unparsed -- this is the fix for the "always empty stdin" wiring gap.
+            self.assertEqual(kwargs["input"], snapshot_bytes)
+
+    def test_fails_closed_when_no_snapshot_was_ever_written_for_this_session_and_prompt(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            _write_transcript(config.project_sessions, NEW_SESSION)
+            bun, worker, manifest = self._review_assets(Path(td), Path(td) / "home")
+            home = Path(td) / "home"
+            (home / ".local/state/claude-code-telegram-kit/memory-review/snapshots").mkdir(parents=True)
+            (home / ".local/state/claude-code-telegram-kit/memory-review/snapshots").chmod(0o700)
+            account = SimpleNamespace(pw_dir=str(home), pw_gid=os.getgid())
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_secure_regular_file", return_value=os.stat(bun)), \
+                    mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
+                    mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
+                    mock.patch.object(reset, "MEMORY_REVIEW_WORKER_PATH", worker), \
+                    mock.patch.object(reset.subprocess, "run") as run, \
+                    mock.patch.dict(reset.os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "opaque-test-token"}, clear=True):
+                with self.assertRaisesRegex(ValueError, "memory review snapshot is not available"):
+                    reset.memory_review_session(config, session_id=NEW_SESSION, prompt_id="never-enqueued", timeout=30)
+            run.assert_not_called()
 
     def test_refuses_to_start_without_an_authenticated_review_source(self):
         with tempfile.TemporaryDirectory() as td:

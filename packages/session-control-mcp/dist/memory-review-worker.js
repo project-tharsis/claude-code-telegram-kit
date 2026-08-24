@@ -4,6 +4,25 @@
 // packages/session-control-mcp/src/memory-review-worker.ts
 import { readFileSync } from "fs";
 
+// packages/shared/src/credential-patterns.ts
+var CREDENTIAL_PATTERN_SOURCES = [
+  { source: "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----", flags: "" },
+  {
+    source: `(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)["']?\\s*[:=]\\s*["']?[^\\s,;"']+`,
+    flags: "i"
+  },
+  { source: "\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}", flags: "i" },
+  { source: "\\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\\b", flags: "" },
+  { source: "\\b[A-Fa-f0-9]{32,}\\b", flags: "" },
+  { source: "\\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\\b", flags: "" },
+  { source: "\\bxox[baprs]-[A-Za-z0-9-]{16,}\\b", flags: "" },
+  { source: "\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b", flags: "" },
+  { source: "\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b", flags: "" },
+  { source: "https?://[^:\\s/@]+:[^@\\s/]+@", flags: "i" }
+];
+function containsCredentialShape(value) {
+  return CREDENTIAL_PATTERN_SOURCES.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
+}
 // packages/shared/src/memory-review-proposal.ts
 var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
 var MEMORY_REVIEW_TARGETS = ["managed_memory"];
@@ -16,21 +35,6 @@ var MAX_EVIDENCE_CHARS = 160;
 var TOPIC_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 var PATH_LIKE_RE = /(?:^|[\s"'`])(?:\.\.[\\/]|~[\\/]|\/(?:home|Users|srv|etc|var|opt|tmp|root)\/|[A-Za-z]:[\\/]|\\\\)/;
 var CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
-var CREDENTIAL_PATTERNS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)\s*[:=]\s*\S/i,
-  /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
-  /\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\b/,
-  /\b[A-Fa-f0-9]{32,}\b/,
-  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
-  /https?:\/\/[^:\s/@]+:[^@\s/]+@/i
-];
-function containsCredentialShape(value) {
-  return CREDENTIAL_PATTERNS.some((pattern) => pattern.test(value));
-}
 function isBoundedString(value, maxChars, minChars = 1) {
   if (typeof value !== "string")
     return false;
@@ -552,20 +556,25 @@ async function runMemoryReviewWorker(options) {
       throw new Error("review receipt transition failed");
     return proposal.decision === "no_op" ? { outcome: "no_op" } : { outcome: "reviewed", proposal };
   } catch (error) {
-    transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
-    const reason = error instanceof MemoryReviewGenerationError ? `${error.phase}:${error.reason}` : "unknown";
+    const generationError = error instanceof MemoryReviewGenerationError ? error : null;
+    if (generationError === null || !generationError.retryable) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+    }
+    const reason = generationError ? `${generationError.phase}:${generationError.reason}` : "unknown";
     return { outcome: "failed", reason };
   }
 }
-function readSnapshotFromStdin() {
-  const raw = readFileSync(0);
+function parseSnapshotFromStdin(raw) {
   if (raw.byteLength === 0 || raw.byteLength > MAX_SNAPSHOT_BYTES)
     throw new Error("invalid snapshot input");
   const parsed = JSON.parse(raw.toString("utf8"));
-  if (typeof parsed !== "object" || parsed === null || typeof parsed.snapshot !== "object") {
+  if (typeof parsed !== "object" || parsed === null || typeof parsed.snapshot !== "object" || parsed.snapshot === null) {
     throw new Error("invalid snapshot input");
   }
   return parsed.snapshot;
+}
+function readSnapshotFromStdin() {
+  return parseSnapshotFromStdin(readFileSync(0));
 }
 if (import.meta.main) {
   (async () => {
@@ -588,5 +597,6 @@ if (import.meta.main) {
   })();
 }
 export {
-  runMemoryReviewWorker
+  runMemoryReviewWorker,
+  parseSnapshotFromStdin
 };

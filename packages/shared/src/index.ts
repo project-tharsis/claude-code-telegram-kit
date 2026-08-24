@@ -1,3 +1,4 @@
+export * from "./credential-patterns.js";
 export * from "./memory-review-proposal.js";
 export * from "./memory-review-receipt.js";
 export * from "./memory-review-trigger.js";

@@ -30,6 +30,7 @@ function directoryDigest(directory: string): string {
 
 describe("PR1 read-only isolation canaries", () => {
   let receiptDirectory: string;
+  let snapshotDirectory: string;
   let sessionsDirectory: string;
   let memoryTreeDirectory: string;
   let claudeProjectsDirectory: string;
@@ -38,6 +39,7 @@ describe("PR1 read-only isolation canaries", () => {
 
   beforeEach(() => {
     receiptDirectory = mkdtempSync(join(tmpdir(), "memory-review-canary-receipts-"));
+    snapshotDirectory = mkdtempSync(join(tmpdir(), "memory-review-canary-snapshots-"));
     sessionsDirectory = mkdtempSync(join(tmpdir(), "memory-review-canary-sessions-"));
     memoryTreeDirectory = mkdtempSync(join(tmpdir(), "memory-review-canary-memory-"));
     claudeProjectsDirectory = mkdtempSync(join(tmpdir(), "memory-review-canary-projects-"));
@@ -53,6 +55,7 @@ describe("PR1 read-only isolation canaries", () => {
 
   afterEach(() => {
     rmSync(receiptDirectory, { recursive: true, force: true });
+    rmSync(snapshotDirectory, { recursive: true, force: true });
     rmSync(sessionsDirectory, { recursive: true, force: true });
     rmSync(memoryTreeDirectory, { recursive: true, force: true });
     rmSync(claudeProjectsDirectory, { recursive: true, force: true });
@@ -82,8 +85,10 @@ describe("PR1 read-only isolation canaries", () => {
     }, {
       projectSessionsDir: sessionsDirectory,
       receiptDirectory,
+      snapshotDirectory,
       telegramMessageId: 5,
       releaseSha: RELEASE_SHA,
+      deliveryOutcome: "delivered",
       userCorrection: true,
       // The broker/systemd hop is out of process; this simulates its eventual effect by
       // running the same isolated worker function directly, exactly as the root helper would
@@ -130,8 +135,10 @@ describe("PR1 read-only isolation canaries", () => {
     }, {
       projectSessionsDir: sessionsDirectory,
       receiptDirectory,
+      snapshotDirectory,
       telegramMessageId: 5,
       releaseSha: RELEASE_SHA,
+      deliveryOutcome: "delivered",
       userCorrection: true,
       schedule: async (sessionId, promptId) => runMemoryReviewWorker({
         sessionId,
@@ -176,8 +183,10 @@ describe("PR1 read-only isolation canaries", () => {
     }, {
       projectSessionsDir: sessionsDirectory,
       receiptDirectory,
+      snapshotDirectory,
       telegramMessageId: 5,
       releaseSha: RELEASE_SHA,
+      deliveryOutcome: "delivered",
       userCorrection: true,
       schedule: async (sessionId, promptId) => runMemoryReviewWorker({
         sessionId,
