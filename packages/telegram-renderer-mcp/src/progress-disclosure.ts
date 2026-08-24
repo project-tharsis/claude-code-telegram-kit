@@ -41,6 +41,7 @@ export const MAX_BACKGROUND_TASK_ROUTES = 128;
 export const RUNTIME_INCIDENT_TTL_MS = 5 * 60 * 1_000;
 export const MAX_RUNTIME_INCIDENTS = 32;
 export const MAX_RESET_FUTURE_MS = 7 * 24 * 60 * 60 * 1_000;
+export const RUNTIME_FAILURE_GRACE_MS = 250;
 
 const CONTROL_NAMESPACE = /^\/(?:usage|sessions|model|rename|reset|resume)(?=@|\s|$)/;
 const MODEL_REPLY_CHOICE = /^(?:[1-4] · (?:Opus|Sonnet|Haiku|Inherit)|5 · Cancel)$/;
@@ -123,6 +124,7 @@ interface Turn {
   cancelTyping: CancelScheduled | null;
   cancelRuntimeFailureWatch: CancelScheduled | null;
   runtimeFailureAttempted: boolean;
+  runtimeFailureWaiters: Set<() => void>;
   finalDeliveryAttempted: boolean;
   finalDeliveryRetries: number;
   artifactTracker: ArtifactTracker | null;
@@ -247,7 +249,31 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       ? owner : undefined;
   }
 
+  function resolveRuntimeFailureWaiters(turn: Turn): void {
+    for (const waiter of turn.runtimeFailureWaiters) waiter();
+    turn.runtimeFailureWaiters.clear();
+  }
+
+  function waitForStructuredRuntimeFailure(turn: Turn): Promise<void> {
+    if (turn.runtimeFailureAttempted || turn.cancelRuntimeFailureWatch === null) return Promise.resolve();
+    return new Promise(resolve => {
+      let cancelTimer: CancelScheduled = () => undefined;
+      const finish = () => {
+        if (!turn.runtimeFailureWaiters.delete(finish)) return;
+        cancelTimer();
+        resolve();
+      };
+      turn.runtimeFailureWaiters.add(finish);
+      try {
+        cancelTimer = deps.schedule(async () => finish(), RUNTIME_FAILURE_GRACE_MS);
+      } catch {
+        finish();
+      }
+    });
+  }
+
   function drop(turn: Turn): void {
+    resolveRuntimeFailureWaiters(turn);
     turn.cancel?.();
     turn.cancel = null;
     turn.cancelTyping?.();
@@ -425,6 +451,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
   ): Promise<void> {
     if (turn.runtimeFailureAttempted) return;
     turn.runtimeFailureAttempted = true;
+    resolveRuntimeFailureWaiters(turn);
     if (!finalized) await finalize(turn, "StopFailure");
     if (turns.get(key) !== turn) return;
     turn.cancelRuntimeFailureWatch?.();
@@ -541,6 +568,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           cancelTyping: background ? null : deps.startTyping(chatId),
           cancelRuntimeFailureWatch: null,
           runtimeFailureAttempted: false,
+          runtimeFailureWaiters: new Set(),
           finalDeliveryAttempted: false,
           finalDeliveryRetries: 0,
           artifactTracker: null,
@@ -676,6 +704,10 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         const key = turnKey(input.session_id, input.prompt_id);
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return "finished";
+        if (input.hook_event_name === "StopFailure" && input.error === "rate_limit") {
+          await waitForStructuredRuntimeFailure(turn);
+          if (turns.get(key) !== turn || turn.runtimeFailureAttempted) return "finished";
+        }
         if (turn.progressPhase === "background-agents") {
           if (input.hook_event_name === "StopFailure") {
             await deliverRuntimeFailure(turn, key, { error: input.error });

@@ -4,6 +4,35 @@
 // packages/session-control-mcp/src/session-title-worker.ts
 import { homedir as homedir2 } from "os";
 
+// packages/shared/src/runtime-failure.ts
+var RUNTIME_FAILURE_TYPES = [
+  "rate_limit",
+  "overloaded",
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "billing_error",
+  "invalid_request",
+  "model_not_found",
+  "server_error",
+  "max_output_tokens",
+  "unknown"
+];
+var RUNTIME_FAILURE_SET = new Set(RUNTIME_FAILURE_TYPES);
+var QUOTA_LIMIT_KEYS = new Set([
+  "remainingPercentage",
+  "resetsAt",
+  "rateLimitType",
+  "isUsingOverage",
+  "overageStatus",
+  "surpassedThreshold",
+  "isPerModel",
+  "isShowingWeeklyRefresh",
+  "isShowingFiveHourRefresh",
+  "status",
+  "unifiedRateLimitFallbackAvailable",
+  "overageDisabledReason",
+  "upgradePaths"
+]);
 // packages/shared/src/task-notification.ts
 var TOOL_USE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 var TASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/;

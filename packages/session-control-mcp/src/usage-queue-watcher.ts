@@ -8,7 +8,10 @@ import {
   type Stats
 } from "node:fs";
 import { basename, isAbsolute } from "node:path";
-import { parseDirectTelegramEnvelope } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  parseDirectTelegramEnvelope,
+  parseRuntimeFailureRow
+} from "@project-tharsis/claude-code-telegram-shared";
 import { parseControlCommand } from "./control-command.js";
 import type { ControlHookInput } from "./control-input.js";
 
@@ -47,11 +50,18 @@ export function createControlMessageClaims(maxEntries = 4_096): ControlMessageCl
   };
 }
 
-export function parseQueuedUsageEvent(
+interface QueuedChannelEvent {
+  prompt: string;
+  chatId: string;
+  messageId: string;
+  body: string;
+}
+
+function parseQueuedChannelEvent(
   line: string,
   transcriptSessionId: string,
-  nowMs = Date.now()
-): ControlHookInput | null {
+  nowMs: number
+): QueuedChannelEvent | null {
   if (!SESSION_ID.test(transcriptSessionId) || line.length === 0 || line.length > 64 * 1024) return null;
   let value: unknown;
   try { value = JSON.parse(line); } catch { return null; }
@@ -68,11 +78,21 @@ export function parseQueuedUsageEvent(
   if (!Number.isFinite(observedAt) || new Date(observedAt).toISOString() !== row.timestamp
     || observedAt < nowMs - MAX_EVENT_AGE_MS || observedAt > nowMs + MAX_FUTURE_SKEW_MS) return null;
   const envelope = parseDirectTelegramEnvelope(row.content);
-  if (envelope === null || parseControlCommand(envelope.body).kind !== "usage") return null;
+  if (envelope === null) return null;
+  return { prompt: row.content, chatId: envelope.chatId, messageId: envelope.messageId, body: envelope.body };
+}
+
+export function parseQueuedUsageEvent(
+  line: string,
+  transcriptSessionId: string,
+  nowMs = Date.now()
+): ControlHookInput | null {
+  const event = parseQueuedChannelEvent(line, transcriptSessionId, nowMs);
+  if (event === null || parseControlCommand(event.body).kind !== "usage") return null;
   return {
     session_id: transcriptSessionId,
-    prompt_id: `queue:${envelope.messageId}`,
-    prompt: row.content,
+    prompt_id: `queue:${event.messageId}`,
+    prompt: event.prompt,
     hook_event_name: "UserPromptSubmit"
   };
 }
@@ -82,13 +102,21 @@ const MAX_TRANSCRIPTS = 64;
 const MAX_SCAN_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
 const POLL_MS = 250;
+const MAX_QUOTA_FUTURE_MS = 7 * 24 * 60 * 60_000;
 
 interface ScheduleHandle { cancel: () => void }
 type Schedule = (callback: () => void, delayMs: number) => ScheduleHandle;
 
+export interface QuotaTakeoverNotice {
+  chatId: string;
+  messageId: string;
+  resetsAt: number;
+}
+
 export interface QueuedUsageWatcherOptions {
   directory: string;
   dispatch: (input: ControlHookInput) => Promise<unknown>;
+  sendQuotaNotice?: (notice: QuotaTakeoverNotice) => Promise<void>;
   expectedUid?: number;
   now?: () => number;
   schedule?: Schedule;
@@ -106,6 +134,7 @@ interface TrackedTranscript {
   offset: number;
   pending: Buffer;
   skipOversizedLine: boolean;
+  quotaResetsAt?: number;
 }
 
 function defaultSchedule(callback: () => void, delayMs: number): ScheduleHandle {
@@ -170,6 +199,36 @@ function sameIdentity(current: Stats, original: Stats): boolean {
     && current.mode === original.mode && current.nlink === original.nlink && current.isFile();
 }
 
+function updateQuotaState(transcript: TrackedTranscript, line: string, nowMs: number): void {
+  let value: unknown;
+  try { value = JSON.parse(line); } catch { return; }
+  const failure = parseRuntimeFailureRow(value);
+  if (failure?.error !== "rate_limit" || failure.resetsAt === undefined) return;
+  const resetMs = failure.resetsAt * 1_000;
+  if (resetMs > nowMs && resetMs <= nowMs + MAX_QUOTA_FUTURE_MS
+    && (transcript.quotaResetsAt === undefined || failure.resetsAt > transcript.quotaResetsAt)) {
+    transcript.quotaResetsAt = failure.resetsAt;
+  }
+}
+
+function restoreQuotaState(transcript: TrackedTranscript, nowMs: number): void {
+  const length = Math.min(transcript.offset, MAX_SCAN_BYTES);
+  if (length <= 0) return;
+  const buffer = Buffer.allocUnsafe(length);
+  const start = transcript.offset - length;
+  const count = readSync(transcript.fd, buffer, 0, length, start);
+  if (count <= 0) return;
+  let text = buffer.subarray(0, count).toString("utf8");
+  if (start > 0) {
+    const newline = text.indexOf("\n");
+    if (newline < 0) return;
+    text = text.slice(newline + 1);
+  }
+  for (const line of text.split("\n")) {
+    if (line.length > 0 && line.length <= MAX_LINE_BYTES) updateQuotaState(transcript, line, nowMs);
+  }
+}
+
 function readAppendedLines(transcript: TrackedTranscript, current: Stats): string[] {
   if (!Number.isSafeInteger(current.size)) throw new Error("transcript size is invalid");
   const growth = current.size - transcript.offset;
@@ -226,6 +285,7 @@ export function watchQueuedUsageControls(options: QueuedUsageWatcherOptions): Qu
     for (const name of transcriptNames) {
       const transcript = openTranscript(directoryFd, name, expectedUid);
       if (transcript === null) throw new Error("transcript metadata is invalid");
+      restoreQuotaState(transcript, options.now?.() ?? Date.now());
       tracked.set(name, transcript);
     }
   } catch (error) {
@@ -238,6 +298,7 @@ export function watchQueuedUsageControls(options: QueuedUsageWatcherOptions): Qu
   }
 
   const schedule = options.schedule ?? defaultSchedule;
+  const quotaClaims = createControlMessageClaims();
   let timer: ScheduleHandle | null = null;
   let closed = false;
   let running: Promise<void> | null = null;
@@ -264,11 +325,33 @@ export function watchQueuedUsageControls(options: QueuedUsageWatcherOptions): Qu
         continue;
       }
       for (const line of lines) {
-        const input = parseQueuedUsageEvent(
-          line, transcript.sessionId, options.now?.() ?? Date.now()
-        );
-        if (input !== null) {
+        const currentNow = options.now?.() ?? Date.now();
+        updateQuotaState(transcript, line, currentNow);
+        const event = parseQueuedChannelEvent(line, transcript.sessionId, currentNow);
+        if (event === null) continue;
+        const command = parseControlCommand(event.body);
+        if (command.kind === "usage") {
+          const input: ControlHookInput = {
+            session_id: transcript.sessionId,
+            prompt_id: `queue:${event.messageId}`,
+            prompt: event.prompt,
+            hook_event_name: "UserPromptSubmit"
+          };
           try { await options.dispatch(input); } catch { /* exact row consumed; never retry uncertain send */ }
+          continue;
+        }
+        if (command.kind !== "other" || options.sendQuotaNotice === undefined) continue;
+        const resetsAt = transcript.quotaResetsAt;
+        if (resetsAt === undefined) continue;
+        if (resetsAt * 1_000 <= currentNow) {
+          delete transcript.quotaResetsAt;
+          continue;
+        }
+        if (!quotaClaims.claim(event.chatId, event.messageId)) continue;
+        try {
+          await options.sendQuotaNotice({ chatId: event.chatId, messageId: event.messageId, resetsAt });
+        } catch {
+          // The message is reserved before transport; unknown outcomes are never replayed.
         }
       }
     }
