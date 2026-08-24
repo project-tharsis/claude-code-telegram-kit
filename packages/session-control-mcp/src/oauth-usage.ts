@@ -7,6 +7,13 @@ const MAX_CREDENTIAL_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
+class OAuthCredentialUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OAuthCredentialUnavailableError";
+  }
+}
+
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface OAuthUsageOptions {
@@ -103,7 +110,14 @@ export async function fetchOAuthUsageSnapshot(options: OAuthUsageOptions = {}): 
   const userAgent = options.userAgent;
   if (typeof userAgent !== "string" || userAgent.length === 0 || userAgent.length > 256
     || !userAgent.startsWith("claude-code/") || /[\u0000-\u001f\u007f]/u.test(userAgent)) return null;
-  const token = readAccessToken(path, expectedUid, nowMs);
+  let token: string | null;
+  try {
+    token = readAccessToken(path, expectedUid, nowMs);
+  } catch (error) {
+    if (error instanceof Error
+      && (error.message === "credential parent must be canonical" || error.message === "credential parent must be absolute")) throw error;
+    throw new OAuthCredentialUnavailableError(error instanceof Error ? error.message : "credential unavailable");
+  }
   if (token === null) return null;
   const authorizationHeader = ["Bear", "er ", token].join("");
   const headers = new Headers({
@@ -164,11 +178,17 @@ export function createOAuthUsageReader(options: OAuthUsageReaderOptions = {}) {
     if (cached !== null && current - cached.captured_at * 1_000 <= freshMs) return cached;
     if (current < nextAttemptAt) return null;
     if (inflight !== null) return inflight;
-    inflight = fetchOAuthUsageSnapshot({ ...options, now }).then(result => {
-      nextAttemptAt = current + (result === null ? retryMs : freshMs);
-      if (result !== null) cached = result;
-      return result;
-    }).finally(() => { inflight = null; });
+    inflight = fetchOAuthUsageSnapshot({ ...options, now })
+      .catch(error => {
+        if (error instanceof OAuthCredentialUnavailableError) return null;
+        throw error;
+      })
+      .then(result => {
+        nextAttemptAt = current + (result === null ? retryMs : freshMs);
+        if (result !== null) cached = result;
+        return result;
+      })
+      .finally(() => { inflight = null; });
     return inflight;
   };
 }

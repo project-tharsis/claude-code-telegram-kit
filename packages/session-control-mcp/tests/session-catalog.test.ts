@@ -86,6 +86,24 @@ describe("bounded resumable session catalog", () => {
     expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
   });
 
+  test("rejects mismatched dual terminal identifiers without clearing the fork", () => {
+    const root = makeRoot();
+    const id = uuid(22);
+    const path = writeSession(root, id, { extraLines: [
+      JSON.stringify({ type: "user", toolUseResult: { status: "forked", agentId: "agent-match" }, message: { content: [
+        { type: "tool_result", tool_use_id: "skill-match", content: "launched" }
+      ] } })
+    ] });
+    writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
+      type: "user", message: { content: "<task-notification><task-id>agent-other</task-id><tool-use-id>skill-match</tool-use-id><status>completed</status></task-notification>" }
+    })}\n`);
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
+    writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
+      type: "user", message: { content: "<task-notification><task-id>agent-match</task-id><status>completed</status></task-notification>" }
+    })}\n`);
+    expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
+  });
+
   test("clears a fork after a failed or killed terminal notification", () => {
     for (const [index, status] of ["failed", "killed"].entries()) {
       const root = makeRoot();
@@ -97,7 +115,7 @@ describe("bounded resumable session catalog", () => {
       ] });
       expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
       writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
-        type: "user", message: { content: `<task-notification><task-id>task-${status}</task-id><tool-use-id>skill-${status}</tool-use-id><status>${status}</status></task-notification>` }
+        type: "user", message: { content: `<task-notification><task-id>agent-${status}</task-id><tool-use-id>skill-${status}</tool-use-id><status>${status}</status></task-notification>` }
       })}\n`);
       expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
     }
@@ -118,7 +136,7 @@ describe("bounded resumable session catalog", () => {
     ] });
     expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(true);
     writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify({
-      type: "user", message: { content: '<task-notification><task-id>task-8</task-id><tool-use-id>skill-middle</tool-use-id><status>completed</status></task-notification>' }
+      type: "user", message: { content: '<task-notification><task-id>agent-8</task-id><tool-use-id>skill-middle</tool-use-id><status>completed</status></task-notification>' }
     })}\n`);
     expect(readSessionTitleContext({ directory: root, sessionId: id }).hasIncompleteForkedTask).toBe(false);
   });

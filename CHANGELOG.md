@@ -15,6 +15,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- OAuth usage credential-read rejections now enter the same five-minute cooldown as HTTP/network failures, so missing, malformed, or unsafe authority cannot cause immediate repeated `/usage` attempts.
+- Session title task tracking now rejects terminal notifications whose supplied task ID and tool-use ID do not resolve to the same fork, preserving pending state instead of clearing the wrong route.
 - Background task cancellation no longer leaves a Telegram bubble stuck at `Running`. Both a structured `killed` terminal and the deterministic `PostToolUse:TaskStop` hook consume only the exact task alias, stop its owner agent, and render `Background work · Stopped` without ingesting summary prose.
 - `/usage` no longer presents stale percentages as current during an active quota window. It always shows structured reached-window/reset state; an explicit opt-in on-demand OAuth GET may add realtime bars, while 429/auth/network failure hides percentages instead of falling back to stale ones.
 - Quota handling now prefers live structured `quotaLimits.resetsAt` over a typed generic StopFailure. A 250 ms grace lets the transcript watcher win, and the activation-attested queue sidecar restores future quota state and replies to later ordinary messages with the same quoted reset notice.

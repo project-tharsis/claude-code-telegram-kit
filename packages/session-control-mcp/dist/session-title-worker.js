@@ -576,10 +576,14 @@ function updateBackgroundTaskState(row, taskIds, taskAliases) {
     const notification = parseTerminalTaskNotification(value);
     if (notification === null)
       continue;
-    const toolUseId = notification.toolUseId ?? (notification.taskId === undefined ? undefined : taskAliases.get(notification.taskId));
+    const direct = notification.toolUseId;
+    const aliased = notification.taskId === undefined ? undefined : taskAliases.get(notification.taskId);
+    if (direct !== undefined && notification.taskId !== undefined && aliased !== direct)
+      continue;
+    const toolUseId = direct ?? aliased;
     if (toolUseId !== undefined)
       taskIds.delete(toolUseId);
-    if (notification.taskId !== undefined)
+    if (notification.taskId !== undefined && aliased === toolUseId)
       taskAliases.delete(notification.taskId);
   }
   return false;

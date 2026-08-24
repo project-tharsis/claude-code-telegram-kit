@@ -82,4 +82,37 @@ describe("on-demand OAuth usage", () => {
     await expect(read()).resolves.toBeNull();
     expect(calls).toBe(2);
   });
+
+  test("cools down rejected credential reads before retrying", async () => {
+    const path = credential();
+    chmodSync(path, 0o644);
+    let calls = 0;
+    let now = 1_000_000;
+    const read = createOAuthUsageReader({
+      path, expectedUid: process.getuid!(), now: () => now, retryMs: 300_000,
+      userAgent: "claude-code/test",
+      fetch: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({
+          five_hour: { utilization: 50, resets_at: "1970-01-01T00:33:20.000Z" }
+        }), { status: 200 });
+      }
+    });
+    await expect(read()).resolves.toBeNull();
+    chmodSync(path, 0o600);
+    await expect(read()).resolves.toBeNull();
+    expect(calls).toBe(0);
+    now += 300_001;
+    await expect(read()).resolves.toMatchObject({ windows: { five_hour: { used_percentage: 50 } } });
+    expect(calls).toBe(1);
+  });
+
+  test("does not hide credential authority configuration errors", async () => {
+    const read = createOAuthUsageReader({
+      path: "relative/.credentials.json",
+      expectedUid: process.getuid!(),
+      userAgent: "claude-code/test"
+    });
+    await expect(read()).rejects.toThrow("credential authority unavailable");
+  });
 });
