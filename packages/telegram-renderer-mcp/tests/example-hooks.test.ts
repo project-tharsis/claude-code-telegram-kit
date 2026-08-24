@@ -16,7 +16,7 @@ interface HookEntry {
 }
 
 interface Settings {
-  statusLine?: { type: string; command: string };
+  statusLine?: { type: string; command: string; refreshInterval?: number };
   permissions: { allow: string[]; ask: string[]; deny: string[] };
   hooks: Record<string, HookEntry[]>;
 }
@@ -90,6 +90,7 @@ describe("supported Claude Code hook configuration", () => {
   test("wires a private statusLine rate-limit snapshot writer", () => {
     expect(settings.statusLine?.type).toBe("command");
     expect(settings.statusLine?.command).toMatch(/^\/usr\/local\/sbin\/claude-usage-snapshot --output \/home\/USER\//);
+    expect(settings.statusLine?.refreshInterval).toBe(60);
   });
 
   test("denies every model-facing reply and session-control tool", () => {

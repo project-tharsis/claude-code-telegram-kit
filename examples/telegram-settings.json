@@ -1,7 +1,8 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "/usr/local/sbin/claude-usage-snapshot --output /home/USER/.local/state/claude-code-telegram-kit/subscription-usage.json"
+    "command": "/usr/local/sbin/claude-usage-snapshot --output /home/USER/.local/state/claude-code-telegram-kit/subscription-usage.json",
+    "refreshInterval": 60
   },
   "permissions": {
     "allow": [],

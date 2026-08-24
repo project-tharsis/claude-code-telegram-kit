@@ -33,6 +33,7 @@ describe("subscription usage cache", () => {
     expect(html).toContain("<code>█░░░░░░░░░</code> <b>1%</b>");
     expect(html).toContain("<b>7-day limit (all models)</b>");
     expect(html).toContain("<b>11.5%</b>");
+    expect(html).toContain("<i>StatusLine snapshot · as of");
   });
 
   test("hides stale percentages under active quota state", () => {
@@ -61,6 +62,7 @@ describe("subscription usage cache", () => {
     expect(html).toContain("<b>5-hour limit reached</b>");
     expect(html).toContain("<b>100%</b>");
     expect(html).toContain("<b>11.5%</b>");
+    expect(html).not.toContain("StatusLine snapshot");
   });
 
   test("does not fall back to cached bars when OAuth is unavailable", () => {
@@ -87,9 +89,10 @@ describe("subscription usage cache", () => {
     expect(html).toContain("<code>██████████</code> <b>100%</b>");
   });
 
-  test("marks last-known snapshots and rejects expired/future/bad shapes", () => {
-    expect(formatUsageSnapshot(parseUsageSnapshot(JSON.stringify(snapshot()), 4_700_000), 4_700_000))
-      .toContain("<i>Last known · as of");
+  test("hides locally stale snapshots and rejects expired/future/bad shapes", () => {
+    const stale = formatUsageSnapshot(parseUsageSnapshot(JSON.stringify(snapshot()), 4_700_000), 4_700_000);
+    expect(stale).toContain("Live usage unavailable");
+    expect(stale).not.toContain("<b>1%</b>");
     expect(() => parseUsageSnapshot(JSON.stringify(snapshot()), 100_000_000)).toThrow("stale");
     expect(() => parseUsageSnapshot(JSON.stringify(snapshot(2_000)), 1_000_000)).toThrow("stale");
     for (const bad of [
