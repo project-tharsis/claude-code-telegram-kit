@@ -5,7 +5,7 @@ const COMPLETE_ENVELOPE = /^\s*<task-notification>\s*([\s\S]*?)\s*<\/task-notifi
 export interface TerminalTaskNotification {
   toolUseId?: string;
   taskId?: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "killed";
 }
 
 export interface CompletedTaskNotification {
@@ -28,7 +28,7 @@ export function parseTerminalTaskNotification(prompt: string): TerminalTaskNotif
   if (body === undefined) return null;
   const header = body.split(/<(?:summary|result)\b/i, 1)[0]!;
   const status = exactTag(header, "status");
-  if (status !== "completed" && status !== "failed") return null;
+  if (status !== "completed" && status !== "failed" && status !== "killed") return null;
   const toolUseId = exactTag(header, "tool-use-id");
   if (toolUseId !== null && !TOOL_USE_ID.test(toolUseId)) return null;
   const taskId = exactTag(header, "task-id");

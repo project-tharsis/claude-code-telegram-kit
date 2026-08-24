@@ -2,7 +2,8 @@ import {
   assertAuthorizedChat,
   parseTerminalTaskNotification,
   parseDirectTelegramEnvelope,
-  type RuntimeConfig
+  type RuntimeConfig,
+  type TerminalTaskNotification
 } from "@project-tharsis/claude-code-telegram-shared";
 import {
   type BindTurnInput,
@@ -113,6 +114,7 @@ interface Turn {
   quoteMessageId: string;
   background: boolean;
   backgroundDepth: number;
+  backgroundTerminalStatus: TerminalTaskNotification["status"] | null;
   progress: TurnProgress;
   backgroundProgress: BackgroundProgress;
   progressPhase: ProgressPhase;
@@ -512,8 +514,15 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
             ? undefined : backgroundRouteKey(input.session_id, notification.toolUseId);
           const aliasRoute = notification.taskId === undefined
             ? undefined : backgroundTaskAliases.get(backgroundRouteKey(input.session_id, notification.taskId));
-          routeToConsume = directRoute !== undefined && backgroundTaskRoutes.has(directRoute)
-            ? directRoute : aliasRoute ?? null;
+          const direct = directRoute === undefined ? undefined : backgroundTaskRoutes.get(directRoute);
+          const directExists = direct !== undefined;
+          const suppliedAlias = notification.taskId === undefined
+            ? undefined : backgroundRouteKey(input.session_id, notification.taskId);
+          if (directExists && suppliedAlias !== undefined) {
+            if (direct.taskAliases.size > 0 && !direct.taskAliases.has(suppliedAlias)) return;
+            if (aliasRoute !== undefined && aliasRoute !== directRoute) return;
+          }
+          routeToConsume = directExists && directRoute !== undefined ? directRoute : aliasRoute ?? null;
           if (routeToConsume === null) return;
           const route = backgroundTaskRoutes.get(routeToConsume);
           if (route === undefined || route.expiresAt <= now()) return;
@@ -524,11 +533,17 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         }
         assertAuthorizedChat(deps.loadConfig(), chatId);
         if (routeToConsume !== null) {
+          if (notification === null) return;
           const consumed = deleteBackgroundTaskRoute(routeToConsume);
           const owner = consumed === undefined ? undefined : turns.get(consumed.ownerKey);
-          const ownerChanged = owner !== undefined && consumed !== undefined
+          const taskChanged = owner !== undefined && consumed !== undefined
             && owner.backgroundProgress.recordTaskTerminal(consumed.toolUseId);
-          if (ownerChanged && owner?.progressPhase === "background-agents") touch(owner);
+          const alias = notification.taskId === undefined
+            ? undefined : backgroundRouteKey(input.session_id, notification.taskId);
+          const agentChanged = owner !== undefined && consumed !== undefined
+            && notification.taskId !== undefined && alias !== undefined && consumed.taskAliases.has(alias)
+            && owner.backgroundProgress.recordAgentTerminal(notification.taskId, notification.status);
+          if ((taskChanged || agentChanged) && owner?.progressPhase === "background-agents") touch(owner);
         }
 
         // A newer direct prompt retires only older direct turns. Background completion turns
@@ -552,6 +567,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           quoteMessageId,
           background,
           backgroundDepth,
+          backgroundTerminalStatus: notification?.status ?? null,
           progress: new TurnProgress({
             chatId,
             messageId: quoteMessageId,
@@ -716,6 +732,11 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         }
         await finalize(turn, input.hook_event_name);
         if (turns.get(key) !== turn) return "finished";
+        if (turn.backgroundTerminalStatus === "killed") {
+          drop(turn);
+          if (turns.get(key) === turn) turns.delete(key);
+          return "finished";
+        }
         if (input.hook_event_name === "StopFailure") {
           await deliverRuntimeFailure(turn, key, { error: input.error }, true);
           return "finished";

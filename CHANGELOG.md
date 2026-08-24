@@ -15,6 +15,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Background task cancellation no longer leaves a Telegram bubble stuck at `Running`. A structured `killed` terminal consumes only its exact task route, stops the route-owned agent alias, and renders `Background work · Stopped` without ingesting summary prose.
 - `/usage` no longer presents stale percentages as current during an active quota window. It always shows structured reached-window/reset state; an explicit opt-in on-demand OAuth GET may add realtime bars, while 429/auth/network failure hides percentages instead of falling back to stale ones.
 - Quota handling now prefers live structured `quotaLimits.resetsAt` over a typed generic StopFailure. A 250 ms grace lets the transcript watcher win, and the activation-attested queue sidecar restores future quota state and replies to later ordinary messages with the same quoted reset notice.
 - Background disclosure no longer reports `Done` when only observed child agents have stopped. Claude's PostToolUse `status + agentId` now binds the originating tool route to task-only terminal notifications; the bubble shows `Finalizing…` until exact terminal parent-task authority is consumed.
