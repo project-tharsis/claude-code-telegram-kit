@@ -13,7 +13,8 @@ This kit removes that trip. Anthropic's official [Telegram Channel](https://code
 
 ## What it does
 
-- Deterministic Telegram controls expose `/usage`, `/resume`, `/resume N`, `/model`, `/rename`, and `/reset` (`/sessions` remains a compatibility alias). Privileged lifecycle changes act on the systemd-managed Claude Code process while official pairing, attachments, and permission relay stay intact.
+- Deterministic Telegram controls expose `/usage`, `/resume`, `/resume N`, `/model`, `/rename`, and `/reset`; `/sessions` remains a compatibility alias.
+- `/usage` stays available while Claude is modal-blocked by consuming only exact fresh Channel queue appends. Official pairing, attachments, permission relay, and inbound polling remain untouched.
 - Final delivery distinguishes confirmed, rejected, and unknown outcomes. An unknown outcome is never retried.
 - CommonMark/GFM canonicalization is deterministic; transport routing is explicit and capability-gated across Rich Message, MarkdownV2, and plain text.
 - No fork of the official plugin, and no second `getUpdates` consumer.

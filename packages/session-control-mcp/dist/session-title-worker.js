@@ -198,7 +198,15 @@ function parseDirectTelegramEnvelope(prompt) {
   const closingTag = body.lastIndexOf("</channel>");
   if (closingTag !== -1)
     body = body.slice(0, closingTag);
-  return { chatId, messageId, body: body.trim() };
+  const timestamp = attributes.get("ts");
+  const timestampMs = timestamp === undefined ? Number.NaN : Date.parse(timestamp);
+  const validTimestamp = timestamp !== undefined && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(timestamp) && Number.isFinite(timestampMs) && new Date(timestampMs).toISOString() === timestamp;
+  return {
+    chatId,
+    messageId,
+    body: body.trim(),
+    ...validTimestamp ? { timestampMs } : {}
+  };
 }
 // packages/shared/src/telegram-response.ts
 var MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;

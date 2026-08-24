@@ -8,7 +8,7 @@ An MCP front end for model switching, resetting, listing, and resuming sessions 
 dispatch_command(session_id, prompt_id, prompt, hook_event_name="UserPromptSubmit")
 ```
 
-`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/resume`, `/resume N`, `/model`, `/model opus|sonnet|haiku|inherit`, `/rename NAME`, `/reset`, legacy `/sessions`, and confirmation commands are handled and returned with `decision: block`.
+`dispatch_command` is wired as a denied-to-the-model `UserPromptSubmit` `mcp_tool` hook. It deterministically parses direct Telegram control commands before the LLM: ordinary messages pass through, while `/usage`, `/resume`, `/resume N`, `/model`, `/model opus|sonnet|haiku|inherit`, `/rename NAME`, `/reset`, legacy `/sessions`, and confirmation commands are handled and returned with `decision: block`. In a root activation-attested generation, `/usage` delivery is instead owned by the append rail below; the hook only blocks it.
 
 An independent, side-effect-free command hook (`claude-control-command-guard`) returns the same block decision for control namespaces. It does not depend on MCP readiness, so a timeout or MCP restart cannot leak a control command into the LLM. Only `dispatch_command` performs listing, challenge delivery, or scheduling.
 
@@ -18,12 +18,13 @@ The server advertises only `dispatch_command`. Legacy model-callable reset, bind
 
 ## Control-plane order
 
-1. The official Channel remains the only Telegram poller and invokes the UserPromptSubmit dispatcher hook.
-2. Validate the exact direct envelope, live allowlist, and control-command grammar.
-3. `/reset` or `/resume N` sends a quoted 60-second confirmation challenge and performs no mutation.
-4. The exact action-bound confirmation consumes the challenge once; replay, wrong action, wrong code, and expiry fail closed.
-5. Send a quoted acceptance message, then submit one bounded Broker Protocol v2 JSON line over the private Unix socket. Reset and resume both carry the exact current session UUID; root never guesses rollback authority from transcript mtimes.
-6. The peer-UID-checking root broker derives the request ID, unit, helper/config paths, and fixed `systemd-run --no-block` argv; the root-owned helper verifies the exact runtime and reports completion or failure independently.
+1. The official Channel remains the only Telegram poller. In an activation-attested runtime, the session-control MCP baselines secure existing transcript descriptors at EOF and polls only their appended bytes for exact fresh `/usage` enqueue rows; no other control is accepted there.
+2. Validate the exact direct envelope, live allowlist, command grammar, transcript/session binding, and five-minute event freshness. Reserve the message before outbound send; unknown outcomes are never retried. The later UserPromptSubmit hook only blocks `/usage`, preventing duplicate delivery.
+3. Other controls continue through the UserPromptSubmit dispatcher hook.
+4. `/reset` or `/resume N` sends a quoted 60-second confirmation challenge and performs no mutation.
+5. The exact action-bound confirmation consumes the challenge once; replay, wrong action, wrong code, and expiry fail closed.
+6. Send a quoted acceptance message, then submit one bounded Broker Protocol v2 JSON line over the private Unix socket. Reset and resume both carry the exact current session UUID; root never guesses rollback authority from transcript mtimes.
+7. The peer-UID-checking root broker derives the request ID, unit, helper/config paths, and fixed `systemd-run --no-block` argv; the root-owned helper verifies the exact runtime and reports completion or failure independently.
 
 The MCP does not accept command, path, unit, service, or helper arguments from the model.
 

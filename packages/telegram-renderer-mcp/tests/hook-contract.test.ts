@@ -39,6 +39,18 @@ describe("direct Telegram envelope parsing", () => {
     expect(parsed).toEqual({ chatId: "123456", messageId: "42", body: "/sessions" });
   });
 
+  test("exposes a validated official timestamp without requiring it", () => {
+    const parsed = parseDirectTelegramEnvelope(
+      '<channel source="plugin:telegram:telegram" chat_id="123456" message_id="42" ts="2026-08-24T07:13:38.097Z">/usage</channel>'
+    );
+    expect(parsed).toEqual({
+      chatId: "123456",
+      messageId: "42",
+      body: "/usage",
+      timestampMs: Date.parse("2026-08-24T07:13:38.097Z")
+    });
+  });
+
   test("accepts a negative group chat_id and leading whitespace", () => {
     const parsed = parseDirectTelegramEnvelope(
       '\n  <channel source="telegram" chat_id="-100123" message_id="7">  /sessions  '
