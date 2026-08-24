@@ -135,6 +135,8 @@ describe("supported Claude Code hook configuration", () => {
     expect(toolsFor("Stop")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
     expect(toolsFor("StopFailure").map(hook => hook.tool)).toEqual(["finish_turn"]);
     expect(toolsFor("StopFailure")[0]!.input.last_assistant_message).toBe("${last_assistant_message}");
+    expect(toolsFor("StopFailure")[0]!.input.error).toBe("${error}");
+    expect(toolsFor("Stop")[0]!.input).not.toHaveProperty("error");
   });
 
   test("keeps example hook inputs inside each advertised renderer schema", () => {

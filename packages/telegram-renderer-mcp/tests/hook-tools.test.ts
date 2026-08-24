@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BIND_TURN_TOOL, createHookToolHandler, HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS, RECORD_TOOL_TOOL } from "../src/hook-tools.js";
+import { BIND_TURN_TOOL, createHookToolHandler, FINISH_TURN_TOOL, HOOK_TOOL_NAMES, INTERNAL_HOOK_TOOLS, RECORD_TOOL_TOOL } from "../src/hook-tools.js";
 import { RecordToolInputSchema } from "../src/hook-contract.js";
 import { createTurnDisclosure } from "../src/progress-disclosure.js";
 import type { RuntimeConfig } from "@project-tharsis/claude-code-telegram-shared";
@@ -68,6 +68,13 @@ describe("internal hook tool declarations", () => {
       type: "string",
       maxLength: 8192
     });
+  });
+
+  test("advertises distinct Stop and StopFailure branches", () => {
+    expect(FINISH_TURN_TOOL.inputSchema.oneOf).toEqual([
+      { properties: { hook_event_name: { const: "Stop" } }, not: { required: ["error"] } },
+      { properties: { hook_event_name: { const: "StopFailure" } }, required: ["error"] }
+    ]);
   });
 
   test("allows Claude's empty substitution for an absent optional agent_id", () => {

@@ -16,14 +16,15 @@ function exactTag(body, tag) {
   const value = matches[0]?.[1]?.trim();
   return value ? value : null;
 }
-function parseCompletedTaskNotification(prompt) {
+function parseTerminalTaskNotification(prompt) {
   if (typeof prompt !== "string" || prompt.length > 1e6)
     return null;
   const body = COMPLETE_ENVELOPE.exec(prompt)?.[1];
   if (body === undefined)
     return null;
   const header = body.split(/<(?:summary|result)\b/i, 1)[0];
-  if (exactTag(header, "status") !== "completed")
+  const status = exactTag(header, "status");
+  if (status !== "completed" && status !== "failed")
     return null;
   const toolUseId = exactTag(header, "tool-use-id");
   if (toolUseId === null || !TOOL_USE_ID.test(toolUseId))
@@ -31,7 +32,7 @@ function parseCompletedTaskNotification(prompt) {
   const taskId = exactTag(header, "task-id");
   if (taskId !== null && !TASK_ID.test(taskId))
     return null;
-  return { toolUseId, ...taskId === null ? {} : { taskId } };
+  return { toolUseId, status, ...taskId === null ? {} : { taskId } };
 }
 // packages/shared/src/telegram-authority.ts
 import {
@@ -526,7 +527,7 @@ function updateBackgroundTaskState(row, taskIds) {
   }
   const values = typeof message.content === "string" ? [message.content] : contentBlocks(message.content).filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text);
   for (const value of values) {
-    const notification = parseCompletedTaskNotification(value);
+    const notification = parseTerminalTaskNotification(value);
     if (notification !== null)
       taskIds.delete(notification.toolUseId);
   }

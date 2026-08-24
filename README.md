@@ -46,6 +46,10 @@ Disclosure is configurable as `safe`, `all`, or `verbose`. Every accepted previe
 
 When a subagent is still active after the parent final, the renderer opens one quoted `Background work` bubble. Official subagent lifecycle and nested tool events edit that bubble with bounded agent identity and the latest verified action. There is no interval, transcript polling, extra model turn, fabricated percentage, or raw subagent output. Completion still returns automatically through the separately bound final-delivery path; if that authority-bound completion turn forks another verified subagent, the same bounded contract continues for the descendant phase without exposing the completion turn's own foreground tools.
 
+## Operational failures
+
+Runtime failures do not depend on Claude generating a reply. Typed `StopFailure.error` is primary. For background quota exhaustion on Claude Code 2.1.241, a failed task may instead produce only a structured API-error transcript row, so the exact consumed task route gets a five-second bounded append watcher. The renderer sends one quoted fixed notice, includes a validated reset time when available, deduplicates parallel failures, and never forwards provider prose or retries an unknown send.
+
 ## Rendering
 
 | Official Channel | With this kit |

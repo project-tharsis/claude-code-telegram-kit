@@ -206,6 +206,7 @@
               "session_id": "${session_id}",
               "prompt_id": "${prompt_id}",
               "last_assistant_message": "${last_assistant_message}",
+              "error": "${error}",
               "hook_event_name": "StopFailure"
             }
           }

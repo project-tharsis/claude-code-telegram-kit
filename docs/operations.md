@@ -163,7 +163,7 @@ Verify from the real destination:
 4. a definitive local failure becomes `👎`, while timeout/unknown keeps `👀`;
 5. a multi-tool turn creates one silent progress bubble with bold tool labels, escaped monospace previews, mobile-width truncation, redacted credentials, and success/failure state;
 6. typing remains visible across a long turn and stops before the final reply;
-7. with either persisted login or `CLAUDE_CODE_OAUTH_TOKEN`, an exact runtime `authentication_failed` event stops sustained typing/progress and sends one quoted auth explanation;
+7. typed `StopFailure` values for `authentication_failed`, `rate_limit`, and `overloaded` stop sustained typing/progress and send one quoted fixed notice; a routed failed background-task notification followed by an exact structured `isApiErrorMessage` row reaches the same rail, includes only a validated reset time, deduplicates parallel failures, and never forwards provider prose;
 8. `/usage` remains available during auth failure and returns the latest private statusLine `rate_limits` snapshot as bold percentages and compact micro-bars without an extra Claude process or model turn;
 9. `/resume` returns at most ten HTML-escaped, UUID-free entries, stores a private snapshot, and renders missing native titles as `Conversation with Claudio` or `Control-only session` without reading prompt text; legacy `/sessions` returns the same list;
 10. `/model` reports the latest actual model and bot override; `/model sonnet` persists a root-owned override, restarts the same `--continue` session, verifies the process environment, and rolls back on failed health;

@@ -13,7 +13,10 @@ import {
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
 import { createArtifactDeliverer } from "./artifact-delivery.js";
 import { startArtifactTranscriptTracker } from "./artifact-transcript.js";
-import { watchAuthFailureTranscript } from "./auth-failure-watcher.js";
+import {
+  formatRuntimeFailureMessage,
+  watchRuntimeFailureTranscript
+} from "./runtime-failure-watcher.js";
 import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
 import { editProgressBubble, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
@@ -38,8 +41,6 @@ const deliverBackground = createUnifiedDeliverer(fetch, Date.now, false);
 const deliverArtifacts = artifactRoot === undefined
   ? null
   : createArtifactDeliverer({ root: artifactRoot });
-const AUTH_FAILURE_MESSAGE =
-  "Claude Code authentication failed.\n\nRe-authenticate Claude Code on the host, then resend this message.";
 
 const typing = createTypingHeartbeatManager({
   sendChatAction: (chatId, signal) => sendTypingAction(loadConfig(), chatId, fetch, signal)
@@ -53,21 +54,21 @@ const disclosure = createTurnDisclosure({
   startArtifactTracking: input => projectSessionsDir === undefined
     ? null
     : startArtifactTranscriptTracker(input, { expectedRoot: projectSessionsDir }),
-  startAuthFailureWatch: (input, onFailure) => {
+  startRuntimeFailureWatch: (input, onFailure) => {
     if (projectSessionsDir === undefined || input.transcript_path === undefined) return () => undefined;
-    return watchAuthFailureTranscript({
+    return watchRuntimeFailureTranscript({
       session_id: input.session_id,
       transcript_path: input.transcript_path
     }, {
       expectedRoot: projectSessionsDir,
-      onAuthFailure: () => { void onFailure().catch(() => undefined); }
+      onFailure: failure => { void onFailure(failure).catch(() => undefined); }
     });
   },
-  sendAuthFailure: async (config, chatId, messageId) => {
+  sendRuntimeFailure: async (config, chatId, messageId, failure) => {
     await deliver({
       chat_id: chatId,
       message_id: messageId,
-      content: AUTH_FAILURE_MESSAGE,
+      content: formatRuntimeFailureMessage(failure),
       disable_notification: false
     }, config);
   },
