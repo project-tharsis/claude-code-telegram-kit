@@ -50,6 +50,28 @@ describe("event-driven background progress", () => {
     ].join("\n"));
   });
 
+  test("renders killed and failed agent terminals distinctly", () => {
+    const stopped = new BackgroundProgress();
+    stopped.recordTaskStart("parent-stop");
+    stopped.recordStart("agent-stop", "reviewer");
+    stopped.recordTool("agent-stop", "tool-stop", reading());
+    expect(stopped.recordAgentTerminal("agent-stop", "killed")).toBe(true);
+    stopped.recordTaskTerminal("parent-stop");
+    expect(stopped.render()).toBe([
+      "Background work · Stopped",
+      "⏹ reviewer · Stopped",
+      "└ ⏹ 📖 Reading broker.test.ts"
+    ].join("\n"));
+
+    const failed = new BackgroundProgress();
+    failed.recordStart("agent-fail", "tester");
+    expect(failed.recordAgentTerminal("agent-fail", "failed")).toBe(true);
+    expect(failed.render()).toBe([
+      "Background work · Failed",
+      "❌ tester · Failed"
+    ].join("\n"));
+  });
+
   test("isolates parallel agents and marks a failed last action without ingesting output", () => {
     const progress = new BackgroundProgress();
     progress.recordStart("agent-1", "reviewer");

@@ -276,6 +276,57 @@ describe("turn disclosure lifecycle", () => {
     ].join("\n"));
   });
 
+  test("terminal killed notification stops its exact aliased agent", async () => {
+    const h = harness({ mode: "verbose" });
+    bind(h);
+    tool(h, "toolu_killed_parent", "Agent");
+    h.disclosure.recordSuccess({
+      session_id: SESSION,
+      prompt_id: PROMPT,
+      tool_use_id: "toolu_killed_parent",
+      task_status: "async_launched",
+      task_id: "agent-killed",
+      hook_event_name: "PostToolUse"
+    });
+    agentStart(h, "agent-killed", "general-purpose");
+    await h.tick();
+    await finish(h, "Stop", "canary launched.");
+    expect(h.sends.at(-1)?.text).toContain("1 running");
+
+    bind(h, "<task-notification><task-id>agent-killed</task-id><status>killed</status><summary>stopped</summary></task-notification>", "p-killed");
+    await h.tick();
+    expect(h.edits.at(-1)?.text).toBe([
+      "Background work · Stopped",
+      "⏹ general-purpose · Stopped"
+    ].join("\n"));
+    const deliveredBeforeKilledStop = h.finalDeliveries.length;
+    await h.disclosure.finishTurn({
+      session_id: SESSION,
+      prompt_id: "p-killed",
+      last_assistant_message: "provider summary must not escape",
+      hook_event_name: "Stop"
+    });
+    expect(h.finalDeliveries).toHaveLength(deliveredBeforeKilledStop);
+
+    const mismatch = harness({ mode: "verbose" });
+    bind(mismatch);
+    tool(mismatch, "toolu_owned_parent", "Agent");
+    mismatch.disclosure.recordSuccess({
+      session_id: SESSION, prompt_id: PROMPT, tool_use_id: "toolu_owned_parent",
+      task_status: "async_launched", task_id: "agent-owned", hook_event_name: "PostToolUse"
+    });
+    agentStart(mismatch, "agent-owned", "general-purpose");
+    await mismatch.tick();
+    await finish(mismatch, "Stop", "launched");
+    bind(mismatch, "<task-notification><task-id>agent-other</task-id><tool-use-id>toolu_owned_parent</tool-use-id><status>killed</status></task-notification>", "p-mismatch");
+    await mismatch.tick();
+    expect(mismatch.sends.at(-1)?.text).toContain("1 running");
+    expect(mismatch.edits.some(edit => edit.text.includes("Stopped"))).toBe(false);
+    bind(mismatch, "<task-notification><task-id>agent-owned</task-id><status>killed</status></task-notification>", "p-owned");
+    await mismatch.tick();
+    expect(mismatch.edits.at(-1)?.text).toContain("Background work · Stopped");
+  });
+
   test("does not open background disclosure when the subagent stopped before the parent", async () => {
     const h = harness();
     bind(h);

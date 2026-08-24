@@ -40,6 +40,16 @@ describe("terminal internal task notification", () => {
     expect(parseCompletedTaskNotification(failed)).toBeNull();
   });
 
+  test("accepts a killed notification as terminal without ingesting its summary", () => {
+    const killed = completed.replace("<status>completed</status>", "<status>killed</status>");
+    expect(parseTerminalTaskNotification(killed)).toEqual({
+      taskId: "ab6fa8c8413c80c31",
+      toolUseId: "toolu_016eLJUQPphmxoYs1uYFcFeF",
+      status: "killed"
+    });
+    expect(parseCompletedTaskNotification(killed)).toBeNull();
+  });
+
   test("rejects direct Telegram wrappers, stopped events, duplicates, and malformed IDs", () => {
     for (const value of [
       `<channel source="plugin:telegram:telegram" chat_id="123" message_id="9">${completed}</channel>`,

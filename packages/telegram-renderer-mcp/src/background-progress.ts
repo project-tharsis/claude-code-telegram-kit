@@ -5,8 +5,9 @@ export const MAX_BACKGROUND_AGENTS = 16;
 export const MAX_BACKGROUND_TOOL_IDS = 256;
 export const MAX_BACKGROUND_TASK_IDS = 16;
 
-type AgentStatus = "running" | "done";
-type ToolStatus = "running" | "done" | "failed";
+export type AgentTerminalStatus = "completed" | "failed" | "killed";
+type AgentStatus = "running" | "done" | "failed" | "stopped";
+type ToolStatus = "running" | "done" | "failed" | "stopped";
 
 interface AgentState {
   type: string;
@@ -17,8 +18,8 @@ interface AgentState {
 }
 
 function renderStep(step: ProgressStep, status: ToolStatus): string {
-  const failed = status === "failed" ? "❌ " : "";
-  const head = `${failed}${step.emoji} ${step.label}`;
+  const prefix = status === "failed" ? "❌ " : status === "stopped" ? "⏹ " : "";
+  const head = `${prefix}${step.emoji} ${step.label}`;
   if (!step.preview || step.kind === "command") return head;
   return `${head}${step.connector}${step.preview}`;
 }
@@ -116,29 +117,45 @@ export class BackgroundProgress {
     return this.#recordToolStatus(toolUseId, "failed");
   }
 
-  recordStop(agentId: string): boolean {
+  recordAgentTerminal(agentId: string, terminal: AgentTerminalStatus): boolean {
     const agent = this.#agents.get(agentId);
-    if (agent === undefined || agent.status === "done") return false;
-    agent.status = "done";
-    if (agent.lastToolStatus === "running") agent.lastToolStatus = "done";
+    if (agent === undefined || agent.status !== "running") return false;
+    agent.status = terminal === "completed" ? "done" : terminal === "failed" ? "failed" : "stopped";
+    if (agent.lastToolStatus === "running") {
+      agent.lastToolStatus = terminal === "completed" ? "done" : terminal === "failed" ? "failed" : "stopped";
+    }
     this.#generation += 1;
     return true;
   }
 
+  recordStop(agentId: string): boolean {
+    return this.recordAgentTerminal(agentId, "completed");
+  }
+
   render(): string {
     if (!this.hasAgents) return "";
-    const active = Array.from(this.#agents.values())
-      .filter(agent => agent.status === "running").length;
+    const agents = Array.from(this.#agents.values());
+    const active = agents.filter(agent => agent.status === "running").length;
+    const terminalHeader = agents.some(agent => agent.status === "failed")
+      ? "Background work · Failed"
+      : agents.some(agent => agent.status === "stopped")
+        ? "Background work · Stopped"
+        : "Background work · Done";
     const header = active > 0
       ? `Background work · ${active} running…`
       : this.#pendingTasks.size > 0
         ? "Background work · Finalizing…"
-        : "Background work · Done";
+        : terminalHeader;
     const lines = [header];
     for (const agent of this.#agents.values()) {
-      const status = agent.status === "running" ? "Running" : "Done";
-      const icon = agent.status === "running" ? "👥" : "✅";
-      const agentLine = `${icon} ${agent.type} · ${status}`;
+      const terminal = agent.status === "done"
+        ? { icon: "✅", label: "Done" }
+        : agent.status === "failed"
+          ? { icon: "❌", label: "Failed" }
+          : agent.status === "stopped"
+            ? { icon: "⏹", label: "Stopped" }
+            : { icon: "👥", label: "Running" };
+      const agentLine = `${terminal.icon} ${agent.type} · ${terminal.label}`;
       const stepLine = agent.lastStep === null || agent.lastToolStatus === null
         ? null
         : `└ ${renderStep(agent.lastStep, agent.lastToolStatus)}`;

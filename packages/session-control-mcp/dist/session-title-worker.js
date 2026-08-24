@@ -53,7 +53,7 @@ function parseTerminalTaskNotification(prompt) {
     return null;
   const header = body.split(/<(?:summary|result)\b/i, 1)[0];
   const status = exactTag(header, "status");
-  if (status !== "completed" && status !== "failed")
+  if (status !== "completed" && status !== "failed" && status !== "killed")
     return null;
   const toolUseId = exactTag(header, "tool-use-id");
   if (toolUseId !== null && !TOOL_USE_ID.test(toolUseId))
