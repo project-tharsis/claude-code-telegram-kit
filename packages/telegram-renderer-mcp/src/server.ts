@@ -13,10 +13,8 @@ import {
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
 import { createArtifactDeliverer } from "./artifact-delivery.js";
 import { startArtifactTranscriptTracker } from "./artifact-transcript.js";
-import {
-  formatRuntimeFailureMessage,
-  watchRuntimeFailureTranscript
-} from "./runtime-failure-watcher.js";
+import { formatRuntimeFailureNotice } from "./runtime-failure-reset.js";
+import { watchRuntimeFailureTranscript } from "./runtime-failure-watcher.js";
 import { createTurnDisclosure } from "./progress-disclosure.js";
 import { parseToolDisclosureMode } from "./progress-preview.js";
 import { editProgressBubble, sendProgressBubble, sendTypingAction } from "./progress-transport.js";
@@ -68,7 +66,7 @@ const disclosure = createTurnDisclosure({
     await deliver({
       chat_id: chatId,
       message_id: messageId,
-      content: formatRuntimeFailureMessage(failure),
+      content: formatRuntimeFailureNotice(failure),
       disable_notification: false
     }, config);
   },
