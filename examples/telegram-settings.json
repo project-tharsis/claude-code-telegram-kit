@@ -133,7 +133,7 @@
               "tool_use_id": "${tool_use_id}",
               "tool_name": "TaskStop",
               "task_status": "killed",
-              "task_id": "${tool_response.task_id}",
+              "task_id": "${tool_input.task_id}",
               "hook_event_name": "PostToolUse"
             }
           }
