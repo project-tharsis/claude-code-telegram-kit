@@ -6,7 +6,18 @@ export const RUNTIME_FAILURE_TYPES = [
 ] as const;
 
 export type RuntimeFailureType = (typeof RUNTIME_FAILURE_TYPES)[number];
-export interface RuntimeFailure { error: RuntimeFailureType; resetsAt?: number }
+export type QuotaWindow = "five_hour" | "seven_day";
+export interface RuntimeFailure {
+  error: RuntimeFailureType;
+  resetsAt?: number;
+  quotaWindow?: QuotaWindow;
+}
+
+function normalizeQuotaWindow(value: string): QuotaWindow | undefined {
+  if (value === "five_hour") return "five_hour";
+  if (value === "seven_day" || value.startsWith("seven_day_") || value.startsWith("weekly")) return "seven_day";
+  return undefined;
+}
 
 export function formatRateLimitNotice(
   resetsAt?: number,
@@ -52,6 +63,7 @@ export function parseRuntimeFailureRow(value: unknown): RuntimeFailure | null {
   if (envelope.role !== "assistant" || !Array.isArray(envelope.content)) return null;
   const quota = row.quotaLimits;
   let resetsAt: number | undefined;
+  let quotaWindow: QuotaWindow | undefined;
   if (quota !== undefined) {
     if (!quota || typeof quota !== "object" || Array.isArray(quota)) return null;
     const limits = quota as Record<string, unknown>;
@@ -60,6 +72,15 @@ export function parseRuntimeFailureRow(value: unknown): RuntimeFailure | null {
     if (typeof reset !== "number" || !Number.isSafeInteger(reset)
       || reset <= 0 || reset > MAX_DATE_SECONDS) return null;
     resetsAt = reset;
+    const rateLimitType = limits.rateLimitType;
+    if (rateLimitType !== undefined) {
+      if (typeof rateLimitType !== "string" || rateLimitType.length > 64) return null;
+      quotaWindow = normalizeQuotaWindow(rateLimitType);
+    }
   }
-  return { error: row.error as RuntimeFailureType, ...(resetsAt === undefined ? {} : { resetsAt }) };
+  return {
+    error: row.error as RuntimeFailureType,
+    ...(resetsAt === undefined ? {} : { resetsAt }),
+    ...(quotaWindow === undefined ? {} : { quotaWindow })
+  };
 }

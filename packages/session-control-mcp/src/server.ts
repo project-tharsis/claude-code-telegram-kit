@@ -31,7 +31,13 @@ import {
 } from "./session-selection.js";
 import { createSessionsController } from "./sessions-control.js";
 import { DEFAULT_MODEL_ENV_FILE, readConfiguredModel } from "./model-status.js";
-import { readSubscriptionUsage } from "./subscription-usage.js";
+import { createOAuthUsageReader } from "./oauth-usage.js";
+import {
+  formatUnavailableUsage,
+  formatUsageSnapshot,
+  readSubscriptionUsage,
+  type ActiveUsageQuota
+} from "./subscription-usage.js";
 import { createSessionTitleService } from "./session-title-service.js";
 import {
   deleteTelegramCommandMenu,
@@ -41,6 +47,7 @@ import { escapeTelegramHtml } from "./telegram-html.js";
 import {
   createControlMessageClaims,
   isAttestedUsageQueueRuntime,
+  mergeActiveQuotaState,
   watchQueuedUsageControls
 } from "./usage-queue-watcher.js";
 import {
@@ -58,6 +65,18 @@ const workspaceDir = process.env.CLAUDE_WORKSPACE_DIR;
 const selectionDir = defaultSelectionDirectory();
 const loadConfig = () => loadRuntimeConfig(stateDir);
 const usageQueueAttested = isAttestedUsageQueueRuntime(process.env);
+let activeQuota: ActiveUsageQuota | undefined;
+const observeQuotaState = (state: ActiveUsageQuota): void => {
+  activeQuota = mergeActiveQuotaState(activeQuota, state, Date.now());
+};
+const oauthUsageEnabled = process.env.CLAUDE_OAUTH_USAGE_ENABLED === "true";
+const oauthUserAgent = process.env.CLAUDE_OAUTH_USAGE_USER_AGENT;
+if (oauthUsageEnabled && oauthUserAgent === undefined) {
+  throw new Error("CLAUDE_OAUTH_USAGE_USER_AGENT is required when OAuth usage is enabled");
+}
+const readOAuthUsage = oauthUsageEnabled
+  ? createOAuthUsageReader({ userAgent: oauthUserAgent as string })
+  : async () => null;
 
 const scheduler = createSessionScheduler();
 const helperReady = async (): Promise<boolean> => {
@@ -115,7 +134,15 @@ const dispatchControlCommand = createControlCommandDispatcher({
     sendTelegramMessage(config, chatId, text, fetch, replyTo, parseMode, replyMarkup),
   react: finalizeTelegramReaction,
   listSessionsTrusted: request => sessionsController.listSessionsTrusted(request),
-  getUsage: () => readSubscriptionUsage(),
+  getUsage: async () => {
+    const now = Date.now();
+    if (oauthUsageEnabled) {
+      const live = await readOAuthUsage();
+      if (live !== null) return formatUsageSnapshot(live, now, activeQuota, true);
+      return formatUnavailableUsage(activeQuota, now);
+    }
+    return readSubscriptionUsage(activeQuota === undefined ? {} : { activeQuota });
+  },
   getModelStatus: async sessionId => {
     const actual = projectSessionsDir === undefined
       ? null
@@ -150,6 +177,7 @@ if (usageQueueAttested) {
   const watcher = watchQueuedUsageControls({
     directory: projectSessionsDir,
     dispatch: input => dispatchControlCommand(input, "queue"),
+    onQuotaState: observeQuotaState,
     sendQuotaNotice: async ({ chatId, messageId, resetsAt }) => {
       const config = loadConfig();
       assertAuthorizedChat(config, chatId);

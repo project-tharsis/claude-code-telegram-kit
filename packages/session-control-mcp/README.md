@@ -14,9 +14,9 @@ An independent, side-effect-free command hook (`claude-control-command-guard`) r
 
 The server advertises only `dispatch_command`. Legacy model-callable reset, bind, list, and resume tools are removed; exact control commands never rely on model tool selection.
 
-`/usage` reads a private service-user-owned cache written from Claude's documented `statusLine.rate_limits`; it starts no extra Claude process and calls neither the LLM nor the OAuth usage endpoint. Delivery uses Telegram-safe HTML with bold percentages, reset timestamps, and a compact ten-cell micro-bar. `/resume` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot; `/sessions` remains a compatibility alias. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
+`/usage` defaults to a private service-user-owned cache written from Claude's documented `statusLine.rate_limits`; it starts no extra Claude process and calls no LLM. Delivery uses Telegram-safe HTML with bold percentages, reset timestamps, and a compact ten-cell micro-bar. `/resume` sends up to ten numbered titles and stores the UUID mapping in a private, atomic ten-minute snapshot; `/sessions` remains a compatibility alias. `/reset` and `/resume N` issue an action-bound, latest-per-chat, single-use 60-second confirmation code. The confirmation command carries no index or UUID; resume resolves the privately stored index through the snapshot. The model never receives or supplies a confirmation code, session index, session UUID, transcript path, unit, service, helper path, or command.
 
-The descriptor-pinned append rail also restores structured future quota state and acknowledges later ordinary messages with a fixed quoted reset notice. It never parses failed-task summary prose.
+The descriptor-pinned append rail also restores structured future quota state and acknowledges later ordinary messages with a fixed quoted reset notice. It never parses failed-task summary prose. During active quota, local snapshot percentages are hidden. `CLAUDE_OAUTH_USAGE_ENABLED=true` opts into one read-only OAuth usage request per `/usage`; success may render realtime bars, while failure or 429 renders reached/reset when known or `Live usage unavailable` otherwise. Enabling requires a current `claude-code/<version>` user agent.
 
 ## Control-plane order
 
@@ -39,7 +39,11 @@ CLAUDE_SESSION_CONTROL_SOCKET
 CLAUDE_PROJECT_SESSIONS_DIR
 CLAUDE_WORKSPACE_DIR
 TELEGRAM_COMMAND_MENU_ENABLED
+CLAUDE_OAUTH_USAGE_ENABLED
+CLAUDE_OAUTH_USAGE_USER_AGENT
 ```
+
+`CLAUDE_OAUTH_USAGE_USER_AGENT` is required when OAuth usage is enabled and must use the current `claude-code/<version>` form. The OAuth adapter never refreshes or writes credentials.
 
 Defaults are documented in `src/runtime.ts` and `src/model-status.ts`. `CLAUDE_PROJECT_SESSIONS_DIR` has no default: listing returns no sessions until one fixed project directory is configured. Model status always reads the fixed root-owned, mode-`0644`, single-line `/etc/claude-code-telegram-kit/model.env` that the service loads through an optional `EnvironmentFile=` directive. The root helper reads a root-owned JSON configuration. See `examples/reset.json`.
 
