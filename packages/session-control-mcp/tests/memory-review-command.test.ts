@@ -39,6 +39,21 @@ describe("memory review Stop-hook enqueue seam", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      now: () => 1_000,
+      readObserverLedger: () => ({
+        schema: 1,
+        recovery: null,
+        next_sequence: 1,
+        latest: {
+          observed_at: 1_000,
+          release_sha: RELEASE_SHA,
+          directory_sha256: "a".repeat(64),
+          inventory_sha256: "b".repeat(64),
+          files: []
+        },
+        watermark: { sequence: 0, observed_at: 1_000, inventory_sha256: "b".repeat(64) },
+        events: []
+      }),
       ...overrides
     };
   }
@@ -100,6 +115,26 @@ describe("memory review Stop-hook enqueue seam", () => {
     const receipt = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
     expect(receipt?.status).toBe("queued");
     expect(receipt?.telegram_message_id).toBe(5);
+  });
+
+  test("requires a fresh observer ledger from the same activated release before enqueue", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    for (const options of [
+      baseOptions({ readObserverLedger: () => null }),
+      baseOptions({ now: () => 1_000_000, readObserverLedger: () => ({
+        schema: 1, recovery: null, next_sequence: 1,
+        latest: { observed_at: 1_000, release_sha: RELEASE_SHA, directory_sha256: "a".repeat(64), inventory_sha256: "b".repeat(64), files: [] },
+        watermark: { sequence: 0, observed_at: 1_000, inventory_sha256: "b".repeat(64) }, events: []
+      }) }),
+      baseOptions({ readObserverLedger: () => ({
+        schema: 1, recovery: null, next_sequence: 1,
+        latest: { observed_at: 1_000, release_sha: "0".repeat(40), directory_sha256: "a".repeat(64), inventory_sha256: "b".repeat(64), files: [] },
+        watermark: { sequence: 0, observed_at: 1_000, inventory_sha256: "b".repeat(64) }, events: []
+      }) })
+    ]) {
+      await handleMemoryReviewCommand(basePayload(), options);
+      expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toBeNull();
+    }
   });
 
   test("does not enqueue when no real delivery-confirmed signal is supplied (fails closed, never defaults to delivered)", async () => {

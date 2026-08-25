@@ -16,6 +16,7 @@ Environment=TERM=xterm-256color
 Environment=CLAUDE_TITLE_CLI=/home/USER/.local/bin/claude
 Environment=CLAUDE_WORKSPACE_DIR=/home/USER/claude-bot-workspace
 Environment=CLAUDE_PROJECT_SESSIONS_DIR=/home/USER/.claude/projects/-home-USER-claude-bot-workspace
+Environment=CLAUDE_SETTINGS_PATH=/home/USER/claude-bot-workspace/telegram-settings.json
 EnvironmentFile=-/etc/claude-code-telegram-kit/model.env
 ExecStart=/usr/bin/script -qefc "/home/USER/.local/bin/claude --continue --channels plugin:telegram@claude-plugins-official --add-dir /home/USER --permission-mode auto --settings /home/USER/claude-bot-workspace/telegram-settings.json" /dev/null
 Restart=always
