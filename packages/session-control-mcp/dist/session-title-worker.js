@@ -30,7 +30,7 @@ function redactCredentials(value, marker = "[redacted]") {
 // packages/shared/src/fs-safety.ts
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from "fs";
 import { resolve } from "path";
-function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "directory") {
+function walkDirectory(path, expectedUid, label, createMissing, createMode, finalMode) {
   const absolute = resolve(path);
   const parts = absolute.split("/").filter(Boolean);
   let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -41,9 +41,9 @@ function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "direct
       try {
         before = lstatSync(child);
       } catch (error) {
-        if (error.code !== "ENOENT")
+        if (!createMissing || error.code !== "ENOENT")
           throw error;
-        mkdirSync(child, directoryMode);
+        mkdirSync(child, createMode);
         before = lstatSync(child);
       }
       if (!before.isDirectory() || before.isSymbolicLink()) {
@@ -59,7 +59,7 @@ function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "direct
       fd = next;
     }
     const final = fstatSync(fd);
-    if ((final.mode & 4095) !== directoryMode || expectedUid !== undefined && final.uid !== expectedUid) {
+    if (!final.isDirectory() || !finalMode(final.mode & 4095) || expectedUid !== undefined && final.uid !== expectedUid) {
       throw new Error(`${label} validation failed`);
     }
     return fd;
@@ -67,6 +67,16 @@ function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "direct
     closeSync(fd);
     throw error;
   }
+}
+function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "directory") {
+  const mode = directoryMode & 4095;
+  const fd = walkDirectory(path, expectedUid, label, true, mode, (candidate) => candidate === mode);
+  const final = fstatSync(fd);
+  if ((final.mode & 4095) !== mode) {
+    closeSync(fd);
+    throw new Error(`${label} validation failed`);
+  }
+  return fd;
 }
 // packages/shared/src/isolated-cli-runner.ts
 var ISOLATED_CLI_ENV_ALLOWLIST = [
@@ -161,6 +171,10 @@ async function runIsolatedCli(argv, options) {
 // packages/shared/src/memory-observer-ledger.ts
 var MAX_LEDGER_BYTES = 256 * 1024;
 var MEMORY_OBSERVER_LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+// packages/shared/src/memory-review-receipt.ts
+var MAX_BYTES = 8 * 1024;
+var MEMORY_REVIEW_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 // packages/shared/src/memory-review-proposal.ts
 var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
 var MEMORY_REVIEW_TARGETS = ["managed_memory"];
@@ -184,15 +198,17 @@ var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
   required: ["decision", "target", "topic", "evidence", "content", "reason", "freshness"],
   additionalProperties: false
 });
-// packages/shared/src/memory-review-receipt.ts
-var MAX_BYTES = 8 * 1024;
-var MEMORY_REVIEW_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 // packages/shared/src/memory-review-proposal-store.ts
 var MAX_BYTES2 = 16 * 1024;
+
 // packages/shared/src/native-memory-observer.ts
 var SETTINGS_MAX_BYTES = 64 * 1024;
 var MAX_NATIVE_MEMORY_FILE_BYTES = 64 * 1024;
+
+// packages/shared/src/memory-applier-state.ts
+var MAX_MEMORY_FILE_BYTES = 64 * 1024;
+var MAX_STATE_BYTES = 512 * 1024;
 // packages/shared/src/runtime-failure.ts
 var RUNTIME_FAILURE_TYPES = [
   "rate_limit",

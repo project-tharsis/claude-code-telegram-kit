@@ -2,6 +2,7 @@ export * from "./credential-patterns.js";
 export * from "./fs-safety.js";
 export * from "./isolated-cli-runner.js";
 export * from "./memory-observer-ledger.js";
+export * from "./memory-applier.js";
 export * from "./memory-review-proposal.js";
 export * from "./memory-review-proposal-store.js";
 export * from "./memory-review-receipt.js";
