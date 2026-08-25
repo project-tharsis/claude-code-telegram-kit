@@ -28,6 +28,23 @@ function directoryDigest(directory: string): string {
   return sha256(Buffer.from(names.map(name => `${name}:${sha256(readFileSync(join(directory, name)))}`).join("|")));
 }
 
+function freshObserverLedger() {
+  return {
+    schema: 1 as const,
+    recovery: null,
+    next_sequence: 1,
+    latest: {
+      observed_at: 1_000,
+      release_sha: RELEASE_SHA,
+      directory_sha256: "a".repeat(64),
+      inventory_sha256: "b".repeat(64),
+      files: []
+    },
+    watermark: { sequence: 0, observed_at: 1_000, inventory_sha256: "b".repeat(64) },
+    events: []
+  };
+}
+
 describe("PR1 read-only isolation canaries", () => {
   let receiptDirectory: string;
   let snapshotDirectory: string;
@@ -90,6 +107,8 @@ describe("PR1 read-only isolation canaries", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      now: () => 1_000,
+      readObserverLedger: freshObserverLedger,
       // The broker/systemd hop is out of process; this simulates its eventual effect by
       // running the same isolated worker function directly, exactly as the root helper would
       // dispatch it, but without a live systemd unit inside a test process.
@@ -140,6 +159,8 @@ describe("PR1 read-only isolation canaries", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      now: () => 1_000,
+      readObserverLedger: freshObserverLedger,
       schedule: async (sessionId, promptId) => runMemoryReviewWorker({
         sessionId,
         promptId,
@@ -188,6 +209,8 @@ describe("PR1 read-only isolation canaries", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      now: () => 1_000,
+      readObserverLedger: freshObserverLedger,
       schedule: async (sessionId, promptId) => runMemoryReviewWorker({
         sessionId,
         promptId,

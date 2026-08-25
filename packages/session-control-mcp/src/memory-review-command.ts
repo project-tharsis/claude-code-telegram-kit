@@ -6,9 +6,11 @@ import {
   evaluateMemoryReviewTrigger,
   loadMemoryReviewPolicy,
   PROMPT_ID_RE,
+  readMemoryObserverLedger,
   readMemoryReviewReceipt,
   sha256Hex,
   transitionMemoryReviewReceipt,
+  type MemoryObserverLedger,
   type MemoryReviewTriggerInput
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createSessionScheduler } from "./runtime.js";
@@ -20,6 +22,7 @@ const PACKAGE_VERSION = "0.3.0";
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
+const MEMORY_OBSERVER_MAX_AGE_MS = 10 * 60 * 1_000;
 
 interface HookPayload {
   hook_event_name?: unknown;
@@ -64,6 +67,7 @@ export interface MemoryReviewCommandOptions {
   snapshotDirectory?: string;
   schedule?: (sessionId: string, promptId: string) => Promise<unknown>;
   readReceipt?: (sessionId: string, promptId: string) => ReturnType<typeof readMemoryReviewReceipt>;
+  readObserverLedger?: () => MemoryObserverLedger | null;
   createReceipt?: typeof createMemoryReviewReceipt;
   writeSnapshot?: typeof writeMemoryReviewSnapshot;
   transitionReceipt?: typeof transitionMemoryReviewReceipt;
@@ -136,6 +140,13 @@ export async function handleMemoryReviewCommand(
   if (!RELEASE_SHA_RE.test(releaseSha)) return;
   const telegramMessageId = options.telegramMessageId;
   if (telegramMessageId === undefined || !Number.isSafeInteger(telegramMessageId) || telegramMessageId < 1) return;
+  const observedAt = (options.now ?? Date.now)();
+  const observerLedger = (options.readObserverLedger ?? (() => readMemoryObserverLedger()))();
+  if (observerLedger === null || observerLedger.latest.release_sha !== releaseSha ||
+      observerLedger.latest.observed_at > observedAt ||
+      observedAt - observerLedger.latest.observed_at > MEMORY_OBSERVER_MAX_AGE_MS) return;
+  const nativeMemoryChangeSummary = observerLedger.events.slice(-8)
+    .map(event => `${event.kind}:${event.path ?? "native-memory-root"}`).join(", ") || "no observed native memory changes";
 
   const create = options.createReceipt ?? createMemoryReviewReceipt;
   const result = create({
@@ -145,7 +156,8 @@ export async function handleMemoryReviewCommand(
     transcriptPath: resolve(payload.transcript_path as string),
     telegramMessageId,
     releaseSha,
-    toolIterations: options.toolIterations ?? 0
+    toolIterations: options.toolIterations ?? 0,
+    createdAt: observedAt
   }, options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory });
   if (result.outcome !== "created") return;
 
@@ -168,6 +180,7 @@ export async function handleMemoryReviewCommand(
       userMessage: options.userMessage ?? "",
       assistantFinal: assistantText,
       currentMemoryIndex: options.currentMemoryIndex ?? "",
+      nativeMemoryChangeSummary,
       releaseSha,
       packageVersion: PACKAGE_VERSION
     });
