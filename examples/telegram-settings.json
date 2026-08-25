@@ -1,4 +1,5 @@
 {
+  "autoMemoryDirectory": "/home/USER/.claude/projects/-home-USER-claude-bot-workspace/memory",
   "statusLine": {
     "type": "command",
     "command": "/usr/local/sbin/claude-usage-snapshot --output /home/USER/.local/state/claude-code-telegram-kit/subscription-usage.json",
@@ -27,6 +28,11 @@
           {
             "type": "command",
             "command": "/usr/local/sbin/claude-session-start-receipt --directory /home/USER/.local/state/claude-code-telegram-kit/session-start",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/home/USER/.bun/bin/bun run /home/USER/.local/share/claude-code-telegram-kit/current/packages/session-control-mcp/src/memory-observer-command.ts",
             "timeout": 10
           }
         ]

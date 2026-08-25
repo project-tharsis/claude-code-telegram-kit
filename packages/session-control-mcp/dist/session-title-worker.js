@@ -158,6 +158,9 @@ async function runIsolatedCli(argv, options) {
     clearTimeout(timer);
   }
 }
+// packages/shared/src/memory-observer-ledger.ts
+var MAX_LEDGER_BYTES = 256 * 1024;
+var MEMORY_OBSERVER_LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // packages/shared/src/memory-review-proposal.ts
 var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
 var MEMORY_REVIEW_TARGETS = ["managed_memory"];
@@ -184,6 +187,9 @@ var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
 // packages/shared/src/memory-review-receipt.ts
 var MAX_BYTES = 8 * 1024;
 var MEMORY_REVIEW_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+// packages/shared/src/native-memory-observer.ts
+var SETTINGS_MAX_BYTES = 64 * 1024;
+var MAX_NATIVE_MEMORY_FILE_BYTES = 64 * 1024;
 // packages/shared/src/runtime-failure.ts
 var RUNTIME_FAILURE_TYPES = [
   "rate_limit",

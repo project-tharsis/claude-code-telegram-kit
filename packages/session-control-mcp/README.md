@@ -38,6 +38,8 @@ The MCP reads:
 CLAUDE_SESSION_CONTROL_SOCKET
 CLAUDE_PROJECT_SESSIONS_DIR
 CLAUDE_WORKSPACE_DIR
+CLAUDE_SETTINGS_PATH
+MEMORY_OBSERVER_ENABLED
 TELEGRAM_COMMAND_MENU_ENABLED
 CLAUDE_OAUTH_USAGE_ENABLED
 CLAUDE_OAUTH_USAGE_USER_AGENT
@@ -80,6 +82,25 @@ content, reason, freshness}` proposal shape; any out-of-schema field, overlong s
 path-like value, credential-shaped content, or unsupported target is rejected before the
 worker transitions its bound receipt out of `queued`. This PR performs no memory mutation:
 the worker never has write authority over anything but its own bound receipt's status field.
+
+## Native memory observer and provenance ledger (PR 2)
+
+`memory-observer-command.ts` is a `SessionStart(startup)` preflight guarded by
+`MEMORY_OBSERVER_ENABLED` (production default disabled). When enabled, it reads the exact settings
+file named by `CLAUDE_SETTINGS_PATH`, requires one explicit absolute `autoMemoryDirectory`, and
+opens that existing directory without creating or mutating it. The observer inventories only
+bounded top-level Markdown leaves. Every directory and file is descriptor-pinned and checked for
+owner, symlinks, link count, writable permissions, file count, and byte caps before content hashes
+are returned. Memory bodies are never persisted.
+
+The independent ledger at
+`~/.local/state/claude-code-telegram-kit/memory-observer/ledger.json` stores only sorted metadata,
+SHA-256 watermarks, release provenance, and bounded `created` / `modified` / `deleted` events. It
+uses an atomic `0700` directory and `0600` single-link file, exact readback, 30-day retention, and a
+2,048-event cap. Corrupt JSON is rebuilt from a fresh read-only observation and marked as recovered;
+unsafe filesystem leaves fail closed. The ledger path is rejected if it is inside native memory.
+A failed startup preflight leaves no fresh ready ledger, so later review/apply stages must remain
+disabled rather than deriving Claude's internal fallback path.
 
 ## Installing root assets
 
