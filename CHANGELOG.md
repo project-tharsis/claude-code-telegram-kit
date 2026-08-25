@@ -6,6 +6,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-25
+
+### Added
+
+- Managed Memory Harness v0.4: verified-delivery triggers, descriptor-anchored native-memory observation and provenance ledger, bounded isolated review, immutable proposal/receipt binding, idle-proof-gated managed apply, multi-file journaled rollback, and one-shot learning deltas.
+- Claude Code compatibility preflight with a `2.1.196` floor, explicit `autoMemoryDirectory` authority, strict Stop payload validation, private atomic payload capture, and root activation gating.
+- Default-off apply and learning-delta hooks. The model still receives no transport, review, or mutation tool; deterministic host code owns every trigger and write boundary.
+
 ### Changed
 
 - Exact-SHA local installation and rollback now report `activation_required` after the atomic `current` switch; the fixed root-owned activator restarts only the configured service and verifies the selected SHA before declaring it active.
@@ -30,6 +38,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Automatic session titles now use the Stop command hook only to schedule a fixed broker job. PID 1 injects the root-owned OAuth EnvironmentFile into the exact title unit; the root helper passes only allowlisted auth to a dedicated service-user worker, which reads the exact JSONL, runs one isolated Haiku title call, applies zero-turn `/rename`, and requires exact readback. Final delivery never waits for the job. First proven generation/parse failure may retry once after persisted backoff; second-attempt, legacy, rename, readback, lock, and ambiguous failures remain terminal.
 - Activation state now uses its own `/run/claude-code-telegram-activation` namespace, so tmpfiles never changes the control broker socket directory's `0755` traversal authority.
 - Bare `/resume` now lists recent sessions; `/resume N` selects one, while `/sessions` remains a compatibility alias and is no longer advertised.
+
+### Security
+
+- Isolated Claude CLI timeouts now create detached process groups, kill all descendants on timeout, and reap the direct worker in both the unprivileged Bun runner and root helper.
+- Receipt schema v2 binds the exact bounded snapshot digest; proposal records bind session, prompt, release, assistant digest, native watermark, and snapshot digest before any model call or apply.
+- Native-memory writes remain default-off, managed-topic-only, full-inventory optimistic CAS under exact Stop idle authority, and journal every before image. Recovery preserves unknown external bytes and requires caller-supplied memory-root authority.
+- Root activation executes the compatibility checker from an exact-commit root-owned pinned file descriptor before writing generation state or restarting the service.
 
 ## [0.3.0] - 2026-08-21
 
