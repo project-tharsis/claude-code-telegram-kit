@@ -1,3 +1,5 @@
+import { IsolatedCliTimeoutError, redactCredentials, runIsolatedCli } from "@project-tharsis/claude-code-telegram-shared";
+
 export interface SessionTitleContext {
   userPrompt: string;
   assistantText: string;
@@ -37,28 +39,13 @@ const GENERIC_TITLES = new Set([
 ]);
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 const PATH = /(?:^|\s)(?:[a-zA-Z]:[\\/]|~[\\/]|\\\\|\/(?:home|Users|srv|etc|var|opt|tmp)\/|\.\.?[\\/])/;
-const SECRET_ASSIGNMENT = /(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)\s*[:=]\s*[^\s,;]+/gi;
-const BEARER = /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
-const SECRET_TOKEN = /\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\b|\b[A-Fa-f0-9]{32,}\b/g;
-const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
-const SLACK_TOKEN = /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/g;
-const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
-const AWS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
-const URL_CREDENTIAL = /https?:\/\/[^:\s/@]+:[^@\s/]+@/gi;
-const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
 const SENSITIVE_OUTPUT = /(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|https?:\/\/[^:\s/@]+:[^@\s/]+@)/i;
 
+// The credential pattern source lives in @project-tharsis/claude-code-telegram-shared
+// (credential-patterns.ts) so this redaction pass can never independently drift from the
+// bounded snapshot builder's and the strict proposal validator's copies again.
 function redact(value: string): string {
-  return value
-    .replace(PRIVATE_KEY, "[redacted]")
-    .replace(SECRET_ASSIGNMENT, "[redacted]")
-    .replace(BEARER, "[redacted]")
-    .replace(SECRET_TOKEN, "[redacted]")
-    .replace(GITHUB_TOKEN, "[redacted]")
-    .replace(SLACK_TOKEN, "[redacted]")
-    .replace(JWT, "[redacted]")
-    .replace(AWS_KEY, "[redacted]")
-    .replace(URL_CREDENTIAL, "[redacted]");
+  return redactCredentials(value);
 }
 
 function bounded(value: unknown, limit: number): string {
@@ -79,62 +66,16 @@ function buildPrompt(context: SessionTitleContext): string {
   ].join("\n");
 }
 
-async function readBounded(stream: ReadableStream<Uint8Array> | null): Promise<string> {
-  if (!stream) return "";
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (size <= MAX_OUTPUT_BYTES) {
-      const part = await reader.read();
-      if (part.done) break;
-      const remaining = MAX_OUTPUT_BYTES + 1 - size;
-      const chunk = part.value.slice(0, remaining);
-      chunks.push(chunk);
-      size += chunk.byteLength;
-      if (part.value.byteLength > remaining) break;
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  return new TextDecoder().decode(concat(chunks)).slice(0, MAX_OUTPUT_BYTES);
-}
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  const result = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
-  let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
-  return result;
-}
-
-function titleEnvironment(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of [
-    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-    "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"
-  ]) {
-    const value = process.env[key];
-    if (typeof value === "string") env[key] = value;
-  }
-  return env;
-}
-
+// The spawn/timeout/env-allowlist/output-bounding logic itself lives in
+// @project-tharsis/claude-code-telegram-shared (isolated-cli-runner.ts) so this generator's
+// isolated-execution security boundary can never independently drift from the Memory Harness
+// review generator's identical one.
 async function defaultRunner(argv: string[], options: { timeoutMs: number }): Promise<TitleCommandResult> {
-  const child = Bun.spawn(argv, { cwd: "/tmp", env: titleEnvironment(), stdout: "pipe", stderr: "pipe" });
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; child.kill(); }, options.timeoutMs);
   try {
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      readBounded(child.stdout),
-      readBounded(child.stderr)
-    ]);
-    if (timedOut) throw new SessionTitleGenerationError("generate", "timeout", true);
-    return { exitCode, stdout, stderr };
-  } finally {
-    clearTimeout(timer);
+    return await runIsolatedCli(argv, { timeoutMs: options.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES });
+  } catch (error) {
+    if (error instanceof IsolatedCliTimeoutError) throw new SessionTitleGenerationError("generate", "timeout", true);
+    throw error;
   }
 }
 

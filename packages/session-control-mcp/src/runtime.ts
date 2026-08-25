@@ -14,10 +14,19 @@ const DEFAULT_BROKER_SOCKET = "/run/claude-code-telegram-kit/control.sock";
 const MAX_BROKER_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_BROKER_TIMEOUT_MS = 5_000;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const UNIT = /^claude-session-(?:reset(?:-(?:resume|model))?|title)-[0-9a-f]{24}$/;
+const UNIT = /^claude-session-(?:reset(?:-(?:resume|model))?|title|memory-review)-[0-9a-f]{24}$/;
+const PROMPT_ID = /^[A-Za-z0-9._-]{1,128}$/;
 export const BROKER_PROTOCOL_VERSION = 2;
 export const HELPER_PROTOCOL_VERSION = 6;
-export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model", "title"] as const;
+// "memory-review" is required unconditionally, the same as "reset"/"resume"/"model"/"title":
+// this reflects what the deployed root helper binary supports (a build-time property verified
+// once at boot), not whether MEMORY_REVIEW_ENABLED is currently set (a runtime policy toggle
+// read fresh on every Stop hook by loadMemoryReviewPolicy). A helper that has not been
+// reinstalled to the matching protocol/actions must fail the boot capability probe fast --
+// exactly like it already does for "title", which likewise has no independent enable flag --
+// rather than passing boot and only surfacing the version mismatch later, the first time
+// scheduleMemoryReview() actually runs.
+export const REQUIRED_HELPER_ACTIONS = ["reset", "resume", "model", "title", "memory-review"] as const;
 
 interface TelegramEnvelope {
   ok?: unknown;
@@ -75,7 +84,8 @@ export type BrokerRequest =
   | { protocol: 2; action: "reset"; chat_id: string; message_id: string; current_session_id: string }
   | { protocol: 2; action: "resume"; chat_id: string; message_id: string; current_session_id: string; session_id: string }
   | { protocol: 2; action: "model"; chat_id: string; message_id: string; model: ModelAlias }
-  | { protocol: 2; action: "title"; session_id: string };
+  | { protocol: 2; action: "title"; session_id: string }
+  | { protocol: 2; action: "memory-review"; session_id: string; prompt_id: string };
 
 export type BrokerCall = (request: BrokerRequest) => Promise<unknown>;
 
@@ -146,7 +156,7 @@ function validId(value: string, label: string): void {
 export function createSessionScheduler(options: SchedulerOptions = {}) {
   const call = brokerCall(options);
   async function submit(request: Exclude<BrokerRequest, { action: "capabilities" }>): Promise<string> {
-    if (request.action !== "title") {
+    if (request.action !== "title" && request.action !== "memory-review") {
       validId(request.chat_id, "chat ID");
       validId(request.message_id, "message ID");
     }
@@ -162,6 +172,10 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
     if (request.action === "title" && !SESSION_UUID.test(request.session_id)) {
       throw new Error("invalid session UUID");
     }
+    if (request.action === "memory-review") {
+      if (!SESSION_UUID.test(request.session_id)) throw new Error("invalid session UUID");
+      if (!PROMPT_ID.test(request.prompt_id)) throw new Error("invalid prompt ID");
+    }
     const result = await call(request) as { status?: unknown; unit?: unknown };
     if (result?.status !== "scheduled" || typeof result.unit !== "string" || !UNIT.test(result.unit)) {
       throw new Error(`control broker rejected the ${request.action} job`);
@@ -172,7 +186,8 @@ export function createSessionScheduler(options: SchedulerOptions = {}) {
     scheduleReset: (chatId: string, messageId: string, currentSessionId: string) => submit({ protocol: 2, action: "reset", chat_id: chatId, message_id: messageId, current_session_id: currentSessionId }),
     scheduleResume: (chatId: string, messageId: string, currentSessionId: string, sessionId: string) => submit({ protocol: 2, action: "resume", chat_id: chatId, message_id: messageId, current_session_id: currentSessionId, session_id: sessionId }),
     scheduleModel: (chatId: string, messageId: string, model: ModelAlias) => submit({ protocol: 2, action: "model", chat_id: chatId, message_id: messageId, model }),
-    scheduleTitle: (sessionId: string) => submit({ protocol: 2, action: "title", session_id: sessionId })
+    scheduleTitle: (sessionId: string) => submit({ protocol: 2, action: "title", session_id: sessionId }),
+    scheduleMemoryReview: (sessionId: string, promptId: string) => submit({ protocol: 2, action: "memory-review", session_id: sessionId, prompt_id: promptId })
   };
 }
 

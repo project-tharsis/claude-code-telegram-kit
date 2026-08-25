@@ -1,0 +1,211 @@
+[
+  {
+    "name": "valid create",
+    "valid": true,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "no-em-dash",
+      "evidence": ["turn-1-user-correction"],
+      "content": "User asked to stop using em dashes in output.",
+      "reason": "Explicit stable style correction repeated across turns.",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "valid patch",
+    "valid": true,
+    "proposal": {
+      "decision": "patch",
+      "target": "managed_memory",
+      "topic": "obsidian-vault",
+      "evidence": ["turn-3-tool-write", "turn-3-assistant-final"],
+      "content": "Split volatile sync-status notes out of the standing frontmatter conventions.",
+      "reason": "Existing topic mixes standing convention with a session-specific status line.",
+      "freshness": "verify_before_use"
+    }
+  },
+  {
+    "name": "valid no_op",
+    "valid": true,
+    "proposal": {
+      "decision": "no_op",
+      "target": "managed_memory",
+      "topic": "no-op",
+      "evidence": [],
+      "content": "",
+      "reason": "Native memory already captured this preference correctly.",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects out-of-schema field",
+    "valid": false,
+    "proposal": {
+      "decision": "no_op",
+      "target": "managed_memory",
+      "topic": "no-op",
+      "evidence": [],
+      "content": "",
+      "reason": "fine",
+      "freshness": "standing",
+      "confidence": 0.9
+    }
+  },
+  {
+    "name": "rejects missing field",
+    "valid": false,
+    "proposal": {
+      "decision": "no_op",
+      "target": "managed_memory",
+      "topic": "no-op",
+      "evidence": [],
+      "content": "",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects unsupported target",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "claude_md",
+      "topic": "no-em-dash",
+      "evidence": [],
+      "content": "attempt to escalate scope",
+      "reason": "hostile target escalation",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects unsupported decision",
+    "valid": false,
+    "proposal": {
+      "decision": "delete",
+      "target": "managed_memory",
+      "topic": "no-em-dash",
+      "evidence": [],
+      "content": "",
+      "reason": "hostile decision escalation",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects path-shaped topic",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "../../etc/passwd",
+      "evidence": [],
+      "content": "path escape attempt",
+      "reason": "hostile transcript content",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects path-like content",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "incident-notes",
+      "evidence": [],
+      "content": "See /home/USER/.ssh/id_rsa for the recovery key.",
+      "reason": "hostile transcript content",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects credential-shaped content",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "deploy-notes",
+      "evidence": [],
+      "content": "The API token is sk-live-abcdefghijklmnop and should be reused.",
+      "reason": "hostile transcript content",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects oversized content",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "long-note",
+      "evidence": [],
+      "content": "REPEAT",
+      "reason": "content field is replaced with an oversized string by the test",
+      "freshness": "standing"
+    },
+    "expandField": { "path": "content", "repeat": 5000 }
+  },
+  {
+    "name": "rejects oversized evidence array",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "many-refs",
+      "evidence": ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+      "content": "content",
+      "reason": "too many evidence entries",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects non-string evidence entry",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "bad-evidence",
+      "evidence": [{ "nested": "object" }],
+      "content": "content",
+      "reason": "evidence must be strings",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects control characters in content",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "control-chars",
+      "evidence": [],
+      "content": "line one\nline two",
+      "reason": "hostile transcript content",
+      "freshness": "standing"
+    }
+  },
+  {
+    "name": "rejects invalid freshness",
+    "valid": false,
+    "proposal": {
+      "decision": "no_op",
+      "target": "managed_memory",
+      "topic": "no-op",
+      "evidence": [],
+      "content": "",
+      "reason": "fine",
+      "freshness": "forever"
+    }
+  },
+  {
+    "name": "rejects non-slug topic",
+    "valid": false,
+    "proposal": {
+      "decision": "create",
+      "target": "managed_memory",
+      "topic": "Not A Slug!",
+      "evidence": [],
+      "content": "content",
+      "reason": "hostile topic shape",
+      "freshness": "standing"
+    }
+  }
+]

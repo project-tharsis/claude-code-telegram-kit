@@ -35,7 +35,7 @@ function capabilities(overrides: Record<string, unknown> = {}) {
     status: "ok",
     capabilities: {
       protocol: HELPER_PROTOCOL_VERSION,
-      actions: ["reset", "resume", "model", "title"],
+      actions: ["reset", "resume", "model", "title", "memory-review"],
       models: ["opus", "sonnet", "haiku", "inherit"],
       ...overrides
     }
@@ -134,6 +134,19 @@ describe("session scheduler broker contract", () => {
     expect(seen).toEqual([{ protocol: BROKER_PROTOCOL_VERSION, action: "title", session_id: SESSION }]);
   });
 
+  test("schedules an authenticated one-shot memory review job", async () => {
+    const seen: unknown[] = [];
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-memory-review-${"d".repeat(24)}` }, seen) });
+    await expect(scheduler.scheduleMemoryReview(SESSION, "prompt-1")).resolves.toMatch(/^claude-session-memory-review-/);
+    expect(seen).toEqual([{ protocol: BROKER_PROTOCOL_VERSION, action: "memory-review", session_id: SESSION, prompt_id: "prompt-1" }]);
+  });
+
+  test("rejects a malformed memory review identity before contacting the broker", async () => {
+    const scheduler = createSessionScheduler({ callBroker: broker({ status: "scheduled", unit: `claude-session-memory-review-${"d".repeat(24)}` }) });
+    await expect(scheduler.scheduleMemoryReview("not-a-uuid", "prompt-1")).rejects.toThrow("session UUID");
+    await expect(scheduler.scheduleMemoryReview(SESSION, "../../etc/passwd")).rejects.toThrow("prompt ID");
+  });
+
   test("rejects malformed identity and broker receipts", async () => {
     const schedule = createResetScheduler({ callBroker: broker({ status: "scheduled", unit: "evil.service" }) });
     await expect(schedule("123", "51", SESSION)).rejects.toThrow("rejected");
@@ -148,7 +161,7 @@ describe("broker capability preflight", () => {
   test("accepts the current helper protocol and required actions/models", async () => {
     expect(await probeHelperCapabilities({ callBroker: broker(capabilities()) })).toEqual({
       protocol: HELPER_PROTOCOL_VERSION,
-      actions: ["reset", "resume", "model", "title"],
+      actions: ["reset", "resume", "model", "title", "memory-review"],
       models: ["opus", "sonnet", "haiku", "inherit"]
     });
   });
@@ -157,5 +170,10 @@ describe("broker capability preflight", () => {
     await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ protocol: 3 })) })).rejects.toThrow("protocol mismatch");
     await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ actions: ["reset"] })) })).rejects.toThrow("actions");
     await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ models: ["opus"] })) })).rejects.toThrow("models");
+  });
+
+  test("fails closed when the deployed helper has not been reinstalled with memory-review support (version-mismatched deploy)", async () => {
+    await expect(probeHelperCapabilities({ callBroker: broker(capabilities({ actions: ["reset", "resume", "model", "title"] })) }))
+      .rejects.toThrow("actions");
   });
 });

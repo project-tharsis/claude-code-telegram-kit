@@ -32,10 +32,18 @@ RATE_STATE = Path("/run/claude-code-telegram-kit/mutation-rate.json")
 RATE_WINDOW_SECONDS = 60
 RATE_BURST = 12
 MAX_PENDING_JOBS = 4
+# Automatic Memory Harness review jobs get their own small, separate quota rather than sharing
+# MAX_PENDING_JOBS with the interactive reset/resume/model/title commands. evaluateMemoryReviewTrigger
+# can fire on every correction turn (or every Nth turn) in a chatty session, unlike the interactive
+# actions, which only ever run on explicit user action; without partitioning, a burst of automatic
+# memory-review jobs could fill the shared pool and starve a concurrent, user-initiated reset/resume
+# /model/title request of capacity it previously had exclusively.
+MAX_PENDING_MEMORY_REVIEW_JOBS = 2
 MODELS = {"opus", "sonnet", "haiku", "inherit"}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 DIGITS_RE = re.compile(r"^[0-9]+$")
-UNIT_RE = re.compile(r"^claude-session-(?:reset(?:-(?:resume|model))?|title)-[0-9a-f]{24}$")
+UNIT_RE = re.compile(r"^claude-session-(?:reset(?:-(?:resume|model))?|title|memory-review)-[0-9a-f]{24}$")
+PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 Runner = Callable[[list[str], float], subprocess.CompletedProcess[str]]
 
 
@@ -75,6 +83,9 @@ def _request_id(action: str, request: dict[str, Any]) -> str:
     if action == "title":
         seed = f"title:{request['session_id']}"
         return hashlib.sha256(seed.encode()).hexdigest()[:24]
+    if action == "memory-review":
+        seed = f"memory-review:{request['session_id']}:{request['prompt_id']}"
+        return hashlib.sha256(seed.encode()).hexdigest()[:24]
     chat = request["chat_id"]
     message = request["message_id"]
     if action == "reset":
@@ -98,27 +109,41 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _pending_jobs(run: Runner) -> int:
+def _pending_jobs(run: Runner, *patterns: str) -> int:
     result = run([
         "/usr/bin/systemctl", "list-units", "--type=service",
         "--state=activating,running", "--no-legend", "--plain",
-        "claude-session-reset*.service",
-        "claude-session-title*.service",
+        *patterns,
     ], 5.0)
     if result.returncode != 0:
         raise RuntimeError("unable to count control jobs")
     return sum(1 for line in result.stdout.splitlines() if line.strip())
 
 
+def _pending_interactive_jobs(run: Runner) -> int:
+    # Excludes memory-review units on purpose: this budget is exclusively for the
+    # user-initiated reset/resume/model/title actions, and must never be reduced by automatic
+    # memory-review job pressure.
+    return _pending_jobs(run, "claude-session-reset*.service", "claude-session-title*.service")
+
+
+def _pending_memory_review_jobs(run: Runner) -> int:
+    return _pending_jobs(run, "claude-session-memory-review*.service")
+
+
 def _reserve_mutation(
     run: Runner,
     *,
+    action: str = "reset",
     state_path: Path = RATE_STATE,
     now: float | None = None,
     burst: int = RATE_BURST,
     expected_uid: int = 0,
 ) -> None:
-    if _pending_jobs(run) >= MAX_PENDING_JOBS:
+    if action == "memory-review":
+        if _pending_memory_review_jobs(run) >= MAX_PENDING_MEMORY_REVIEW_JOBS:
+            raise RuntimeError("too many pending memory review jobs")
+    elif _pending_interactive_jobs(run) >= MAX_PENDING_JOBS:
         raise RuntimeError("too many pending control jobs")
     current = time.time() if now is None else now
     state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -218,31 +243,46 @@ def _mutation_argv(request: dict[str, Any], helper: Path, config: Path) -> tuple
         _exact_keys(request, {"protocol", "action", "session_id"})
         if not UUID_RE.fullmatch(str(request["session_id"])):
             raise ValueError("invalid session identity")
+    elif action == "memory-review":
+        _exact_keys(request, {"protocol", "action", "session_id", "prompt_id"})
+        if not UUID_RE.fullmatch(str(request["session_id"])):
+            raise ValueError("invalid session identity")
+        if not PROMPT_ID_RE.fullmatch(str(request["prompt_id"])):
+            raise ValueError("invalid prompt identity")
     else:
         raise ValueError("invalid action")
-    if action != "title":
+    if action not in ("title", "memory-review"):
         _validate_id(request["chat_id"], "chat ID")
         _validate_id(request["message_id"], "message ID")
     request_id = _request_id(action, request)
-    unit = f"claude-session-title-{request_id}" if action == "title" else f"claude-session-reset{'-' + action if action != 'reset' else ''}-{request_id}"
+    if action == "title":
+        unit = f"claude-session-title-{request_id}"
+    elif action == "memory-review":
+        unit = f"claude-session-memory-review-{request_id}"
+    else:
+        unit = f"claude-session-reset{'-' + action if action != 'reset' else ''}-{request_id}"
     if not UNIT_RE.fullmatch(unit):
         raise ValueError("invalid unit")
     argv = [SYSTEMD_RUN, f"--unit={unit}"]
-    if action == "title":
+    if action in ("title", "memory-review"):
+        # The isolated Memory Harness reviewer needs the same OAuth authority as the title
+        # worker and nothing else; it never reaches the renderer/control MCP or Channel.
         argv.append(f"--property=EnvironmentFile={TITLE_OAUTH_ENV_FILE}")
     argv += [
         "--collect", "--no-block", str(helper), "--config", str(config),
         "--protocol", str(HELPER_PROTOCOL), "--action", action,
     ]
-    if action == "title":
+    if action in ("title", "memory-review"):
         argv += ["--session-id", request["session_id"]]
+    if action == "memory-review":
+        argv += ["--prompt-id", request["prompt_id"]]
     if action in {"reset", "resume"}:
         argv += ["--current-session-id", request["current_session_id"]]
     if action == "resume":
         argv += ["--session-id", request["session_id"]]
     if action == "model":
         argv += ["--model", request["model"]]
-    if action != "title":
+    if action not in ("title", "memory-review"):
         argv += ["--chat-id", request["chat_id"], "--request-id", request_id]
     return unit, argv
 
@@ -272,10 +312,10 @@ def process_request(
         return {"status": "ok", "capabilities": _helper_capabilities(helper, run, verify_files)}
     if verify_files:
         _secure_file(helper, (0o755,), "reset helper")
-        if action == "title":
+        if action in ("title", "memory-review"):
             _secure_file(TITLE_OAUTH_ENV_FILE, (0o600,), "title OAuth environment")
     unit, argv = _mutation_argv(request, helper, config_path)
-    (reserve or _reserve_mutation)(run)
+    (reserve or (lambda runner: _reserve_mutation(runner, action=action)))(run)
     result = run(argv, 10.0)
     if result.returncode != 0:
         raise RuntimeError("systemd rejected control job")

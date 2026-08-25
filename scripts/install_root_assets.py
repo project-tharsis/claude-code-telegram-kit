@@ -37,6 +37,7 @@ ASSETS = (
     Asset("packages/session-control-mcp/scripts/claude_code_control_guard.py", "/usr/local/sbin/claude-control-command-guard", 0o755),
     Asset("packages/session-control-mcp/scripts/claude_code_usage_snapshot.py", "/usr/local/sbin/claude-usage-snapshot", 0o755),
     Asset("packages/session-control-mcp/dist/session-title-worker.js", "/usr/local/libexec/claude-code-telegram-kit/session-title-worker.js", 0o444),
+    Asset("packages/session-control-mcp/dist/memory-review-worker.js", "/usr/local/libexec/claude-code-telegram-kit/memory-review-worker.js", 0o444),
     Asset("scripts/runtime_activate.py", "/usr/local/sbin/claude-runtime-activate", 0o755),
     Asset("examples/claude-runtime-activation.json", "/etc/claude-code-telegram-kit/activation.json", 0o600, True),
     Asset("examples/claude-telegram-activation.conf", "/etc/systemd/system/claude-telegram.service.d/30-runtime-activation.conf", 0o644),
