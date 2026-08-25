@@ -298,7 +298,7 @@ var PROMPT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 var SHA256_RE = /^[0-9a-f]{64}$/;
 var RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
 var STATUSES = ["queued", "reviewed", "failed"];
-var MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 1;
+var MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 2;
 var DIRECTORY_MODE = 448;
 var FILE_MODE = 384;
 var MAX_BYTES = 8 * 1024;
@@ -334,6 +334,8 @@ function assertBounds(receipt) {
     throw new Error("invalid receipt prompt_id");
   if (!SHA256_RE.test(receipt.last_assistant_message_sha256))
     throw new Error("invalid receipt digest");
+  if (!SHA256_RE.test(receipt.snapshot_sha256))
+    throw new Error("invalid receipt snapshot digest");
   if (typeof receipt.transcript_path !== "string" || !receipt.transcript_path.startsWith("/") || receipt.transcript_path.length > 4096) {
     throw new Error("invalid receipt transcript_path");
   }
@@ -352,7 +354,7 @@ function validateMemoryReviewReceiptShape(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error("invalid receipt shape");
   const record = value;
-  const allowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
+  const allowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "snapshot_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
   const keys = Object.keys(record);
   if (keys.length !== allowed.length || allowed.some((key) => !(key in record)))
     throw new Error("invalid receipt field shape");
@@ -364,6 +366,7 @@ function validateMemoryReviewReceiptShape(value) {
     session_id: record.session_id,
     prompt_id: record.prompt_id,
     last_assistant_message_sha256: record.last_assistant_message_sha256,
+    snapshot_sha256: record.snapshot_sha256,
     transcript_path: record.transcript_path,
     telegram_message_id: record.telegram_message_id,
     release_sha: record.release_sha,
@@ -371,7 +374,7 @@ function validateMemoryReviewReceiptShape(value) {
     created_at: record.created_at
   };
   assertBounds(candidate);
-  return { schema: 1, ...candidate, status: record.status };
+  return { schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION, ...candidate, status: record.status };
 }
 function writeAll(fd, bytes) {
   let offset = 0;
@@ -466,6 +469,20 @@ var DIRECTORY_MODE2 = 448;
 var FILE_MODE2 = 384;
 var MAX_BYTES2 = 16 * 1024;
 var MEMORY_REVIEW_PROPOSAL_MAX_ENTRIES = 2048;
+
+class MemoryReviewProposalStoreError extends Error {
+  reason;
+  permanent;
+  constructor(reason, permanent) {
+    super(`memory review proposal store: ${reason}`);
+    this.reason = reason;
+    this.permanent = permanent;
+    this.name = "MemoryReviewProposalStoreError";
+  }
+}
+function permanentStoreError(reason) {
+  return new MemoryReviewProposalStoreError(reason, true);
+}
 function defaultMemoryReviewProposalDirectory() {
   return join2(homedir2(), ".local", "state", "claude-code-telegram-kit", "memory-review", "proposals");
 }
@@ -489,14 +506,18 @@ function processStartTicks(pid) {
   }
 }
 function canonicalProposal(proposal) {
-  return validateMemoryReviewProposal(proposal);
+  try {
+    return validateMemoryReviewProposal(proposal);
+  } catch {
+    throw permanentStoreError("invalid_proposal");
+  }
 }
 function proposalDigest(proposal) {
   return createHash("sha256").update(JSON.stringify(proposal)).digest("hex");
 }
 function validateRecord(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error("invalid proposal record");
+    throw permanentStoreError("invalid_record");
   const record = value;
   const allowed = [
     "schema",
@@ -505,16 +526,17 @@ function validateRecord(value) {
     "release_sha",
     "last_assistant_message_sha256",
     "native_memory_watermark",
+    "snapshot_sha256",
     "proposal_sha256",
     "created_at",
     "proposal"
   ];
-  if (Object.keys(record).length !== allowed.length || allowed.some((key) => !(key in record)) || record.schema !== 1 || typeof record.session_id !== "string" || !SESSION_UUID2.test(record.session_id) || typeof record.prompt_id !== "string" || !PROMPT_ID_RE.test(record.prompt_id) || typeof record.release_sha !== "string" || !RELEASE_SHA_RE2.test(record.release_sha) || typeof record.last_assistant_message_sha256 !== "string" || !SHA256_RE2.test(record.last_assistant_message_sha256) || typeof record.native_memory_watermark !== "string" || !SHA256_RE2.test(record.native_memory_watermark) || typeof record.proposal_sha256 !== "string" || !SHA256_RE2.test(record.proposal_sha256) || !Number.isSafeInteger(record.created_at) || Number(record.created_at) < 0) {
-    throw new Error("invalid proposal record");
+  if (Object.keys(record).length !== allowed.length || allowed.some((key) => !(key in record)) || record.schema !== 1 || typeof record.session_id !== "string" || !SESSION_UUID2.test(record.session_id) || typeof record.prompt_id !== "string" || !PROMPT_ID_RE.test(record.prompt_id) || typeof record.release_sha !== "string" || !RELEASE_SHA_RE2.test(record.release_sha) || typeof record.last_assistant_message_sha256 !== "string" || !SHA256_RE2.test(record.last_assistant_message_sha256) || typeof record.native_memory_watermark !== "string" || !SHA256_RE2.test(record.native_memory_watermark) || typeof record.snapshot_sha256 !== "string" || !SHA256_RE2.test(record.snapshot_sha256) || typeof record.proposal_sha256 !== "string" || !SHA256_RE2.test(record.proposal_sha256) || !Number.isSafeInteger(record.created_at) || Number(record.created_at) < 0) {
+    throw permanentStoreError("invalid_record");
   }
   const proposal = canonicalProposal(record.proposal);
   if (proposalDigest(proposal) !== record.proposal_sha256)
-    throw new Error("invalid proposal digest");
+    throw permanentStoreError("invalid_proposal_digest");
   return {
     schema: 1,
     session_id: record.session_id,
@@ -522,6 +544,7 @@ function validateRecord(value) {
     release_sha: record.release_sha,
     last_assistant_message_sha256: record.last_assistant_message_sha256,
     native_memory_watermark: record.native_memory_watermark,
+    snapshot_sha256: record.snapshot_sha256,
     proposal_sha256: record.proposal_sha256,
     created_at: Number(record.created_at),
     proposal
@@ -558,17 +581,17 @@ function readLeaf2(dirfd, name, expectedUid) {
     throw error;
   }
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 4095) !== FILE_MODE2 || expectedUid !== undefined && before.uid !== expectedUid || before.size < 2 || before.size > MAX_BYTES2)
-    throw new Error("unsafe proposal file");
+    throw permanentStoreError("unsafe_proposal_file");
   const fd = openSync3(path, constants3.O_RDONLY | constants3.O_NOFOLLOW);
   try {
     const opened = fstatSync3(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE2 || expectedUid !== undefined && opened.uid !== expectedUid || opened.size < 2 || opened.size > MAX_BYTES2)
-      throw new Error("unsafe proposal file");
+      throw permanentStoreError("unsafe_proposal_file");
     let parsed;
     try {
       parsed = JSON.parse(readAll(fd, opened.size).toString("utf8"));
     } catch {
-      throw new Error("invalid proposal record");
+      throw permanentStoreError("invalid_record");
     }
     return validateRecord(parsed);
   } finally {
@@ -682,11 +705,11 @@ function acquireMemoryReviewProposalClaim(sessionId, promptId, options = {}) {
   }
 }
 function sameBinding(existing, candidate) {
-  return existing.session_id === candidate.session_id && existing.prompt_id === candidate.prompt_id && existing.release_sha === candidate.release_sha && existing.last_assistant_message_sha256 === candidate.last_assistant_message_sha256 && existing.native_memory_watermark === candidate.native_memory_watermark && existing.proposal_sha256 === candidate.proposal_sha256;
+  return existing.session_id === candidate.session_id && existing.prompt_id === candidate.prompt_id && existing.release_sha === candidate.release_sha && existing.last_assistant_message_sha256 === candidate.last_assistant_message_sha256 && existing.native_memory_watermark === candidate.native_memory_watermark && existing.snapshot_sha256 === candidate.snapshot_sha256 && existing.proposal_sha256 === candidate.proposal_sha256;
 }
 function createMemoryReviewProposalRecord(input, options = {}) {
-  if (!SESSION_UUID2.test(input.sessionId) || !PROMPT_ID_RE.test(input.promptId) || !RELEASE_SHA_RE2.test(input.releaseSha) || !SHA256_RE2.test(input.lastAssistantMessageSha256) || !SHA256_RE2.test(input.nativeMemoryWatermark))
-    throw new Error("invalid proposal binding");
+  if (!SESSION_UUID2.test(input.sessionId) || !PROMPT_ID_RE.test(input.promptId) || !RELEASE_SHA_RE2.test(input.releaseSha) || !SHA256_RE2.test(input.lastAssistantMessageSha256) || !SHA256_RE2.test(input.nativeMemoryWatermark) || !SHA256_RE2.test(input.snapshotSha256))
+    throw permanentStoreError("invalid_binding");
   const proposal = canonicalProposal(input.proposal);
   const record = {
     schema: 1,
@@ -695,6 +718,7 @@ function createMemoryReviewProposalRecord(input, options = {}) {
     release_sha: input.releaseSha,
     last_assistant_message_sha256: input.lastAssistantMessageSha256,
     native_memory_watermark: input.nativeMemoryWatermark,
+    snapshot_sha256: input.snapshotSha256,
     proposal_sha256: proposalDigest(proposal),
     created_at: (options.now ?? Date.now)(),
     proposal
@@ -702,7 +726,7 @@ function createMemoryReviewProposalRecord(input, options = {}) {
   validateRecord(record);
   const bytes = Buffer.from(JSON.stringify(record), "utf8");
   if (bytes.byteLength > MAX_BYTES2)
-    throw new Error("proposal record too large");
+    throw permanentStoreError("record_too_large");
   return withDirectory2(options, (dirfd, uid2) => {
     const maxEntries = options.maxEntries ?? MEMORY_REVIEW_PROPOSAL_MAX_ENTRIES;
     if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > MEMORY_REVIEW_PROPOSAL_MAX_ENTRIES) {
@@ -716,12 +740,12 @@ function createMemoryReviewProposalRecord(input, options = {}) {
     const existing = readLeaf2(dirfd, name, uid2);
     if (existing !== null) {
       if (!sameBinding(existing, record))
-        throw new Error("proposal conflict");
+        throw permanentStoreError("proposal_conflict");
       return { outcome: "existing", record: existing };
     }
     const count = readdirSync2(`/proc/self/fd/${dirfd}`).filter((entry) => entry.endsWith(".json")).length;
     if (count >= maxEntries)
-      throw new Error("proposal store capacity exceeded");
+      throw permanentStoreError("capacity_exceeded");
     let fd;
     try {
       fd = openSync3(path, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | constants3.O_NOFOLLOW, FILE_MODE2);
@@ -730,7 +754,7 @@ function createMemoryReviewProposalRecord(input, options = {}) {
         const raced = readLeaf2(dirfd, name, uid2);
         if (raced !== null && sameBinding(raced, record))
           return { outcome: "existing", record: raced };
-        throw new Error("proposal conflict");
+        throw permanentStoreError("proposal_conflict");
       }
       throw error;
     }
@@ -756,7 +780,13 @@ function readMemoryReviewProposalRecord(sessionId, promptId, options = {}) {
   if (!SESSION_UUID2.test(sessionId) || !PROMPT_ID_RE.test(promptId))
     throw new Error("invalid proposal identity");
   const key = memoryReviewProposalKey(sessionId, promptId);
-  return withDirectory2(options, (dirfd, uid2) => readLeaf2(dirfd, `${key}.json`, uid2));
+  return withDirectory2(options, (dirfd, uid2) => {
+    const record = readLeaf2(dirfd, `${key}.json`, uid2);
+    if (record !== null && (record.session_id !== sessionId || record.prompt_id !== promptId)) {
+      throw permanentStoreError("identity_mismatch");
+    }
+    return record;
+  });
 }
 // packages/shared/src/native-memory-observer.ts
 var SETTINGS_MAX_BYTES = 64 * 1024;
@@ -917,12 +947,15 @@ async function generateMemoryReviewProposal(snapshot, options = {}) {
 }
 
 // packages/session-control-mcp/src/memory-review-snapshot.ts
+import { createHash as createHash2 } from "crypto";
 var MAX_FIELD_CHARS = 1200;
 var MAX_TOTAL_CHARS = 6000;
 var MAX_EARLIER_DIGESTS = 6;
 var MAX_TOOL_ENTRIES = 20;
 var MAX_TOPIC_EXCERPTS = 4;
 var MAX_TOOL_NAME_CHARS = 60;
+var SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var PROMPT_ID_RE2 = /^[A-Za-z0-9._-]{1,128}$/;
 var RELEASE_SHA_RE3 = /^[0-9a-f]{40}$/;
 var SHA256_RE3 = /^[0-9a-f]{64}$/;
 var TOPIC_PATH_RE = /^[^/\\\0]{1,128}\.md$/;
@@ -937,6 +970,9 @@ function validateMemoryReviewSnapshot(value) {
     throw new Error("invalid snapshot shape");
   const record = value;
   const allowed = [
+    "sessionId",
+    "promptId",
+    "assistantMessageSha256",
     "userMessage",
     "assistantFinal",
     "recentCorrections",
@@ -949,7 +985,7 @@ function validateMemoryReviewSnapshot(value) {
     "releaseSha",
     "packageVersion"
   ];
-  if (Object.keys(record).length !== allowed.length || allowed.some((key) => !(key in record)) || !validText(record.userMessage, MAX_FIELD_CHARS, 1) || !validText(record.assistantFinal, MAX_FIELD_CHARS, 1) || !validText(record.currentMemoryIndex, MAX_FIELD_CHARS, 1) || !validText(record.nativeMemoryChangeSummary, 400) || typeof record.nativeMemoryWatermark !== "string" || !SHA256_RE3.test(record.nativeMemoryWatermark) || /^0+$/.test(record.nativeMemoryWatermark) || typeof record.releaseSha !== "string" || !RELEASE_SHA_RE3.test(record.releaseSha) || /^0+$/.test(record.releaseSha) || !validText(record.packageVersion, 32, 1) || !/^[0-9A-Za-z.+-]+$/.test(record.packageVersion)) {
+  if (Object.keys(record).length !== allowed.length || allowed.some((key) => !(key in record)) || typeof record.sessionId !== "string" || !SESSION_UUID_RE.test(record.sessionId) || typeof record.promptId !== "string" || !PROMPT_ID_RE2.test(record.promptId) || typeof record.assistantMessageSha256 !== "string" || !SHA256_RE3.test(record.assistantMessageSha256) || /^0+$/.test(record.assistantMessageSha256) || !validText(record.userMessage, MAX_FIELD_CHARS, 1) || !validText(record.assistantFinal, MAX_FIELD_CHARS, 1) || !validText(record.currentMemoryIndex, MAX_FIELD_CHARS, 1) || !validText(record.nativeMemoryChangeSummary, 400) || typeof record.nativeMemoryWatermark !== "string" || !SHA256_RE3.test(record.nativeMemoryWatermark) || /^0+$/.test(record.nativeMemoryWatermark) || typeof record.releaseSha !== "string" || !RELEASE_SHA_RE3.test(record.releaseSha) || /^0+$/.test(record.releaseSha) || !validText(record.packageVersion, 32, 1) || !/^[0-9A-Za-z.+-]+$/.test(record.packageVersion)) {
     throw new Error("invalid snapshot fields");
   }
   if (!Array.isArray(record.recentCorrections) || record.recentCorrections.length > 4 || !record.recentCorrections.every((item) => validText(item, MAX_FIELD_CHARS)) || !Array.isArray(record.earlierTurnDigests) || record.earlierTurnDigests.length > MAX_EARLIER_DIGESTS || !record.earlierTurnDigests.every((item) => validText(item, 240)) || !Array.isArray(record.tools) || record.tools.length > MAX_TOOL_ENTRIES || !Array.isArray(record.relevantTopics) || record.relevantTopics.length > MAX_TOPIC_EXCERPTS) {
@@ -972,6 +1008,9 @@ function validateMemoryReviewSnapshot(value) {
     return { path: topic.path, contentHash: topic.contentHash, excerpt: topic.excerpt };
   });
   const snapshot = {
+    sessionId: record.sessionId,
+    promptId: record.promptId,
+    assistantMessageSha256: record.assistantMessageSha256,
     userMessage: record.userMessage,
     assistantFinal: record.assistantFinal,
     recentCorrections: [...record.recentCorrections],
@@ -989,15 +1028,19 @@ function validateMemoryReviewSnapshot(value) {
     throw new Error("snapshot exceeds total character limit");
   return snapshot;
 }
+function memoryReviewSnapshotDigest(snapshot) {
+  const validated = validateMemoryReviewSnapshot(snapshot);
+  return createHash2("sha256").update(JSON.stringify(validated)).digest("hex");
+}
 
 // packages/session-control-mcp/src/memory-review-worker.ts
 var SESSION_UUID3 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-var PROMPT_ID_RE2 = /^[A-Za-z0-9._-]{1,128}$/;
+var PROMPT_ID_RE3 = /^[A-Za-z0-9._-]{1,128}$/;
 var MAX_SNAPSHOT_BYTES = 32 * 1024;
 async function runMemoryReviewWorker(options) {
   if (!SESSION_UUID3.test(options.sessionId))
     throw new Error("invalid session identity");
-  if (!PROMPT_ID_RE2.test(options.promptId))
+  if (!PROMPT_ID_RE3.test(options.promptId))
     throw new Error("invalid prompt identity");
   const storeOptions = options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory };
   const proposalDirectory = options.proposalDirectory ?? (options.receiptDirectory === undefined ? undefined : join3(options.receiptDirectory, "proposals"));
@@ -1015,6 +1058,11 @@ async function runMemoryReviewWorker(options) {
   if (claim.outcome === "busy")
     return { outcome: "failed", reason: "review_claim:busy" };
   try {
+    const snapshotSha256 = memoryReviewSnapshotDigest(options.snapshot);
+    if (options.snapshot.sessionId !== options.sessionId || options.snapshot.promptId !== options.promptId || options.snapshot.releaseSha !== receipt.release_sha || options.snapshot.assistantMessageSha256 !== receipt.last_assistant_message_sha256 || snapshotSha256 !== receipt.snapshot_sha256) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      return { outcome: "failed", reason: "snapshot:binding_mismatch" };
+    }
     const finish = (proposal2) => {
       const transitioned = transitionMemoryReviewReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
       if (!transitioned) {
@@ -1027,11 +1075,15 @@ async function runMemoryReviewWorker(options) {
     let existing;
     try {
       existing = readMemoryReviewProposalRecord(options.sessionId, options.promptId, proposalStoreOptions);
-    } catch {
+    } catch (error) {
+      if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
+        transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+        return { outcome: "failed", reason: `proposal_store:${error.reason}` };
+      }
       return { outcome: "failed", reason: "proposal_store:unavailable" };
     }
     if (existing !== null) {
-      if (existing.release_sha !== receipt.release_sha || existing.last_assistant_message_sha256 !== receipt.last_assistant_message_sha256 || existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark) {
+      if (existing.session_id !== options.sessionId || existing.prompt_id !== options.promptId || existing.release_sha !== receipt.release_sha || existing.last_assistant_message_sha256 !== receipt.last_assistant_message_sha256 || existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark || existing.snapshot_sha256 !== snapshotSha256) {
         transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
         return { outcome: "failed", reason: "proposal_store:binding_mismatch" };
       }
@@ -1056,10 +1108,15 @@ async function runMemoryReviewWorker(options) {
         releaseSha: receipt.release_sha,
         lastAssistantMessageSha256: receipt.last_assistant_message_sha256,
         nativeMemoryWatermark: options.snapshot.nativeMemoryWatermark,
+        snapshotSha256,
         proposal
       }, { ...proposalStoreOptions, now: options.now ?? Date.now });
       return finish(persisted.record.proposal);
-    } catch {
+    } catch (error) {
+      if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
+        transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+        return { outcome: "failed", reason: `proposal_store:${error.reason}` };
+      }
       return { outcome: "failed", reason: "proposal_store:unavailable" };
     }
   } finally {

@@ -18,7 +18,7 @@ import {
   type MemoryReviewTriggerInput
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createSessionScheduler } from "./runtime.js";
-import { buildMemoryReviewSnapshot, serializeMemoryReviewSnapshot } from "./memory-review-snapshot.js";
+import { buildMemoryReviewSnapshot, memoryReviewSnapshotDigest, serializeMemoryReviewSnapshot } from "./memory-review-snapshot.js";
 import { writeMemoryReviewSnapshot } from "./memory-review-snapshot-store.js";
 
 const PACKAGE_VERSION = "0.3.0";
@@ -192,11 +192,27 @@ export async function handleMemoryReviewCommand(
       })
     : options.loadNativeContext(releaseSha, observedAt);
 
+  const assistantMessageSha256 = sha256Hex(assistantText);
+  const snapshot = buildMemoryReviewSnapshot({
+    sessionId: payload.session_id,
+    promptId: payload.prompt_id,
+    assistantMessageSha256,
+    userMessage: options.userMessage ?? "",
+    assistantFinal: assistantText,
+    currentMemoryIndex: nativeContext.currentMemoryIndex,
+    relevantTopics: nativeContext.relevantTopics,
+    nativeMemoryChangeSummary: nativeContext.nativeMemoryChangeSummary,
+    nativeMemoryWatermark: nativeContext.nativeMemoryWatermark,
+    releaseSha,
+    packageVersion: PACKAGE_VERSION
+  });
+  const snapshotSha256 = memoryReviewSnapshotDigest(snapshot);
   const create = options.createReceipt ?? createMemoryReviewReceipt;
   const result = create({
     sessionId: payload.session_id,
     promptId: payload.prompt_id,
-    lastAssistantMessageSha256: sha256Hex(assistantText),
+    lastAssistantMessageSha256: assistantMessageSha256,
+    snapshotSha256,
     transcriptPath: resolve(payload.transcript_path as string),
     telegramMessageId,
     releaseSha,
@@ -217,16 +233,6 @@ export async function handleMemoryReviewCommand(
   // may mean the root broker already accepted the unit, so any scheduler exception must leave the
   // receipt queued and must never replay the uncertain request.
   try {
-    const snapshot = buildMemoryReviewSnapshot({
-      userMessage: options.userMessage ?? "",
-      assistantFinal: assistantText,
-      currentMemoryIndex: nativeContext.currentMemoryIndex,
-      relevantTopics: nativeContext.relevantTopics,
-      nativeMemoryChangeSummary: nativeContext.nativeMemoryChangeSummary,
-      nativeMemoryWatermark: nativeContext.nativeMemoryWatermark,
-      releaseSha,
-      packageVersion: PACKAGE_VERSION
-    });
     const write = options.writeSnapshot ?? writeMemoryReviewSnapshot;
     write(
       payload.session_id,

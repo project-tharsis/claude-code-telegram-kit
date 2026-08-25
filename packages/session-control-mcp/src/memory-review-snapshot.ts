@@ -13,6 +13,7 @@
  * not by a filter — there is no field here wide enough to hold them.
  */
 
+import { createHash } from "node:crypto";
 import { containsCredentialShape, redactCredentials } from "@project-tharsis/claude-code-telegram-shared";
 
 const MAX_FIELD_CHARS = 1_200;
@@ -54,6 +55,9 @@ export interface MemoryReviewSnapshotTopicExcerpt {
 }
 
 export interface MemoryReviewSnapshotInput {
+  sessionId: string;
+  promptId: string;
+  assistantMessageSha256: string;
   userMessage: string;
   assistantFinal: string;
   recentCorrections?: string[];
@@ -68,6 +72,9 @@ export interface MemoryReviewSnapshotInput {
 }
 
 export interface MemoryReviewSnapshot {
+  sessionId: string;
+  promptId: string;
+  assistantMessageSha256: string;
   userMessage: string;
   assistantFinal: string;
   recentCorrections: string[];
@@ -81,6 +88,8 @@ export interface MemoryReviewSnapshot {
   packageVersion: string;
 }
 
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const PROMPT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const TOPIC_PATH_RE = /^[^/\\\0]{1,128}\.md$/;
@@ -116,7 +125,10 @@ export function buildMemoryReviewSnapshot(input: MemoryReviewSnapshotInput): Mem
     : [];
 
   const snapshot: MemoryReviewSnapshot = {
-    userMessage: bounded(input.userMessage),
+    sessionId: SESSION_UUID_RE.test(input.sessionId) ? input.sessionId : "",
+    promptId: PROMPT_ID_RE.test(input.promptId) ? input.promptId : "",
+    assistantMessageSha256: SHA256_RE.test(input.assistantMessageSha256) ? input.assistantMessageSha256 : "0".repeat(64),
+    userMessage: bounded(input.userMessage, MAX_FIELD_CHARS),
     assistantFinal: bounded(input.assistantFinal),
     recentCorrections: boundedList(input.recentCorrections, 4),
     earlierTurnDigests: boundedList(input.earlierTurnDigests, MAX_EARLIER_DIGESTS, 240),
@@ -172,11 +184,15 @@ export function validateMemoryReviewSnapshot(value: unknown): MemoryReviewSnapsh
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid snapshot shape");
   const record = value as Record<string, unknown>;
   const allowed = [
+    "sessionId", "promptId", "assistantMessageSha256",
     "userMessage", "assistantFinal", "recentCorrections", "earlierTurnDigests", "tools",
     "currentMemoryIndex", "relevantTopics", "nativeMemoryChangeSummary", "nativeMemoryWatermark",
     "releaseSha", "packageVersion"
   ];
   if (Object.keys(record).length !== allowed.length || allowed.some(key => !(key in record)) ||
+      typeof record.sessionId !== "string" || !SESSION_UUID_RE.test(record.sessionId) ||
+      typeof record.promptId !== "string" || !PROMPT_ID_RE.test(record.promptId) ||
+      typeof record.assistantMessageSha256 !== "string" || !SHA256_RE.test(record.assistantMessageSha256) || /^0+$/.test(record.assistantMessageSha256) ||
       !validText(record.userMessage, MAX_FIELD_CHARS, 1) || !validText(record.assistantFinal, MAX_FIELD_CHARS, 1) ||
       !validText(record.currentMemoryIndex, MAX_FIELD_CHARS, 1) ||
       !validText(record.nativeMemoryChangeSummary, 400) ||
@@ -209,6 +225,9 @@ export function validateMemoryReviewSnapshot(value: unknown): MemoryReviewSnapsh
     return { path: topic.path, contentHash: topic.contentHash, excerpt: topic.excerpt };
   });
   const snapshot: MemoryReviewSnapshot = {
+    sessionId: record.sessionId,
+    promptId: record.promptId,
+    assistantMessageSha256: record.assistantMessageSha256,
     userMessage: record.userMessage,
     assistantFinal: record.assistantFinal,
     recentCorrections: [...record.recentCorrections] as string[],
@@ -229,6 +248,11 @@ export function validateMemoryReviewSnapshot(value: unknown): MemoryReviewSnapsh
     + snapshot.nativeMemoryChangeSummary.length;
   if (total > MAX_TOTAL_CHARS) throw new Error("snapshot exceeds total character limit");
   return snapshot;
+}
+
+export function memoryReviewSnapshotDigest(snapshot: MemoryReviewSnapshot): string {
+  const validated = validateMemoryReviewSnapshot(snapshot);
+  return createHash("sha256").update(JSON.stringify(validated)).digest("hex");
 }
 
 interface SerializedMemoryReviewSnapshot {

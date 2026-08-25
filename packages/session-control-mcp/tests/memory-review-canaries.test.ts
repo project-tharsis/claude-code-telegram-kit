@@ -95,6 +95,9 @@ describe("PR1 read-only isolation canaries", () => {
     const projectsListingBefore = readdirSync(claudeProjectsDirectory).sort();
 
     const snapshot = buildMemoryReviewSnapshot({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      assistantMessageSha256: sha256(Buffer.from("Understood.")),
       userMessage: "please stop using em dashes",
       assistantFinal: "Understood.",
       currentMemoryIndex: readFileSync(join(memoryTreeDirectory, "MEMORY.md"), "utf8"),
@@ -152,6 +155,9 @@ describe("PR1 read-only isolation canaries", () => {
   test("a duplicate enqueue across two Stop firings results in exactly one model call end to end", async () => {
     let modelCalls = 0;
     const snapshot = buildMemoryReviewSnapshot({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      assistantMessageSha256: sha256(Buffer.from("Understood.")),
       userMessage: "please stop using em dashes",
       assistantFinal: "Understood.",
       currentMemoryIndex: "index",
@@ -203,6 +209,9 @@ describe("PR1 read-only isolation canaries", () => {
     ].join("\n");
 
     const snapshot = buildMemoryReviewSnapshot({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      assistantMessageSha256: sha256(Buffer.from(hostileTranscript)),
       userMessage: hostileTranscript,
       assistantFinal: hostileTranscript,
       currentMemoryIndex: hostileTranscript,
@@ -218,7 +227,7 @@ describe("PR1 read-only isolation canaries", () => {
       session_id: SESSION_ID,
       prompt_id: "prompt-1",
       transcript_path: transcriptPath,
-      last_assistant_message: "Understood."
+      last_assistant_message: hostileTranscript
     }, {
       projectSessionsDir: sessionsDirectory,
       receiptDirectory,

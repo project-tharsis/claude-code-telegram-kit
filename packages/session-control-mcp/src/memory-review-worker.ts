@@ -4,13 +4,14 @@ import { join } from "node:path";
 import type { MemoryReviewProposal } from "@project-tharsis/claude-code-telegram-shared";
 import {
   acquireMemoryReviewProposalClaim,
+  MemoryReviewProposalStoreError,
   createMemoryReviewProposalRecord,
   readMemoryReviewProposalRecord,
   readMemoryReviewReceipt,
   transitionMemoryReviewReceipt
 } from "@project-tharsis/claude-code-telegram-shared";
 import { generateMemoryReviewProposal, MemoryReviewGenerationError } from "./memory-review-generator.js";
-import { validateMemoryReviewSnapshot, type MemoryReviewSnapshot } from "./memory-review-snapshot.js";
+import { memoryReviewSnapshotDigest, validateMemoryReviewSnapshot, type MemoryReviewSnapshot } from "./memory-review-snapshot.js";
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PROMPT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -60,6 +61,14 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
   if (claim.outcome === "busy") return { outcome: "failed", reason: "review_claim:busy" };
 
   try {
+    const snapshotSha256 = memoryReviewSnapshotDigest(options.snapshot);
+    if (options.snapshot.sessionId !== options.sessionId || options.snapshot.promptId !== options.promptId ||
+        options.snapshot.releaseSha !== receipt.release_sha ||
+        options.snapshot.assistantMessageSha256 !== receipt.last_assistant_message_sha256 ||
+        snapshotSha256 !== receipt.snapshot_sha256) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      return { outcome: "failed", reason: "snapshot:binding_mismatch" };
+    }
     const finish = (proposal: MemoryReviewProposal): MemoryReviewWorkerResult => {
     const transitioned = transitionMemoryReviewReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
     if (!transitioned) {
@@ -72,13 +81,19 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
   let existing: ReturnType<typeof readMemoryReviewProposalRecord>;
   try {
     existing = readMemoryReviewProposalRecord(options.sessionId, options.promptId, proposalStoreOptions);
-  } catch {
+  } catch (error) {
+    if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      return { outcome: "failed", reason: `proposal_store:${error.reason}` };
+    }
     return { outcome: "failed", reason: "proposal_store:unavailable" };
   }
   if (existing !== null) {
-    if (existing.release_sha !== receipt.release_sha ||
+    if (existing.session_id !== options.sessionId || existing.prompt_id !== options.promptId ||
+        existing.release_sha !== receipt.release_sha ||
         existing.last_assistant_message_sha256 !== receipt.last_assistant_message_sha256 ||
-        existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark) {
+        existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark ||
+        existing.snapshot_sha256 !== snapshotSha256) {
       transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
       return { outcome: "failed", reason: "proposal_store:binding_mismatch" };
     }
@@ -107,14 +122,19 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
       releaseSha: receipt.release_sha,
       lastAssistantMessageSha256: receipt.last_assistant_message_sha256,
       nativeMemoryWatermark: options.snapshot.nativeMemoryWatermark,
+      snapshotSha256,
       proposal
     }, { ...proposalStoreOptions, now: options.now ?? Date.now });
     return finish(persisted.record.proposal);
-  } catch {
-    // The model result was not durably acknowledged. Leave the receipt queued so a later worker
-    // can reuse an already-persisted proposal or safely retry generation.
-      return { outcome: "failed", reason: "proposal_store:unavailable" };
+  } catch (error) {
+    // Unknown I/O durability stays retryable. Validated corruption/conflicts are permanent local
+    // failures and must not leave a receipt retrying forever.
+    if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      return { outcome: "failed", reason: `proposal_store:${error.reason}` };
     }
+    return { outcome: "failed", reason: "proposal_store:unavailable" };
+  }
   } finally {
     claim.release();
   }

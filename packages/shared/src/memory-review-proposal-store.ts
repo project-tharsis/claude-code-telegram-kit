@@ -28,6 +28,17 @@ const FILE_MODE = 0o600;
 const MAX_BYTES = 16 * 1024;
 export const MEMORY_REVIEW_PROPOSAL_MAX_ENTRIES = 2_048;
 
+export class MemoryReviewProposalStoreError extends Error {
+  constructor(public readonly reason: string, public readonly permanent: boolean) {
+    super(`memory review proposal store: ${reason}`);
+    this.name = "MemoryReviewProposalStoreError";
+  }
+}
+
+function permanentStoreError(reason: string): MemoryReviewProposalStoreError {
+  return new MemoryReviewProposalStoreError(reason, true);
+}
+
 export interface MemoryReviewProposalRecord {
   schema: 1;
   session_id: string;
@@ -35,6 +46,7 @@ export interface MemoryReviewProposalRecord {
   release_sha: string;
   last_assistant_message_sha256: string;
   native_memory_watermark: string;
+  snapshot_sha256: string;
   proposal_sha256: string;
   created_at: number;
   proposal: MemoryReviewProposal;
@@ -46,6 +58,7 @@ export interface CreateMemoryReviewProposalRecordInput {
   releaseSha: string;
   lastAssistantMessageSha256: string;
   nativeMemoryWatermark: string;
+  snapshotSha256: string;
   proposal: MemoryReviewProposal;
 }
 
@@ -82,7 +95,11 @@ function processStartTicks(pid: number): string | null {
 }
 
 function canonicalProposal(proposal: MemoryReviewProposal): MemoryReviewProposal {
-  return validateMemoryReviewProposal(proposal);
+  try {
+    return validateMemoryReviewProposal(proposal);
+  } catch {
+    throw permanentStoreError("invalid_proposal");
+  }
 }
 
 function proposalDigest(proposal: MemoryReviewProposal): string {
@@ -90,11 +107,11 @@ function proposalDigest(proposal: MemoryReviewProposal): string {
 }
 
 function validateRecord(value: unknown): MemoryReviewProposalRecord {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid proposal record");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw permanentStoreError("invalid_record");
   const record = value as Record<string, unknown>;
   const allowed = [
     "schema", "session_id", "prompt_id", "release_sha", "last_assistant_message_sha256",
-    "native_memory_watermark", "proposal_sha256", "created_at", "proposal"
+    "native_memory_watermark", "snapshot_sha256", "proposal_sha256", "created_at", "proposal"
   ];
   if (Object.keys(record).length !== allowed.length || allowed.some(key => !(key in record)) || record.schema !== 1 ||
       typeof record.session_id !== "string" || !SESSION_UUID.test(record.session_id) ||
@@ -102,12 +119,13 @@ function validateRecord(value: unknown): MemoryReviewProposalRecord {
       typeof record.release_sha !== "string" || !RELEASE_SHA_RE.test(record.release_sha) ||
       typeof record.last_assistant_message_sha256 !== "string" || !SHA256_RE.test(record.last_assistant_message_sha256) ||
       typeof record.native_memory_watermark !== "string" || !SHA256_RE.test(record.native_memory_watermark) ||
+      typeof record.snapshot_sha256 !== "string" || !SHA256_RE.test(record.snapshot_sha256) ||
       typeof record.proposal_sha256 !== "string" || !SHA256_RE.test(record.proposal_sha256) ||
       !Number.isSafeInteger(record.created_at) || Number(record.created_at) < 0) {
-    throw new Error("invalid proposal record");
+    throw permanentStoreError("invalid_record");
   }
   const proposal = canonicalProposal(record.proposal as MemoryReviewProposal);
-  if (proposalDigest(proposal) !== record.proposal_sha256) throw new Error("invalid proposal digest");
+  if (proposalDigest(proposal) !== record.proposal_sha256) throw permanentStoreError("invalid_proposal_digest");
   return {
     schema: 1,
     session_id: record.session_id,
@@ -115,6 +133,7 @@ function validateRecord(value: unknown): MemoryReviewProposalRecord {
     release_sha: record.release_sha,
     last_assistant_message_sha256: record.last_assistant_message_sha256,
     native_memory_watermark: record.native_memory_watermark,
+    snapshot_sha256: record.snapshot_sha256,
     proposal_sha256: record.proposal_sha256,
     created_at: Number(record.created_at),
     proposal
@@ -152,18 +171,18 @@ function readLeaf(dirfd: number, name: string, expectedUid: number | undefined):
   }
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 ||
       (before.mode & 0o7777) !== FILE_MODE || (expectedUid !== undefined && before.uid !== expectedUid) ||
-      before.size < 2 || before.size > MAX_BYTES) throw new Error("unsafe proposal file");
+      before.size < 2 || before.size > MAX_BYTES) throw permanentStoreError("unsafe_proposal_file");
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = fstatSync(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 ||
         (opened.mode & 0o7777) !== FILE_MODE || (expectedUid !== undefined && opened.uid !== expectedUid) ||
-        opened.size < 2 || opened.size > MAX_BYTES) throw new Error("unsafe proposal file");
+        opened.size < 2 || opened.size > MAX_BYTES) throw permanentStoreError("unsafe_proposal_file");
     let parsed: unknown;
     try {
       parsed = JSON.parse(readAll(fd, opened.size).toString("utf8"));
     } catch {
-      throw new Error("invalid proposal record");
+      throw permanentStoreError("invalid_record");
     }
     return validateRecord(parsed);
   } finally {
@@ -296,6 +315,7 @@ function sameBinding(existing: MemoryReviewProposalRecord, candidate: MemoryRevi
     existing.release_sha === candidate.release_sha &&
     existing.last_assistant_message_sha256 === candidate.last_assistant_message_sha256 &&
     existing.native_memory_watermark === candidate.native_memory_watermark &&
+    existing.snapshot_sha256 === candidate.snapshot_sha256 &&
     existing.proposal_sha256 === candidate.proposal_sha256;
 }
 
@@ -305,7 +325,7 @@ export function createMemoryReviewProposalRecord(
 ): { outcome: "created" | "existing"; record: MemoryReviewProposalRecord } {
   if (!SESSION_UUID.test(input.sessionId) || !PROMPT_ID_RE.test(input.promptId) ||
       !RELEASE_SHA_RE.test(input.releaseSha) || !SHA256_RE.test(input.lastAssistantMessageSha256) ||
-      !SHA256_RE.test(input.nativeMemoryWatermark)) throw new Error("invalid proposal binding");
+      !SHA256_RE.test(input.nativeMemoryWatermark) || !SHA256_RE.test(input.snapshotSha256)) throw permanentStoreError("invalid_binding");
   const proposal = canonicalProposal(input.proposal);
   const record: MemoryReviewProposalRecord = {
     schema: 1,
@@ -314,13 +334,14 @@ export function createMemoryReviewProposalRecord(
     release_sha: input.releaseSha,
     last_assistant_message_sha256: input.lastAssistantMessageSha256,
     native_memory_watermark: input.nativeMemoryWatermark,
+    snapshot_sha256: input.snapshotSha256,
     proposal_sha256: proposalDigest(proposal),
     created_at: (options.now ?? Date.now)(),
     proposal
   };
   validateRecord(record);
   const bytes = Buffer.from(JSON.stringify(record), "utf8");
-  if (bytes.byteLength > MAX_BYTES) throw new Error("proposal record too large");
+  if (bytes.byteLength > MAX_BYTES) throw permanentStoreError("record_too_large");
 
   return withDirectory(options, (dirfd, uid) => {
     const maxEntries = options.maxEntries ?? MEMORY_REVIEW_PROPOSAL_MAX_ENTRIES;
@@ -333,11 +354,11 @@ export function createMemoryReviewProposalRecord(
     const path = join(`/proc/self/fd/${dirfd}`, name);
     const existing = readLeaf(dirfd, name, uid);
     if (existing !== null) {
-      if (!sameBinding(existing, record)) throw new Error("proposal conflict");
+      if (!sameBinding(existing, record)) throw permanentStoreError("proposal_conflict");
       return { outcome: "existing", record: existing };
     }
     const count = readdirSync(`/proc/self/fd/${dirfd}`).filter(entry => entry.endsWith(".json")).length;
-    if (count >= maxEntries) throw new Error("proposal store capacity exceeded");
+    if (count >= maxEntries) throw permanentStoreError("capacity_exceeded");
     let fd: number;
     try {
       fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, FILE_MODE);
@@ -345,7 +366,7 @@ export function createMemoryReviewProposalRecord(
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
         const raced = readLeaf(dirfd, name, uid);
         if (raced !== null && sameBinding(raced, record)) return { outcome: "existing", record: raced };
-        throw new Error("proposal conflict");
+        throw permanentStoreError("proposal_conflict");
       }
       throw error;
     }
@@ -372,5 +393,11 @@ export function readMemoryReviewProposalRecord(
 ): MemoryReviewProposalRecord | null {
   if (!SESSION_UUID.test(sessionId) || !PROMPT_ID_RE.test(promptId)) throw new Error("invalid proposal identity");
   const key = memoryReviewProposalKey(sessionId, promptId);
-  return withDirectory(options, (dirfd, uid) => readLeaf(dirfd, `${key}.json`, uid));
+  return withDirectory(options, (dirfd, uid) => {
+    const record = readLeaf(dirfd, `${key}.json`, uid);
+    if (record !== null && (record.session_id !== sessionId || record.prompt_id !== promptId)) {
+      throw permanentStoreError("identity_mismatch");
+    }
+    return record;
+  });
 }

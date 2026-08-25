@@ -38,7 +38,7 @@ const RECEIPT_KEY_RE = /^[0-9a-f]{64}$/;
 const STATUSES = ["queued", "reviewed", "failed"] as const;
 export type MemoryReviewReceiptStatus = (typeof STATUSES)[number];
 
-export const MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 1;
+export const MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 2;
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MAX_BYTES = 8 * 1024;
@@ -46,10 +46,11 @@ export const MEMORY_REVIEW_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const MEMORY_REVIEW_RECEIPT_MAX_ENTRIES = 2_048;
 
 export interface MemoryReviewReceipt {
-  schema: 1;
+  schema: 2;
   session_id: string;
   prompt_id: string;
   last_assistant_message_sha256: string;
+  snapshot_sha256: string;
   transcript_path: string;
   telegram_message_id: number;
   release_sha: string;
@@ -104,6 +105,7 @@ function assertBounds(receipt: Omit<MemoryReviewReceipt, "schema" | "status">): 
   if (!SESSION_UUID.test(receipt.session_id)) throw new Error("invalid receipt session_id");
   if (!PROMPT_ID_RE.test(receipt.prompt_id)) throw new Error("invalid receipt prompt_id");
   if (!SHA256_RE.test(receipt.last_assistant_message_sha256)) throw new Error("invalid receipt digest");
+  if (!SHA256_RE.test(receipt.snapshot_sha256)) throw new Error("invalid receipt snapshot digest");
   if (typeof receipt.transcript_path !== "string" || !receipt.transcript_path.startsWith("/") || receipt.transcript_path.length > 4_096) {
     throw new Error("invalid receipt transcript_path");
   }
@@ -120,7 +122,7 @@ function assertBounds(receipt: Omit<MemoryReviewReceipt, "schema" | "status">): 
 export function validateMemoryReviewReceiptShape(value: unknown): MemoryReviewReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid receipt shape");
   const record = value as Record<string, unknown>;
-  const allowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
+  const allowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "snapshot_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
   const keys = Object.keys(record);
   if (keys.length !== allowed.length || allowed.some(key => !(key in record))) throw new Error("invalid receipt field shape");
   if (record.schema !== MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION) throw new Error("invalid receipt schema version");
@@ -129,6 +131,7 @@ export function validateMemoryReviewReceiptShape(value: unknown): MemoryReviewRe
     session_id: record.session_id,
     prompt_id: record.prompt_id,
     last_assistant_message_sha256: record.last_assistant_message_sha256,
+    snapshot_sha256: record.snapshot_sha256,
     transcript_path: record.transcript_path,
     telegram_message_id: record.telegram_message_id,
     release_sha: record.release_sha,
@@ -136,7 +139,7 @@ export function validateMemoryReviewReceiptShape(value: unknown): MemoryReviewRe
     created_at: record.created_at
   } as Omit<MemoryReviewReceipt, "schema" | "status">;
   assertBounds(candidate);
-  return { schema: 1, ...candidate, status: record.status as MemoryReviewReceiptStatus };
+  return { schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION, ...candidate, status: record.status as MemoryReviewReceiptStatus };
 }
 
 function writeAll(fd: number, bytes: Buffer): void {
@@ -240,6 +243,7 @@ export interface CreateMemoryReviewReceiptInput {
   sessionId: string;
   promptId: string;
   lastAssistantMessageSha256: string;
+  snapshotSha256: string;
   transcriptPath: string;
   telegramMessageId: number;
   releaseSha: string;
@@ -264,10 +268,11 @@ export function createMemoryReviewReceipt(
 ): CreateMemoryReviewReceiptResult {
   const createdAt = input.createdAt ?? Date.now();
   const receipt: MemoryReviewReceipt = {
-    schema: 1,
+    schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION,
     session_id: input.sessionId,
     prompt_id: input.promptId,
     last_assistant_message_sha256: input.lastAssistantMessageSha256,
+    snapshot_sha256: input.snapshotSha256,
     transcript_path: input.transcriptPath,
     telegram_message_id: input.telegramMessageId,
     release_sha: input.releaseSha,

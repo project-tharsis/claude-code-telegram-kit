@@ -113,7 +113,7 @@ fields, nested paths, over-budget text, or credential-shaped content before any 
 
 Validated reviewer output is persisted immutably at
 `~/.local/state/claude-code-telegram-kit/memory-review/proposals/`, bound to the receipt identity,
-release SHA, assistant digest, and native-memory watermark. A PID/start-time claim singleflights the
+release SHA, assistant digest, receipt-v2 snapshot digest, and native-memory watermark. A PID/start-time claim singleflights the
 reviewer model call and recovers after a crashed owner. If the proposal lands but receipt transition
 does not, a later worker reuses the durable proposal instead of calling the model again. Snapshot
 write failures are proven local and terminal; uncertain broker scheduling outcomes leave the receipt

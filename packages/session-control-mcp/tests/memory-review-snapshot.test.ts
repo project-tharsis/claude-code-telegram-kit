@@ -5,6 +5,9 @@ const VALID_RELEASE_SHA = "c".repeat(40);
 
 function baseInput() {
   return {
+    sessionId: "11111111-1111-4111-8111-111111111111",
+    promptId: "prompt-1",
+    assistantMessageSha256: "a".repeat(64),
     userMessage: "please remember I prefer short replies",
     assistantFinal: "Got it, I will keep replies short from now on.",
     currentMemoryIndex: "- no-em-dash.md\n- obsidian-vault.md",

@@ -20,6 +20,7 @@ function baseInput(overrides: Partial<Parameters<typeof createMemoryReviewReceip
     sessionId: SESSION_ID,
     promptId: "prompt-1",
     lastAssistantMessageSha256: DIGEST,
+    snapshotSha256: "c".repeat(64),
     transcriptPath: `/home/USER/.claude/projects/proj/${SESSION_ID}.jsonl`,
     telegramMessageId: 42,
     releaseSha: RELEASE_SHA,
@@ -44,7 +45,8 @@ describe("durable memory review receipt store", () => {
     expect(result.outcome).toBe("created");
     if (result.outcome !== "created") throw new Error("unreachable");
     expect(result.receipt.status).toBe("queued");
-    expect(result.receipt.schema).toBe(1);
+    expect(result.receipt.schema).toBe(2);
+    expect(result.receipt.snapshot_sha256).toBe("c".repeat(64));
 
     const { statSync } = require("node:fs") as typeof import("node:fs");
     expect(statSync(directory).mode & 0o777).toBe(0o700);

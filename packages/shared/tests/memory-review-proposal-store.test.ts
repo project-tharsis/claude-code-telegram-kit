@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, linkSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +21,7 @@ function input(content = "User prefers concise answers.") {
     releaseSha: RELEASE_SHA,
     lastAssistantMessageSha256: "c".repeat(64),
     nativeMemoryWatermark: MEMORY_WATERMARK,
+    snapshotSha256: "d".repeat(64),
     proposal: {
       decision: "create" as const,
       target: "managed_memory" as const,
@@ -68,7 +69,17 @@ describe("durable memory review proposal store", () => {
     expect(duplicate.outcome).toBe("existing");
     expect(duplicate.record).toEqual(first.record);
     expect(() => createMemoryReviewProposalRecord(input("Different content."), { directory, now: () => 3_000 }))
-      .toThrow("proposal conflict");
+      .toThrow("proposal_conflict");
+  });
+
+  test("rejects a valid record moved under another receipt key", () => {
+    const otherSession = "99999999-9999-4999-8999-999999999999";
+    createMemoryReviewProposalRecord({ ...input(), sessionId: otherSession }, { directory });
+    renameSync(
+      join(directory, `${memoryReviewProposalKey(otherSession, PROMPT_ID)}.json`),
+      join(directory, `${memoryReviewProposalKey(SESSION_ID, PROMPT_ID)}.json`)
+    );
+    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("identity_mismatch");
   });
 
   test("rejects malformed identity, invalid watermark, and out-of-schema proposals before writing", () => {
@@ -104,22 +115,22 @@ describe("durable memory review proposal store", () => {
 
     rmSync(leaf);
     symlinkSync(backup, leaf);
-    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("unsafe proposal");
+    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("unsafe_proposal_file");
     rmSync(leaf);
 
     createMemoryReviewProposalRecord(input(), { directory });
     linkSync(leaf, backup);
-    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("unsafe proposal");
+    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("unsafe_proposal_file");
     rmSync(backup);
 
     chmodSync(leaf, 0o660);
-    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("unsafe proposal");
+    expect(() => readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })).toThrow("unsafe_proposal_file");
   });
 
   test("enforces the store cap without deleting live proposals", () => {
     createMemoryReviewProposalRecord(input(), { directory, maxEntries: 1 });
     expect(() => createMemoryReviewProposalRecord({ ...input(), promptId: "prompt-2" }, { directory, maxEntries: 1 }))
-      .toThrow("proposal store capacity exceeded");
+      .toThrow("capacity_exceeded");
     expect(readMemoryReviewProposalRecord(SESSION_ID, PROMPT_ID, { directory })?.proposal.content)
       .toBe("User prefers concise answers.");
   });
