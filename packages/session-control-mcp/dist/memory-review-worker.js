@@ -807,6 +807,12 @@ var MAX_NATIVE_MEMORY_FILE_BYTES = 64 * 1024;
 // packages/shared/src/memory-applier-state.ts
 var MAX_MEMORY_FILE_BYTES = 64 * 1024;
 var MAX_STATE_BYTES = 512 * 1024;
+// packages/shared/src/memory-delivery-evidence.ts
+var MAX_BYTES3 = 8 * 1024;
+var RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// packages/shared/src/learning-delta.ts
+var MAX_BYTES4 = 12 * 1024;
+var MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // packages/shared/src/runtime-failure.ts
 var RUNTIME_FAILURE_TYPES = [
   "rate_limit",

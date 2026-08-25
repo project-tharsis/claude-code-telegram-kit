@@ -108,6 +108,9 @@ describe("PR1 read-only isolation canaries", () => {
 
     await handleMemoryReviewCommand({
       hook_event_name: "Stop",
+      stop_hook_active: false,
+      background_tasks: [],
+      session_crons: [],
       session_id: SESSION_ID,
       prompt_id: "prompt-1",
       transcript_path: transcriptPath,
@@ -167,6 +170,9 @@ describe("PR1 read-only isolation canaries", () => {
     });
     const runOnce = () => handleMemoryReviewCommand({
       hook_event_name: "Stop",
+      stop_hook_active: false,
+      background_tasks: [],
+      session_crons: [],
       session_id: SESSION_ID,
       prompt_id: "prompt-1",
       transcript_path: transcriptPath,
@@ -224,6 +230,9 @@ describe("PR1 read-only isolation canaries", () => {
 
     await handleMemoryReviewCommand({
       hook_event_name: "Stop",
+      stop_hook_active: false,
+      background_tasks: [],
+      session_crons: [],
       session_id: SESSION_ID,
       prompt_id: "prompt-1",
       transcript_path: transcriptPath,

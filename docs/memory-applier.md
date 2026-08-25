@@ -1,6 +1,6 @@
 # PR4 memory applier (dormant)
 
-PR4 contains the deterministic transaction core only. No production hook, scheduler, MCP tool, or reviewer calls `applyMemoryReviewProposal`. The exact `enabled: true` gate is available to tests and a later host-controlled integration; production remains disabled.
+PR4 contains the deterministic transaction core. PR5 adds a Stop-hook caller, but `MEMORY_APPLY_ENABLED` and `MEMORY_LEARNING_DELTA_ENABLED` are both exact opt-in flags and remain disabled by default. Without those flags, the caller returns before native or applier state mutation.
 
 ## Authority
 

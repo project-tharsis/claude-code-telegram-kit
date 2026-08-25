@@ -8,7 +8,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
   finalizeTelegramReaction,
-  loadRuntimeConfig
+  loadRuntimeConfig,
+  persistMemoryDeliveryEvidence
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createHookToolHandler, INTERNAL_HOOK_TOOLS } from "./hook-tools.js";
 import { createArtifactDeliverer } from "./artifact-delivery.js";
@@ -70,15 +71,32 @@ const disclosure = createTurnDisclosure({
       disable_notification: false
     }, config);
   },
-  deliverFinal: async (config, chatId, messageId, content, artifacts, background = false) => {
+  deliverFinal: async (config, chatId, messageId, content, artifacts, background = false, authority) => {
     const deliverText = background ? deliverBackground : deliver;
     try {
-      await deliverText({
+      const receipt = await deliverText({
         chat_id: chatId,
         message_id: messageId,
         content,
         disable_notification: false
       }, config);
+      if (!background && authority !== undefined && process.env.MEMORY_REVIEW_ENABLED === "true") {
+        try {
+          persistMemoryDeliveryEvidence({
+            sessionId: authority.sessionId,
+            promptId: authority.promptId,
+            sourceMessageId: Number(messageId),
+            deliveredMessageIds: receipt.messageIds,
+            assistantMessage: content,
+            releaseSha: process.env.CLAUDE_RUNTIME_RELEASE_SHA ?? "",
+            observedAt: Date.now(),
+            userMessage: authority.userMessage,
+            toolIterations: authority.toolIterations,
+          });
+        } catch {
+          // Evidence is fail-closed metadata; never turn a confirmed user delivery into a retry.
+        }
+      }
       if (!background && artifacts.length > 0) {
         if (deliverArtifacts === null) {
           process.stderr.write("artifact delivery: root is not configured\n");

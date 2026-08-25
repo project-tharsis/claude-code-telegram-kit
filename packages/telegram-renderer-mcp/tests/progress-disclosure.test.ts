@@ -34,6 +34,7 @@ interface Harness {
     artifacts: readonly ArtifactCandidate[];
     background?: true;
   }>;
+  finalAuthorities: Array<{ sessionId: string; promptId: string; userMessage: string; toolIterations: number } | undefined>;
   runtimeFailures: Array<{ chatId: string; messageId: string; error: string; resetsAt?: number }>;
   typingStarts: string[];
   typingStops: { count: number };
@@ -58,6 +59,7 @@ function harness(options: {
   const sends: Harness["sends"] = [];
   const edits: Harness["edits"] = [];
   const finalDeliveries: Harness["finalDeliveries"] = [];
+  const finalAuthorities: Harness["finalAuthorities"] = [];
   const runtimeFailures: Harness["runtimeFailures"] = [];
   const typingStarts: string[] = [];
   const typingStops = { count: 0 };
@@ -83,7 +85,8 @@ function harness(options: {
     sendRuntimeFailure: async (_config, chatId, messageId, failure) => {
       runtimeFailures.push({ chatId, messageId, ...failure });
     },
-    deliverFinal: async (_config, chatId, messageId, content, artifacts, background) => {
+    deliverFinal: async (_config, chatId, messageId, content, artifacts, background, authority) => {
+      finalAuthorities.push(authority);
       finalDeliveries.push({
         chatId,
         messageId,
@@ -118,6 +121,7 @@ function harness(options: {
     sends,
     edits,
     finalDeliveries,
+    finalAuthorities,
     runtimeFailures,
     typingStarts,
     typingStops,
@@ -216,6 +220,12 @@ describe("turn disclosure lifecycle", () => {
       content: "**hello**",
       artifacts: []
     }]);
+    expect(h.finalAuthorities[0]).toEqual({
+      sessionId: SESSION,
+      promptId: PROMPT,
+      userMessage: "do a thing",
+      toolIterations: 0,
+    });
     expect(await finish(h, "Stop", "**hello**")).toBe("finished");
     expect(h.finalDeliveries).toHaveLength(1);
   });

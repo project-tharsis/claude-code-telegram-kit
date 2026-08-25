@@ -8,6 +8,9 @@ import {
   observeNativeMemory,
   PROMPT_ID_RE,
   readMemoryObserverLedger,
+  readMemoryDeliveryEvidence,
+  type MemoryDeliveryEvidence,
+  hasIdleTurnAuthority,
   readMemoryReviewReceipt,
   readNativeMemoryReviewContext,
   recordMemoryObservation,
@@ -34,13 +37,10 @@ interface HookPayload {
   cwd?: unknown;
   transcript_path?: unknown;
   last_assistant_message?: unknown;
-  /**
-   * Not yet emitted by the pinned Claude Code baseline (see handoff doc B2 upstream
-   * alignment). Absence is treated as "no active background task", matching the current
-   * conservative default; a live canary must confirm the field's real shape before this
-   * assumption changes.
-   */
+  /** Claude Code's exact Stop registry snapshot. Missing arrays fail closed. */
   background_tasks?: unknown;
+  session_crons?: unknown;
+  stop_hook_active?: unknown;
 }
 
 export interface MemoryReviewCommandOptions {
@@ -54,16 +54,9 @@ export interface MemoryReviewCommandOptions {
   userCorrection?: boolean;
   turnOrdinal?: number;
   receiptDirectory?: string;
-  /**
-   * The confirmed outcome of the foreground Telegram delivery for this exact turn ("delivered",
-   * "rejected", "uncertain", or "too_large" -- see FinalDeliveryOutcome in the renderer MCP's
-   * progress-disclosure.ts, the module that actually computes this today). No such signal
-   * currently reaches this Stop-hook seam (it and the renderer's finishTurn are separate
-   * processes reacting to the same Stop event with no shared channel between them); until a
-   * later PR wires a real one through, this MUST default to "uncertain", never "delivered" --
-   * evaluateMemoryReviewTrigger's fail-closed not_delivered gate depends on that.
-   */
+  /** Test seam only. Production delivery authority comes from the renderer evidence store. */
   deliveryOutcome?: "delivered" | "rejected" | "uncertain" | "too_large";
+  deliveryEvidenceDirectory?: string;
   /** Threaded into the bounded snapshot; see MemoryReviewSnapshotInput.userMessage. */
   userMessage?: string;
   /** Deterministic native memory context loader. Tests may replace it without touching production memory. */
@@ -158,29 +151,56 @@ export async function handleMemoryReviewCommand(
   resolveTranscriptAuthority(payload, projectSessionsDir);
 
   const assistantText = typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : "";
-  const backgroundTasksActive = Array.isArray(payload.background_tasks) && payload.background_tasks.length > 0;
-
-  const readReceipt = options.readReceipt ?? ((sessionId, promptId) => readMemoryReviewReceipt(sessionId, promptId, options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory }));
-  const hasExistingReceipt = readReceipt(payload.session_id, payload.prompt_id) !== null;
-
-  const triggerInput: MemoryReviewTriggerInput = {
-    // Fail closed: absent a real confirmed-delivery signal at this call site, "uncertain" is
-    // never treated as due. See the deliveryOutcome doc comment on MemoryReviewCommandOptions.
-    deliveryOutcome: options.deliveryOutcome ?? "uncertain",
-    backgroundTasksActive,
-    hasExistingReceipt,
-    isReviewAuthorityTurn: false,
-    userCorrection: options.userCorrection ?? false,
-    turnOrdinal: options.turnOrdinal ?? 1
-  };
-  const decision = evaluateMemoryReviewTrigger(triggerInput, policy);
-  if (!decision.due) return;
+  if (assistantText.trim() === "") return;
+  // Stop payload arrays are the registry authority. Missing fields are not equivalent to idle.
+  if (!hasIdleTurnAuthority({
+    stopHookActive: payload.stop_hook_active,
+    backgroundTasks: payload.background_tasks,
+    sessionCrons: payload.session_crons,
+  })) return;
 
   const releaseSha = options.releaseSha ?? process.env.CLAUDE_RUNTIME_RELEASE_SHA ?? "";
   if (!RELEASE_SHA_RE.test(releaseSha)) return;
-  const telegramMessageId = options.telegramMessageId;
-  if (telegramMessageId === undefined || !Number.isSafeInteger(telegramMessageId) || telegramMessageId < 1) return;
   const observedAt = (options.now ?? Date.now)();
+  const assistantMessageSha256 = sha256Hex(assistantText);
+  const readReceipt = options.readReceipt ?? ((sessionId, promptId) => readMemoryReviewReceipt(
+    sessionId,
+    promptId,
+    options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory },
+  ));
+  const hasExistingReceipt = readReceipt(payload.session_id, payload.prompt_id) !== null;
+
+  const deliveryEvidence: MemoryDeliveryEvidence | null = readMemoryDeliveryEvidence(
+    payload.session_id,
+    payload.prompt_id,
+    options.deliveryEvidenceDirectory === undefined
+      ? { now: () => observedAt }
+      : { directory: options.deliveryEvidenceDirectory, now: () => observedAt },
+  );
+  if (
+    deliveryEvidence !== null &&
+    (deliveryEvidence.release_sha !== releaseSha ||
+      deliveryEvidence.assistant_message_sha256 !== assistantMessageSha256 ||
+      deliveryEvidence.observed_at > observedAt ||
+      observedAt - deliveryEvidence.observed_at > 120_000)
+  ) return;
+  const deliveryOutcome = deliveryEvidence?.outcome ?? options.deliveryOutcome ?? "uncertain";
+  const telegramMessageId = deliveryEvidence?.source_message_id ?? options.telegramMessageId;
+  const userMessage = deliveryEvidence?.user_message ?? options.userMessage ?? "";
+  const toolIterations = deliveryEvidence?.tool_iterations ?? options.toolIterations ?? 0;
+  const triggerInput: MemoryReviewTriggerInput = {
+    deliveryOutcome,
+    backgroundTasksActive: false,
+    hasExistingReceipt,
+    isReviewAuthorityTurn: false,
+    userCorrection: deliveryEvidence?.user_correction ?? options.userCorrection ?? false,
+    turnOrdinal: deliveryEvidence?.turn_ordinal ?? options.turnOrdinal ?? 1,
+  };
+  const decision = evaluateMemoryReviewTrigger(triggerInput, policy);
+  if (!decision.due) return;
+  if (telegramMessageId === undefined || !Number.isSafeInteger(telegramMessageId) || telegramMessageId < 1) return;
+  if (userMessage.trim() === "" || !Number.isSafeInteger(toolIterations) || toolIterations < 0) return;
+
   const observerLedger = (options.readObserverLedger ?? (() => readMemoryObserverLedger()))();
   if (observerLedger === null || observerLedger.latest.release_sha !== releaseSha) return;
   const nativeContext = options.loadNativeContext === undefined
@@ -192,12 +212,11 @@ export async function handleMemoryReviewCommand(
       })
     : options.loadNativeContext(releaseSha, observedAt);
 
-  const assistantMessageSha256 = sha256Hex(assistantText);
   const snapshot = buildMemoryReviewSnapshot({
     sessionId: payload.session_id,
     promptId: payload.prompt_id,
     assistantMessageSha256,
-    userMessage: options.userMessage ?? "",
+    userMessage,
     assistantFinal: assistantText,
     currentMemoryIndex: nativeContext.currentMemoryIndex,
     relevantTopics: nativeContext.relevantTopics,
@@ -216,7 +235,7 @@ export async function handleMemoryReviewCommand(
     transcriptPath: resolve(payload.transcript_path as string),
     telegramMessageId,
     releaseSha,
-    toolIterations: options.toolIterations ?? 0,
+    toolIterations,
     createdAt: observedAt
   }, options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory });
   if (result.outcome !== "created") return;

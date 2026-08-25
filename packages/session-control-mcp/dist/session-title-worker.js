@@ -209,6 +209,12 @@ var MAX_NATIVE_MEMORY_FILE_BYTES = 64 * 1024;
 // packages/shared/src/memory-applier-state.ts
 var MAX_MEMORY_FILE_BYTES = 64 * 1024;
 var MAX_STATE_BYTES = 512 * 1024;
+// packages/shared/src/memory-delivery-evidence.ts
+var MAX_BYTES3 = 8 * 1024;
+var RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// packages/shared/src/learning-delta.ts
+var MAX_BYTES4 = 12 * 1024;
+var MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // packages/shared/src/runtime-failure.ts
 var RUNTIME_FAILURE_TYPES = [
   "rate_limit",
@@ -934,7 +940,7 @@ import { spawn } from "child_process";
 import { homedir } from "os";
 import { join as join2, resolve as resolve4 } from "path";
 var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-var MAX_BYTES3 = 8 * 1024;
+var MAX_BYTES5 = 8 * 1024;
 var MAX_TITLE_CHARS2 = 60;
 var STATE_VERSION = 1;
 var DIRECTORY_MODE = 448;
@@ -1025,13 +1031,13 @@ function readLeaf(path, expectedUid, sessionId) {
       return null;
     throw error;
   }
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 4095) !== FILE_MODE || expectedUid !== undefined && before.uid !== expectedUid || before.size > MAX_BYTES3) {
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 4095) !== FILE_MODE || expectedUid !== undefined && before.uid !== expectedUid || before.size > MAX_BYTES5) {
     throw new Error("unsafe title state file");
   }
   const fd = openSync4(path, constants4.O_RDONLY | constants4.O_NOFOLLOW);
   try {
     const opened = fstatSync4(fd);
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE || expectedUid !== undefined && opened.uid !== expectedUid || opened.size > MAX_BYTES3) {
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE || expectedUid !== undefined && opened.uid !== expectedUid || opened.size > MAX_BYTES5) {
       throw new Error("title state file changed");
     }
     const buffer = Buffer.alloc(opened.size);
@@ -1068,7 +1074,7 @@ function canonicalState(state) {
     value.retryAt = state.retryAt;
   value.updatedAt = state.updatedAt;
   const bytes = Buffer.from(JSON.stringify(value));
-  if (bytes.length > MAX_BYTES3)
+  if (bytes.length > MAX_BYTES5)
     throw new Error("title state exceeds size limit");
   return bytes;
 }

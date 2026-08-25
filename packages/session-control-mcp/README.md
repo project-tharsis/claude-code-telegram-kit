@@ -40,6 +40,8 @@ CLAUDE_PROJECT_SESSIONS_DIR
 CLAUDE_WORKSPACE_DIR
 CLAUDE_SETTINGS_PATH
 MEMORY_OBSERVER_ENABLED
+MEMORY_APPLY_ENABLED
+MEMORY_LEARNING_DELTA_ENABLED
 TELEGRAM_COMMAND_MENU_ENABLED
 CLAUDE_OAUTH_USAGE_ENABLED
 CLAUDE_OAUTH_USAGE_USER_AGENT
@@ -119,6 +121,12 @@ does not, a later worker reuses the durable proposal instead of calling the mode
 write failures are proven local and terminal; uncertain broker scheduling outcomes leave the receipt
 `queued` and are never replayed. This stage still has no native-memory write path: proposal apply is
 a separate PR 4 authority.
+
+## Verified delivery and one-shot learning delta (PR 5)
+
+The renderer now writes a private, descriptor-anchored delivery-evidence record only after a foreground Telegram final is confirmed delivered. The record binds session, prompt, inbound source message, delivered message IDs, assistant digest, activated release SHA, bounded redacted user text, correction signal, tool count, and a serialized per-session turn ordinal. `memory-review-command.ts` accepts that record only when its release, assistant digest, and age match the exact Stop.
+
+Stop authority fails closed unless `stop_hook_active` is false and both `background_tasks` and `session_crons` are present and empty. The flag-off `memory-apply-command.ts` never waits inside that authority window; it recovers globally eligible journals against the configured memory root and applies at most one proposal that is already reviewed. Newly applied ownership emits a durable pending learning delta. The next direct non-control Telegram prompt writes hook output first and acknowledges `pending → consumed` only after stdout succeeds; missed writes are re-emitted from managed ownership without touching memory again. Production defaults for apply and delta remain disabled.
 
 ## Installing root assets
 
