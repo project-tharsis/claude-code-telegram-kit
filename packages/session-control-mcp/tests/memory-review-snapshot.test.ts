@@ -13,7 +13,7 @@ function baseInput() {
     currentMemoryIndex: "- no-em-dash.md\n- obsidian-vault.md",
     nativeMemoryWatermark: "f".repeat(64),
     releaseSha: VALID_RELEASE_SHA,
-    packageVersion: "0.3.0"
+    packageVersion: "0.4.0"
   };
 }
 

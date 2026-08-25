@@ -24,7 +24,7 @@ import { createSessionScheduler } from "./runtime.js";
 import { buildMemoryReviewSnapshot, memoryReviewSnapshotDigest, serializeMemoryReviewSnapshot } from "./memory-review-snapshot.js";
 import { writeMemoryReviewSnapshot } from "./memory-review-snapshot-store.js";
 
-const PACKAGE_VERSION = "0.3.0";
+const PACKAGE_VERSION = "0.4.0";
 
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

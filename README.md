@@ -84,7 +84,7 @@ Set up Anthropic's official `telegram@claude-plugins-official` Channel first by 
 ```bash
 git clone https://github.com/project-tharsis/claude-code-telegram-kit
 cd claude-code-telegram-kit
-git checkout --detach v0.3.0
+git checkout --detach v0.4.0
 bun install --frozen-lockfile
 bun run check
 

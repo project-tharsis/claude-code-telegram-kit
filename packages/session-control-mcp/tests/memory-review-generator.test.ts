@@ -11,7 +11,7 @@ const snapshot = buildMemoryReviewSnapshot({
   currentMemoryIndex: "- no-em-dash.md",
   nativeMemoryWatermark: "f".repeat(64),
   releaseSha: "d".repeat(40),
-  packageVersion: "0.3.0"
+  packageVersion: "0.4.0"
 });
 
 function structuredOutput(proposal: Record<string, unknown>) {

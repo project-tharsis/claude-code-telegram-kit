@@ -23,7 +23,7 @@ const snapshot = buildMemoryReviewSnapshot({
   currentMemoryIndex: "- no-em-dash.md",
   nativeMemoryWatermark: "f".repeat(64),
   releaseSha: "e".repeat(40),
-  packageVersion: "0.3.0"
+  packageVersion: "0.4.0"
 });
 
 function seedReceipt(directory: string, promptId = "prompt-1") {
@@ -52,7 +52,7 @@ describe("producer/consumer snapshot wire shape round-trip", () => {
       currentMemoryIndex: "- no-em-dash.md",
       nativeMemoryWatermark: "f".repeat(64),
       releaseSha: "e".repeat(40),
-      packageVersion: "0.3.0"
+      packageVersion: "0.4.0"
     });
     const bytes = Buffer.from(serializeMemoryReviewSnapshot(built), "utf8");
     const parsed = parseSnapshotFromStdin(bytes);
@@ -90,7 +90,7 @@ describe("producer/consumer snapshot wire shape round-trip", () => {
       currentMemoryIndex: "",
       nativeMemoryWatermark: "f".repeat(64),
       releaseSha: "e".repeat(40),
-      packageVersion: "0.3.0"
+      packageVersion: "0.4.0"
     });
     const bareBytes = Buffer.from(JSON.stringify(built), "utf8");
     expect(() => parseSnapshotFromStdin(bareBytes)).toThrow("invalid snapshot input");

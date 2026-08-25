@@ -192,7 +192,7 @@ if (usageQueueAttested) {
 }
 
 const server = new Server(
-  { name: "session-control", version: "0.3.0" },
+  { name: "session-control", version: "0.4.0" },
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

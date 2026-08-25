@@ -103,7 +103,7 @@ describe("PR1 read-only isolation canaries", () => {
       currentMemoryIndex: readFileSync(join(memoryTreeDirectory, "MEMORY.md"), "utf8"),
       nativeMemoryWatermark: "f".repeat(64),
       releaseSha: RELEASE_SHA,
-      packageVersion: "0.3.0"
+      packageVersion: "0.4.0"
     });
 
     await handleMemoryReviewCommand({
@@ -166,7 +166,7 @@ describe("PR1 read-only isolation canaries", () => {
       currentMemoryIndex: "index",
       nativeMemoryWatermark: "f".repeat(64),
       releaseSha: RELEASE_SHA,
-      packageVersion: "0.3.0"
+      packageVersion: "0.4.0"
     });
     const runOnce = () => handleMemoryReviewCommand({
       hook_event_name: "Stop",
@@ -223,7 +223,7 @@ describe("PR1 read-only isolation canaries", () => {
       currentMemoryIndex: hostileTranscript,
       nativeMemoryWatermark: "f".repeat(64),
       releaseSha: RELEASE_SHA,
-      packageVersion: "0.3.0"
+      packageVersion: "0.4.0"
     });
     // The snapshot builder redacts credential-shaped substrings on the way in.
     expect(snapshot.userMessage).not.toContain("sk-live-abcdefghijklmnop");
