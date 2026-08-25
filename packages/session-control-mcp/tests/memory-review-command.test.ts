@@ -27,6 +27,8 @@ describe("memory review Stop-hook enqueue seam", () => {
   let snapshotDirectory: string;
   let previousEnabled: string | undefined;
   let previousCadence: string | undefined;
+  let previousRuntimeReleaseSha: string | undefined;
+  let previousLegacyReleaseSha: string | undefined;
 
   function baseOptions(overrides: MemoryReviewCommandOptions = {}): MemoryReviewCommandOptions {
     return {
@@ -46,6 +48,8 @@ describe("memory review Stop-hook enqueue seam", () => {
     snapshotDirectory = mkdtempSync(join(tmpdir(), "memory-review-command-snapshots-"));
     previousEnabled = process.env.MEMORY_REVIEW_ENABLED;
     previousCadence = process.env.MEMORY_REVIEW_CADENCE_TURNS;
+    previousRuntimeReleaseSha = process.env.CLAUDE_RUNTIME_RELEASE_SHA;
+    previousLegacyReleaseSha = process.env.CLAUDE_RELEASE_SHA;
   });
 
   afterEach(() => {
@@ -53,6 +57,8 @@ describe("memory review Stop-hook enqueue seam", () => {
     rmSync(snapshotDirectory, { recursive: true, force: true });
     if (previousEnabled === undefined) delete process.env.MEMORY_REVIEW_ENABLED; else process.env.MEMORY_REVIEW_ENABLED = previousEnabled;
     if (previousCadence === undefined) delete process.env.MEMORY_REVIEW_CADENCE_TURNS; else process.env.MEMORY_REVIEW_CADENCE_TURNS = previousCadence;
+    if (previousRuntimeReleaseSha === undefined) delete process.env.CLAUDE_RUNTIME_RELEASE_SHA; else process.env.CLAUDE_RUNTIME_RELEASE_SHA = previousRuntimeReleaseSha;
+    if (previousLegacyReleaseSha === undefined) delete process.env.CLAUDE_RELEASE_SHA; else process.env.CLAUDE_RELEASE_SHA = previousLegacyReleaseSha;
   });
 
   test("is a no-op with the production default (MEMORY_REVIEW_ENABLED unset)", async () => {
@@ -63,6 +69,16 @@ describe("memory review Stop-hook enqueue seam", () => {
     }));
     expect(scheduled).toBe(false);
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toBeNull();
+  });
+
+  test("uses the activation-attested runtime release SHA rather than a legacy untrusted variable", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    process.env.CLAUDE_RUNTIME_RELEASE_SHA = RELEASE_SHA;
+    process.env.CLAUDE_RELEASE_SHA = "0".repeat(40);
+    const configured = baseOptions({ schedule: async () => undefined });
+    const { releaseSha: _omit, ...withoutExplicitRelease } = configured;
+    await handleMemoryReviewCommand(basePayload(), withoutExplicitRelease);
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.release_sha).toBe(RELEASE_SHA);
   });
 
   test("ignores every non-Stop hook event even when enabled", async () => {

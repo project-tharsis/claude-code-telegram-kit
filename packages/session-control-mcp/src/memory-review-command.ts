@@ -132,7 +132,7 @@ export async function handleMemoryReviewCommand(
   const decision = evaluateMemoryReviewTrigger(triggerInput, policy);
   if (!decision.due) return;
 
-  const releaseSha = options.releaseSha ?? process.env.CLAUDE_RELEASE_SHA ?? "";
+  const releaseSha = options.releaseSha ?? process.env.CLAUDE_RUNTIME_RELEASE_SHA ?? "";
   if (!RELEASE_SHA_RE.test(releaseSha)) return;
   const telegramMessageId = options.telegramMessageId;
   if (telegramMessageId === undefined || !Number.isSafeInteger(telegramMessageId) || telegramMessageId < 1) return;
