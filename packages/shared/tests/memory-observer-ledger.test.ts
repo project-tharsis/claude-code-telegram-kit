@@ -113,22 +113,17 @@ describe("native memory observer ledger", () => {
     expect(readMemoryObserverLedger({ directory: state })).toEqual(recovered);
   });
 
-  test("records an authority change instead of false file deltas when autoMemoryDirectory moves", () => {
+  test("fails closed without changing the ledger when autoMemoryDirectory moves", () => {
     writeMemory(join(memory, "MEMORY.md"), "root A\n");
     const first = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA, now: 1_000 });
-    recordMemoryObservation(first, { directory: state });
+    const baseline = recordMemoryObservation(first, { directory: state });
 
     const other = join(root, "other-memory");
     mkdirSync(other, { mode: 0o755 });
     writeMemory(join(other, "MEMORY.md"), "root B\n");
     const second = observeNativeMemory({ memoryDirectory: other, releaseSha: RELEASE_SHA, now: 2_000 });
-    const ledger = recordMemoryObservation(second, { directory: state });
-    const event = ledger.events.at(-1)!;
-    expect(event.kind).toBe("authority_changed");
-    expect(event.path).toBeNull();
-    expect(event.before_directory_sha256).toBe(first.directory_sha256);
-    expect(event.after_directory_sha256).toBe(second.directory_sha256);
-    expect(ledger.latest.directory_sha256).toBe(second.directory_sha256);
+    expect(() => recordMemoryObservation(second, { directory: state })).toThrow("authority changed");
+    expect(readMemoryObserverLedger({ directory: state })).toEqual(baseline);
   });
 
   test("serializes writers with a PID/start-time lock and recovers a dead-owner lock", () => {
