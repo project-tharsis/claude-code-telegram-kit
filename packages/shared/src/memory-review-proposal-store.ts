@@ -386,6 +386,25 @@ export function createMemoryReviewProposalRecord(
   });
 }
 
+export function listMemoryReviewProposalRecords(
+  options: MemoryReviewProposalStoreOptions = {},
+): MemoryReviewProposalRecord[] {
+  return withDirectory(options, (dirfd, uid) => {
+    const names = readdirSync(`/proc/self/fd/${dirfd}`)
+      .filter(name => /^[0-9a-f]{64}\.json$/.test(name))
+      .sort();
+    if (names.length > MEMORY_REVIEW_PROPOSAL_MAX_ENTRIES) throw permanentStoreError("capacity_exceeded");
+    const records = names.map(name => {
+      const record = readLeaf(dirfd, name, uid);
+      if (record === null || `${memoryReviewProposalKey(record.session_id, record.prompt_id)}.json` !== name) {
+        throw permanentStoreError("identity_mismatch");
+      }
+      return record;
+    });
+    return records.sort((left, right) => left.created_at - right.created_at || left.proposal_sha256.localeCompare(right.proposal_sha256));
+  });
+}
+
 export function readMemoryReviewProposalRecord(
   sessionId: string,
   promptId: string,

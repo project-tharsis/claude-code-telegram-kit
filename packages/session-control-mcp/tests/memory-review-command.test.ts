@@ -14,6 +14,9 @@ function basePayload(overrides: Record<string, unknown> = {}) {
   return {
     hook_event_name: "Stop",
     session_id: SESSION_ID,
+    stop_hook_active: false,
+    background_tasks: [],
+    session_crons: [],
     prompt_id: "prompt-1",
     cwd: "/srv/claude-bot",
     transcript_path: `/srv/sessions/${SESSION_ID}.jsonl`,
@@ -162,6 +165,71 @@ describe("memory review Stop-hook enqueue seam", () => {
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toBeNull();
   });
 
+  test("consumes exact persisted renderer evidence instead of an injected delivery outcome", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    const evidenceDirectory = mkdtempSync(join(tmpdir(), "memory-delivery-evidence-"));
+    try {
+      const { persistMemoryDeliveryEvidence } = await import("@project-tharsis/claude-code-telegram-shared");
+      persistMemoryDeliveryEvidence({
+        sessionId: SESSION_ID,
+        promptId: "prompt-1",
+        sourceMessageId: 5,
+        deliveredMessageIds: [6],
+        assistantMessage: "different assistant bytes",
+        releaseSha: RELEASE_SHA,
+        observedAt: 1_000,
+        userMessage: "please remember concise replies",
+        toolIterations: 0,
+      }, { directory: evidenceDirectory });
+      let scheduled = false;
+      await handleMemoryReviewCommand(basePayload(), baseOptions({ deliveryOutcome: "delivered", deliveryEvidenceDirectory: evidenceDirectory, schedule: async () => { scheduled = true; } }));
+      expect(scheduled).toBe(false);
+    } finally { rmSync(evidenceDirectory, { recursive: true, force: true }); }
+  });
+
+  test("uses verified evidence as the production trigger and snapshot authority", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    const evidenceDirectory = mkdtempSync(join(tmpdir(), "memory-delivery-evidence-valid-"));
+    try {
+      const { persistMemoryDeliveryEvidence } = await import("@project-tharsis/claude-code-telegram-shared");
+      persistMemoryDeliveryEvidence({
+        sessionId: SESSION_ID,
+        promptId: "prompt-1",
+        sourceMessageId: 5,
+        deliveredMessageIds: [6],
+        assistantMessage: "Understood.",
+        releaseSha: RELEASE_SHA,
+        observedAt: 1_000,
+        userMessage: "以后不要使用破折号",
+        toolIterations: 3,
+      }, { directory: evidenceDirectory });
+      const configured = baseOptions({ deliveryEvidenceDirectory: evidenceDirectory, schedule: async () => undefined });
+      const {
+        deliveryOutcome: _delivery,
+        telegramMessageId: _message,
+        userCorrection: _correction,
+        userMessage: _user,
+        turnOrdinal: _ordinal,
+        toolIterations: _tools,
+        ...withoutInjectedAuthority
+      } = configured;
+      await handleMemoryReviewCommand(basePayload(), withoutInjectedAuthority);
+      const receipt = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
+      expect(receipt?.telegram_message_id).toBe(5);
+      expect(receipt?.tool_iterations).toBe(3);
+      const bytes = readMemoryReviewSnapshot(SESSION_ID, "prompt-1", { directory: snapshotDirectory })!;
+      expect(parseSnapshotFromStdin(bytes).userMessage).toBe("以后不要使用破折号");
+    } finally {
+      rmSync(evidenceDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("requires exact empty registry arrays for idle authority", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    let scheduled = false;
+    await handleMemoryReviewCommand(basePayload({ session_crons: undefined }), baseOptions({ schedule: async () => { scheduled = true; } }));
+    expect(scheduled).toBe(false);
+  });
   test("does not enqueue when delivery is rejected, uncertain, or too_large", async () => {
     process.env.MEMORY_REVIEW_ENABLED = "true";
     for (const outcome of ["rejected", "uncertain", "too_large"] as const) {

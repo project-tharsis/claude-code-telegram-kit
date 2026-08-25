@@ -109,12 +109,18 @@ export const RecordSubagentStartInputSchema = z.object({
 
 export const RecordSubagentStopInputSchema = z.object({
   ...subagentLifecycle,
+  stop_hook_active: z.boolean().optional(),
+  background_tasks: z.array(z.unknown()).optional(),
+  session_crons: z.array(z.unknown()).optional(),
   hook_event_name: z.literal("SubagentStop")
 }).strict();
 
 const StopInputSchema = z.object({
   ...turnKey,
   last_assistant_message: requiredTemplateText(MAX_HOOK_FINAL_CHARACTERS),
+  stop_hook_active: z.boolean().optional(),
+  background_tasks: z.array(z.unknown()).optional(),
+  session_crons: z.array(z.unknown()).optional(),
   hook_event_name: z.literal("Stop")
 }).strict();
 

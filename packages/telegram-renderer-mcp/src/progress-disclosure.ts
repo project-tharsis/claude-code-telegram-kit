@@ -84,7 +84,8 @@ export interface TurnDisclosureDeps {
     messageId: string,
     content: string,
     artifacts: readonly ArtifactCandidate[],
-    background?: boolean
+    background?: boolean,
+    authority?: { sessionId: string; promptId: string; userMessage: string; toolIterations: number }
   ) => Promise<FinalDeliveryOutcome>;
   send: (
     config: RuntimeConfig,
@@ -112,6 +113,8 @@ type ProgressPhase = "foreground" | "background-agents";
 interface Turn {
   chatId: string;
   quoteMessageId: string;
+  userMessage: string;
+  toolUseIds: Set<string>;
   background: boolean;
   backgroundDepth: number;
   backgroundTerminalStatus: TerminalTaskNotification["status"] | null;
@@ -513,6 +516,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         const notification = envelope === null ? parseTerminalTaskNotification(input.prompt) : null;
         let chatId: string;
         let quoteMessageId: string;
+        let userMessage = "";
         let background = false;
         let backgroundDepth = 0;
         let routeToConsume: string | null = null;
@@ -521,6 +525,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
           if (CONTROL_NAMESPACE.test(envelope.body) || MODEL_REPLY_CHOICE.test(envelope.body)) return;
           chatId = envelope.chatId;
           quoteMessageId = envelope.messageId;
+          userMessage = envelope.body;
         } else {
           if (notification === null) return;
           const directRoute = notification.toolUseId === undefined
@@ -578,6 +583,8 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
         const turn: Turn = {
           chatId,
           quoteMessageId,
+          userMessage,
+          toolUseIds: new Set(),
           background,
           backgroundDepth,
           backgroundTerminalStatus: notification?.status ?? null,
@@ -637,6 +644,7 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
       try {
         const turn = lookup(input.session_id, input.prompt_id);
         if (turn === undefined) return;
+        turn.toolUseIds.add(input.tool_use_id);
         if (BACKGROUND_ROUTE_TOOLS.has(input.tool_name)) {
           rememberBackgroundTaskRoute(
             input.session_id,
@@ -781,7 +789,13 @@ export function createTurnDisclosure(deps: TurnDisclosureDeps) {
               turn.quoteMessageId,
               input.last_assistant_message,
               collectArtifacts(turn),
-              turn.background
+              turn.background,
+              {
+                sessionId: input.session_id,
+                promptId: input.prompt_id,
+                userMessage: turn.userMessage,
+                toolIterations: turn.toolUseIds.size,
+              }
             );
           } catch {
             outcome = "rejected";

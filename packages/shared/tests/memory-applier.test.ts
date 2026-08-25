@@ -53,10 +53,10 @@ describe("dormant memory review CAS applier", () => {
     return observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA, now });
   }
 
-  function idleProof(promptId = "apply-turn"): MemoryIdleProof {
+  function idleProof(promptId = "idle-turn", sessionId = SESSION_ID): MemoryIdleProof {
     return {
       schema: 1,
-      session_id: SESSION_ID,
+      session_id: sessionId,
       prompt_id: promptId,
       observed_at: NOW,
       background_tasks: [],
@@ -180,7 +180,7 @@ describe("dormant memory review CAS applier", () => {
     const same = options("create", "hello");
     expect(applyMemoryReviewProposal(same)).toMatchObject({ outcome: "applied" });
     const indexBefore = readFileSync(join(memory, "MEMORY.md"));
-    expect(applyMemoryReviewProposal(same)).toMatchObject({ outcome: "applied" });
+    expect(applyMemoryReviewProposal(same)).toMatchObject({ outcome: "already_applied" });
     expect(readFileSync(join(memory, "MEMORY.md"))).toEqual(indexBefore);
     expect(readFileSync(join(memory, "MEMORY.md"), "utf8").match(/concise-replies/g)).toHaveLength(2);
     writeFileSync(join(memory, "MEMORY.md"), "external index\n", { mode: 0o644 });
@@ -270,7 +270,7 @@ describe("dormant memory review CAS applier", () => {
       releaseSha: RELEASE_SHA,
       memoryDirectory: memory,
       directorySha256: digest(memory),
-      idleProof: idleProof("recovery-turn"),
+      idleProof: idleProof("recovery-turn", "99999999-9999-4999-8999-999999999999"),
       stateDirectory: state,
       proposalDirectory: proposals,
       now: NOW + 1,

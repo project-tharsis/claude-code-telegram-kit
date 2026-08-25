@@ -64,7 +64,7 @@ export type MemoryApplierResult =
   | { outcome: "disabled" }
   | { outcome: "rejected"; reason: string }
   | {
-      outcome: "applied";
+      outcome: "applied" | "already_applied";
       path: string;
       before_sha256: string | null;
       after_sha256: string;
@@ -378,7 +378,7 @@ export function applyMemoryReviewProposal(
       idempotentIndex
     ) {
       return {
-        outcome: "applied",
+        outcome: "already_applied",
         path: topic,
         before_sha256: topicBefore.sha256,
         after_sha256: topicBefore.sha256,
@@ -541,7 +541,6 @@ export function recoverMemoryReviewApplier(
       if (journal === null) continue;
       if (
         journal.release_sha !== options.releaseSha ||
-        journal.session_id !== options.idleProof.session_id ||
         journal.memory_directory !== resolve(options.memoryDirectory) ||
         journal.directory_sha256 !== options.directorySha256
       ) {
