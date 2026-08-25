@@ -102,6 +102,24 @@ unsafe filesystem leaves fail closed. The ledger path is rejected if it is insid
 A failed startup preflight leaves no fresh ready ledger, so later review/apply stages must remain
 disabled rather than deriving Claude's internal fallback path.
 
+## Bounded proposal reviewer (PR 3)
+
+The Stop seam now requires a fresh observer ledger from the same activated release, then re-observes
+that exact configured native memory root before enqueue. The bounded snapshot carries only the user
+message, final assistant answer, capped tool outcomes, the native `MEMORY.md` index, up to four
+hash-bound topic excerpts, recent native-memory deltas, and the full inventory watermark. The
+isolated worker strictly decodes the exact snapshot envelope and rejects extra fields, missing
+fields, nested paths, over-budget text, or credential-shaped content before any model call.
+
+Validated reviewer output is persisted immutably at
+`~/.local/state/claude-code-telegram-kit/memory-review/proposals/`, bound to the receipt identity,
+release SHA, assistant digest, receipt-v2 snapshot digest, and native-memory watermark. A PID/start-time claim singleflights the
+reviewer model call and recovers after a crashed owner. If the proposal lands but receipt transition
+does not, a later worker reuses the durable proposal instead of calling the model again. Snapshot
+write failures are proven local and terminal; uncertain broker scheduling outcomes leave the receipt
+`queued` and are never replayed. This stage still has no native-memory write path: proposal apply is
+a separate PR 4 authority.
+
 ## Installing root assets
 
 The user-level deploy script never installs privileged files. After reviewing and merging one exact commit, run the installer from that same checkout. The installer refuses non-SHA refs, verifies its own bytes against the exact Git object, renders the socket owner, backs up every destination, installs atomically, and reads back mode/owner/SHA-256:

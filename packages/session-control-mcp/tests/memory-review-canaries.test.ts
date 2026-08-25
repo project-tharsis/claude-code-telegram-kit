@@ -45,6 +45,15 @@ function freshObserverLedger() {
   };
 }
 
+function nativeContextFrom(snapshot: ReturnType<typeof buildMemoryReviewSnapshot>) {
+  return {
+    currentMemoryIndex: snapshot.currentMemoryIndex,
+    relevantTopics: snapshot.relevantTopics,
+    nativeMemoryChangeSummary: snapshot.nativeMemoryChangeSummary,
+    nativeMemoryWatermark: snapshot.nativeMemoryWatermark
+  };
+}
+
 describe("PR1 read-only isolation canaries", () => {
   let receiptDirectory: string;
   let snapshotDirectory: string;
@@ -86,9 +95,13 @@ describe("PR1 read-only isolation canaries", () => {
     const projectsListingBefore = readdirSync(claudeProjectsDirectory).sort();
 
     const snapshot = buildMemoryReviewSnapshot({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      assistantMessageSha256: sha256(Buffer.from("Understood.")),
       userMessage: "please stop using em dashes",
       assistantFinal: "Understood.",
       currentMemoryIndex: readFileSync(join(memoryTreeDirectory, "MEMORY.md"), "utf8"),
+      nativeMemoryWatermark: "f".repeat(64),
       releaseSha: RELEASE_SHA,
       packageVersion: "0.3.0"
     });
@@ -107,8 +120,11 @@ describe("PR1 read-only isolation canaries", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      observerEnabled: true,
       now: () => 1_000,
       readObserverLedger: freshObserverLedger,
+      userMessage: snapshot.userMessage,
+      loadNativeContext: () => nativeContextFrom(snapshot),
       // The broker/systemd hop is out of process; this simulates its eventual effect by
       // running the same isolated worker function directly, exactly as the root helper would
       // dispatch it, but without a live systemd unit inside a test process.
@@ -139,9 +155,13 @@ describe("PR1 read-only isolation canaries", () => {
   test("a duplicate enqueue across two Stop firings results in exactly one model call end to end", async () => {
     let modelCalls = 0;
     const snapshot = buildMemoryReviewSnapshot({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      assistantMessageSha256: sha256(Buffer.from("Understood.")),
       userMessage: "please stop using em dashes",
       assistantFinal: "Understood.",
       currentMemoryIndex: "index",
+      nativeMemoryWatermark: "f".repeat(64),
       releaseSha: RELEASE_SHA,
       packageVersion: "0.3.0"
     });
@@ -159,8 +179,11 @@ describe("PR1 read-only isolation canaries", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      observerEnabled: true,
       now: () => 1_000,
       readObserverLedger: freshObserverLedger,
+      userMessage: snapshot.userMessage,
+      loadNativeContext: () => nativeContextFrom(snapshot),
       schedule: async (sessionId, promptId) => runMemoryReviewWorker({
         sessionId,
         promptId,
@@ -186,9 +209,13 @@ describe("PR1 read-only isolation canaries", () => {
     ].join("\n");
 
     const snapshot = buildMemoryReviewSnapshot({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      assistantMessageSha256: sha256(Buffer.from(hostileTranscript)),
       userMessage: hostileTranscript,
       assistantFinal: hostileTranscript,
       currentMemoryIndex: hostileTranscript,
+      nativeMemoryWatermark: "f".repeat(64),
       releaseSha: RELEASE_SHA,
       packageVersion: "0.3.0"
     });
@@ -200,7 +227,7 @@ describe("PR1 read-only isolation canaries", () => {
       session_id: SESSION_ID,
       prompt_id: "prompt-1",
       transcript_path: transcriptPath,
-      last_assistant_message: "Understood."
+      last_assistant_message: hostileTranscript
     }, {
       projectSessionsDir: sessionsDirectory,
       receiptDirectory,
@@ -209,8 +236,11 @@ describe("PR1 read-only isolation canaries", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      observerEnabled: true,
       now: () => 1_000,
       readObserverLedger: freshObserverLedger,
+      userMessage: snapshot.userMessage,
+      loadNativeContext: () => nativeContextFrom(snapshot),
       schedule: async (sessionId, promptId) => runMemoryReviewWorker({
         sessionId,
         promptId,

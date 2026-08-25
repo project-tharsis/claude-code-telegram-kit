@@ -16,6 +16,7 @@ import { join } from "node:path";
 import {
   MAX_NATIVE_MEMORY_FILE_BYTES,
   observeNativeMemory,
+  readNativeMemoryReviewContext,
   resolveConfiguredAutoMemoryDirectory
 } from "../src/native-memory-observer.js";
 
@@ -133,6 +134,41 @@ describe("Claude native auto-memory observer", () => {
     writeMemory(join(memory, "one.md"), "1");
     writeMemory(join(memory, "two.md"), "2");
     expect(() => observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA, maxFiles: 2 })).toThrow("file count");
+  });
+
+  test("returns a hash-bound review context with deterministic bounded topics", () => {
+    writeMemory(join(memory, "MEMORY.md"), "# Memory\n- [Alpha](alpha.md)\n");
+    writeMemory(join(memory, "zeta.md"), "zeta preference\n");
+    writeMemory(join(memory, "alpha.md"), "alpha preference\n");
+    const observation = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA, now: 1_000 });
+    const context = readNativeMemoryReviewContext(observation, { maxTopics: 1 });
+
+    expect(context.currentMemoryIndex).toBe("# Memory\n- [Alpha](alpha.md)\n");
+    expect(context.relevantTopics).toEqual([{
+      path: "alpha.md",
+      contentHash: observation.files.find(file => file.path === "alpha.md")!.sha256,
+      excerpt: "alpha preference\n"
+    }]);
+    expect(observation.files.every(file => !("content" in file))).toBe(true);
+  });
+
+  test("rejects stale selected topic bytes, invalid UTF-8, or a missing MEMORY.md index", () => {
+    writeMemory(join(memory, "MEMORY.md"), "# Memory\n");
+    writeMemory(join(memory, "topic.md"), "before\n");
+    const stale = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA });
+    writeMemory(join(memory, "topic.md"), "after\n");
+    expect(() => readNativeMemoryReviewContext(stale)).toThrow("changed after observation");
+
+    rmSync(join(memory, "topic.md"));
+    writeFileSync(join(memory, "invalid.md"), Buffer.from([0xff, 0xfe]), { mode: 0o644 });
+    const invalid = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA });
+    expect(() => readNativeMemoryReviewContext(invalid)).toThrow("UTF-8");
+
+    rmSync(join(memory, "MEMORY.md"));
+    rmSync(join(memory, "invalid.md"));
+    writeMemory(join(memory, "only-topic.md"), "topic\n");
+    const missing = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA });
+    expect(() => readNativeMemoryReviewContext(missing)).toThrow("MEMORY.md");
   });
 
   test("rejects invalid release provenance and never changes native memory bytes", () => {

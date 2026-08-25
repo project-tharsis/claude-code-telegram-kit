@@ -3,9 +3,13 @@ import { generateMemoryReviewProposal, MemoryReviewGenerationError } from "../sr
 import { buildMemoryReviewSnapshot } from "../src/memory-review-snapshot.js";
 
 const snapshot = buildMemoryReviewSnapshot({
+  sessionId: "22222222-2222-4222-8222-222222222222",
+  promptId: "prompt-1",
+  assistantMessageSha256: "a".repeat(64),
   userMessage: "please stop using em dashes",
   assistantFinal: "Understood, no more em dashes.",
   currentMemoryIndex: "- no-em-dash.md",
+  nativeMemoryWatermark: "f".repeat(64),
   releaseSha: "d".repeat(40),
   packageVersion: "0.3.0"
 });

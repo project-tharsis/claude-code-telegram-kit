@@ -20,6 +20,7 @@ import {
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 const MARKDOWN_LEAF_RE = /^[^/\\\0]{1,255}\.md$/;
 const SETTINGS_MAX_BYTES = 64 * 1024;
 const MAX_DIRECTORY_ENTRIES = 256;
@@ -172,12 +173,17 @@ function openExistingDirectory(path: string, expectedUid: number | undefined, la
   }
 }
 
+interface ReadMemoryLeafResult {
+  inventory: NativeMemoryFileInventory;
+  bytes: Buffer;
+}
+
 function readMemoryLeaf(
   dirfd: number,
   name: string,
   expectedUid: number | undefined,
   maxFileBytes: number
-): NativeMemoryFileInventory {
+): ReadMemoryLeafResult {
   if (!MARKDOWN_LEAF_RE.test(name)) throw new Error("invalid memory filename");
   const path = `/proc/self/fd/${dirfd}/${name}`;
   let before;
@@ -207,11 +213,14 @@ function readMemoryLeaf(
       throw new Error("memory file changed during read");
     }
     return {
-      path: name,
-      sha256: sha256(bytes),
-      size,
-      mtime_ns: opened.mtimeNs.toString(),
-      provenance: "claude_native_auto_memory"
+      inventory: {
+        path: name,
+        sha256: sha256(bytes),
+        size,
+        mtime_ns: opened.mtimeNs.toString(),
+        provenance: "claude_native_auto_memory"
+      },
+      bytes
     };
   } finally {
     closeSync(fd);
@@ -237,7 +246,7 @@ export function observeNativeMemory(options: ObserveNativeMemoryOptions): Native
     if (entries.length > MAX_DIRECTORY_ENTRIES) throw new Error("memory directory entry cap exceeded");
     const names = entries.filter(name => name.endsWith(".md")).sort();
     if (names.length > maxFiles) throw new Error("native memory file count exceeds limit");
-    const files = names.map(name => readMemoryLeaf(dirfd, name, expectedUid, maxFileBytes));
+    const files = names.map(name => readMemoryLeaf(dirfd, name, expectedUid, maxFileBytes).inventory);
     const canonical = JSON.stringify(files.map(file => [file.path, file.sha256, file.size, file.mtime_ns]));
     return {
       schema: 1,
@@ -247,6 +256,88 @@ export function observeNativeMemory(options: ObserveNativeMemoryOptions): Native
       release_sha: options.releaseSha,
       watermark: sha256(canonical),
       files
+    };
+  } finally {
+    closeSync(dirfd);
+  }
+}
+
+export interface NativeMemoryReviewTopic {
+  path: string;
+  contentHash: string;
+  excerpt: string;
+}
+
+export interface NativeMemoryReviewContext {
+  currentMemoryIndex: string;
+  relevantTopics: NativeMemoryReviewTopic[];
+  nativeMemoryWatermark: string;
+}
+
+export interface NativeMemoryReviewContextOptions {
+  expectedUid?: number;
+  maxTopics?: number;
+  maxIndexChars?: number;
+  maxTopicChars?: number;
+}
+
+function strictUtf8(bytes: Buffer, label: string): string {
+  const decoded = bytes.toString("utf8");
+  if (!Buffer.from(decoded, "utf8").equals(bytes)) throw new Error(`${label} is not valid UTF-8`);
+  return decoded;
+}
+
+function boundedChars(value: string, maxChars: number): string {
+  return Array.from(value).slice(0, maxChars).join("");
+}
+
+/** Reopens hash-bound native files into a bounded in-memory context without writing any body. */
+export function readNativeMemoryReviewContext(
+  observation: NativeMemoryObservation,
+  options: NativeMemoryReviewContextOptions = {}
+): NativeMemoryReviewContext {
+  if (observation.schema !== 1 || !isAbsolute(observation.memoryDirectory) ||
+      !SHA256_RE.test(observation.watermark) || observation.files.length > MAX_NATIVE_MEMORY_FILES) {
+    throw new Error("invalid native memory observation");
+  }
+  const maxTopics = options.maxTopics ?? 4;
+  const maxIndexChars = options.maxIndexChars ?? 4_000;
+  const maxTopicChars = options.maxTopicChars ?? 1_200;
+  if (!Number.isSafeInteger(maxTopics) || maxTopics < 0 || maxTopics > 8 ||
+      !Number.isSafeInteger(maxIndexChars) || maxIndexChars < 1 || maxIndexChars > 8_000 ||
+      !Number.isSafeInteger(maxTopicChars) || maxTopicChars < 1 || maxTopicChars > 4_000) {
+    throw new Error("invalid native memory context limits");
+  }
+  const index = observation.files.find(file => file.path === "MEMORY.md");
+  if (index === undefined) throw new Error("native MEMORY.md is required");
+  const topics = observation.files.filter(file => file.path !== "MEMORY.md")
+    .sort((left, right) => left.path.localeCompare(right.path)).slice(0, maxTopics);
+  const selected = [index, ...topics];
+  const expectedUid = options.expectedUid ?? currentUid();
+  const dirfd = openExistingDirectory(observation.memoryDirectory, expectedUid, "memory directory");
+  try {
+    const bodies = new Map<string, string>();
+    for (const expected of selected) {
+      if (!MARKDOWN_LEAF_RE.test(expected.path) || !SHA256_RE.test(expected.sha256) ||
+          !Number.isSafeInteger(expected.size) || expected.size < 0 || expected.size > MAX_NATIVE_MEMORY_FILE_BYTES ||
+          !/^[0-9]+$/.test(expected.mtime_ns) || expected.provenance !== "claude_native_auto_memory") {
+        throw new Error("invalid native memory observation file");
+      }
+      const current = readMemoryLeaf(dirfd, expected.path, expectedUid, MAX_NATIVE_MEMORY_FILE_BYTES);
+      if (current.inventory.sha256 !== expected.sha256 || current.inventory.size !== expected.size ||
+          current.inventory.mtime_ns !== expected.mtime_ns) {
+        throw new Error(`${expected.path} changed after observation`);
+      }
+      bodies.set(expected.path, strictUtf8(current.bytes, expected.path));
+    }
+    return {
+      currentMemoryIndex: boundedChars(bodies.get("MEMORY.md")!, maxIndexChars),
+      relevantTopics: topics.map(topic => ({
+        path: topic.path,
+        contentHash: topic.sha256,
+        excerpt: boundedChars(bodies.get(topic.path)!, maxTopicChars)
+      })),
+      nativeMemoryWatermark: observation.watermark
     };
   } finally {
     closeSync(dirfd);

@@ -5,16 +5,20 @@ import {
   createMemoryReviewReceipt,
   evaluateMemoryReviewTrigger,
   loadMemoryReviewPolicy,
+  observeNativeMemory,
   PROMPT_ID_RE,
   readMemoryObserverLedger,
   readMemoryReviewReceipt,
+  readNativeMemoryReviewContext,
+  recordMemoryObservation,
+  resolveConfiguredAutoMemoryDirectory,
   sha256Hex,
   transitionMemoryReviewReceipt,
   type MemoryObserverLedger,
   type MemoryReviewTriggerInput
 } from "@project-tharsis/claude-code-telegram-shared";
 import { createSessionScheduler } from "./runtime.js";
-import { buildMemoryReviewSnapshot, serializeMemoryReviewSnapshot } from "./memory-review-snapshot.js";
+import { buildMemoryReviewSnapshot, memoryReviewSnapshotDigest, serializeMemoryReviewSnapshot } from "./memory-review-snapshot.js";
 import { writeMemoryReviewSnapshot } from "./memory-review-snapshot-store.js";
 
 const PACKAGE_VERSION = "0.3.0";
@@ -22,7 +26,6 @@ const PACKAGE_VERSION = "0.3.0";
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
-const MEMORY_OBSERVER_MAX_AGE_MS = 10 * 60 * 1_000;
 
 interface HookPayload {
   hook_event_name?: unknown;
@@ -42,6 +45,7 @@ interface HookPayload {
 
 export interface MemoryReviewCommandOptions {
   now?: () => number;
+  observerEnabled?: boolean;
   workspaceDir?: string;
   projectSessionsDir?: string;
   telegramMessageId?: number;
@@ -62,8 +66,10 @@ export interface MemoryReviewCommandOptions {
   deliveryOutcome?: "delivered" | "rejected" | "uncertain" | "too_large";
   /** Threaded into the bounded snapshot; see MemoryReviewSnapshotInput.userMessage. */
   userMessage?: string;
-  /** Threaded into the bounded snapshot; see MemoryReviewSnapshotInput.currentMemoryIndex. */
-  currentMemoryIndex?: string;
+  /** Deterministic native memory context loader. Tests may replace it without touching production memory. */
+  loadNativeContext?: (releaseSha: string, now: number) => MemoryReviewNativeContext;
+  settingsPath?: string;
+  observerLedgerDirectory?: string;
   snapshotDirectory?: string;
   schedule?: (sessionId: string, promptId: string) => Promise<unknown>;
   readReceipt?: (sessionId: string, promptId: string) => ReturnType<typeof readMemoryReviewReceipt>;
@@ -71,6 +77,38 @@ export interface MemoryReviewCommandOptions {
   createReceipt?: typeof createMemoryReviewReceipt;
   writeSnapshot?: typeof writeMemoryReviewSnapshot;
   transitionReceipt?: typeof transitionMemoryReviewReceipt;
+}
+
+export interface MemoryReviewNativeContext {
+  currentMemoryIndex: string;
+  relevantTopics: Array<{ path: string; contentHash: string; excerpt: string }>;
+  nativeMemoryChangeSummary: string;
+  nativeMemoryWatermark: string;
+}
+
+export interface LoadNativeMemoryReviewContextOptions {
+  releaseSha: string;
+  settingsPath?: string;
+  observerLedgerDirectory?: string;
+  now?: number;
+}
+
+export function loadNativeMemoryReviewContext(options: LoadNativeMemoryReviewContextOptions): MemoryReviewNativeContext {
+  const settingsPath = options.settingsPath ?? process.env.CLAUDE_SETTINGS_PATH;
+  if (typeof settingsPath !== "string" || !isAbsolute(settingsPath)) throw new Error("configured Claude settings path is required");
+  const now = options.now ?? Date.now();
+  const memoryDirectory = resolveConfiguredAutoMemoryDirectory({ settingsPath });
+  const observation = observeNativeMemory({ memoryDirectory, releaseSha: options.releaseSha, now });
+  const ledgerOptions = options.observerLedgerDirectory === undefined ? {} : { directory: options.observerLedgerDirectory };
+  const ledger = recordMemoryObservation(observation, ledgerOptions);
+  const context = readNativeMemoryReviewContext(observation);
+  const changes = ledger.events.slice(-8).map(event => `${event.kind}:${event.path}`).join(", ");
+  return {
+    currentMemoryIndex: context.currentMemoryIndex,
+    relevantTopics: context.relevantTopics,
+    nativeMemoryChangeSummary: changes === "" ? "no observed native memory changes" : changes,
+    nativeMemoryWatermark: context.nativeMemoryWatermark
+  };
 }
 
 function canonicalDirectory(path: string | undefined, label: string): string {
@@ -102,6 +140,8 @@ export async function handleMemoryReviewCommand(
   if (payload.hook_event_name !== "Stop") return;
   const policy = loadMemoryReviewPolicy();
   if (!policy.enabled) return;
+  const observerEnabled = options.observerEnabled ?? process.env.MEMORY_OBSERVER_ENABLED === "true";
+  if (!observerEnabled) return;
 
   if (typeof payload.session_id !== "string" || !SESSION_UUID.test(payload.session_id)) {
     throw new Error("invalid session identity");
@@ -142,17 +182,37 @@ export async function handleMemoryReviewCommand(
   if (telegramMessageId === undefined || !Number.isSafeInteger(telegramMessageId) || telegramMessageId < 1) return;
   const observedAt = (options.now ?? Date.now)();
   const observerLedger = (options.readObserverLedger ?? (() => readMemoryObserverLedger()))();
-  if (observerLedger === null || observerLedger.latest.release_sha !== releaseSha ||
-      observerLedger.latest.observed_at > observedAt ||
-      observedAt - observerLedger.latest.observed_at > MEMORY_OBSERVER_MAX_AGE_MS) return;
-  const nativeMemoryChangeSummary = observerLedger.events.slice(-8)
-    .map(event => `${event.kind}:${event.path ?? "native-memory-root"}`).join(", ") || "no observed native memory changes";
+  if (observerLedger === null || observerLedger.latest.release_sha !== releaseSha) return;
+  const nativeContext = options.loadNativeContext === undefined
+    ? loadNativeMemoryReviewContext({
+        releaseSha,
+        now: observedAt,
+        ...(options.settingsPath === undefined ? {} : { settingsPath: options.settingsPath }),
+        ...(options.observerLedgerDirectory === undefined ? {} : { observerLedgerDirectory: options.observerLedgerDirectory })
+      })
+    : options.loadNativeContext(releaseSha, observedAt);
 
+  const assistantMessageSha256 = sha256Hex(assistantText);
+  const snapshot = buildMemoryReviewSnapshot({
+    sessionId: payload.session_id,
+    promptId: payload.prompt_id,
+    assistantMessageSha256,
+    userMessage: options.userMessage ?? "",
+    assistantFinal: assistantText,
+    currentMemoryIndex: nativeContext.currentMemoryIndex,
+    relevantTopics: nativeContext.relevantTopics,
+    nativeMemoryChangeSummary: nativeContext.nativeMemoryChangeSummary,
+    nativeMemoryWatermark: nativeContext.nativeMemoryWatermark,
+    releaseSha,
+    packageVersion: PACKAGE_VERSION
+  });
+  const snapshotSha256 = memoryReviewSnapshotDigest(snapshot);
   const create = options.createReceipt ?? createMemoryReviewReceipt;
   const result = create({
     sessionId: payload.session_id,
     promptId: payload.prompt_id,
-    lastAssistantMessageSha256: sha256Hex(assistantText),
+    lastAssistantMessageSha256: assistantMessageSha256,
+    snapshotSha256,
     transcriptPath: resolve(payload.transcript_path as string),
     telegramMessageId,
     releaseSha,
@@ -168,22 +228,11 @@ export async function handleMemoryReviewCommand(
   // (session_id, prompt_id) the receipt uses; root's memory_review_session() reads those exact
   // bytes and pipes them, unparsed, to the isolated worker's stdin (see memory-review-worker.ts's
   // readSnapshotFromStdin). Root never builds or interprets a snapshot itself.
-  //
-  // From here on, the receipt already exists as "queued". If either the snapshot write or the
-  // broker schedule call throws, no worker will ever be scheduled for it, so it must not be
-  // left "queued" -- indistinguishable from a review that is genuinely in flight, with zero
-  // operator visibility, until TTL reclaims it. Transition it to the same terminal "failed"
-  // status the worker's own retry-semantics distinction uses for a non-retryable outcome, so
-  // the failure is immediately visible instead of silently orphaned.
+  // A proven local snapshot construction/write failure happens before any broker mutation and can
+  // terminalize the receipt. Scheduling is different: timeout, disconnect, or malformed response
+  // may mean the root broker already accepted the unit, so any scheduler exception must leave the
+  // receipt queued and must never replay the uncertain request.
   try {
-    const snapshot = buildMemoryReviewSnapshot({
-      userMessage: options.userMessage ?? "",
-      assistantFinal: assistantText,
-      currentMemoryIndex: options.currentMemoryIndex ?? "",
-      nativeMemoryChangeSummary,
-      releaseSha,
-      packageVersion: PACKAGE_VERSION
-    });
     const write = options.writeSnapshot ?? writeMemoryReviewSnapshot;
     write(
       payload.session_id,
@@ -191,8 +240,6 @@ export async function handleMemoryReviewCommand(
       Buffer.from(serializeMemoryReviewSnapshot(snapshot), "utf8"),
       options.snapshotDirectory === undefined ? {} : { directory: options.snapshotDirectory }
     );
-
-    await (options.schedule ?? ((sessionId, promptId) => createSessionScheduler().scheduleMemoryReview(sessionId, promptId)))(payload.session_id, payload.prompt_id);
   } catch (error) {
     try {
       (options.transitionReceipt ?? transitionMemoryReviewReceipt)(
@@ -206,6 +253,11 @@ export async function handleMemoryReviewCommand(
     }
     throw error;
   }
+
+  await (options.schedule ?? ((sessionId, promptId) => createSessionScheduler().scheduleMemoryReview(sessionId, promptId)))(
+    payload.session_id,
+    payload.prompt_id
+  );
 }
 
 async function main(): Promise<void> {
