@@ -6,6 +6,7 @@ const snapshot = buildMemoryReviewSnapshot({
   userMessage: "please stop using em dashes",
   assistantFinal: "Understood, no more em dashes.",
   currentMemoryIndex: "- no-em-dash.md",
+  nativeMemoryWatermark: "f".repeat(64),
   releaseSha: "d".repeat(40),
   packageVersion: "0.3.0"
 });

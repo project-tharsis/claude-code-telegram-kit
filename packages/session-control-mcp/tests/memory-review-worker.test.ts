@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemoryReviewReceipt, readMemoryReviewReceipt } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  createMemoryReviewProposalRecord,
+  createMemoryReviewReceipt,
+  readMemoryReviewProposalRecord,
+  readMemoryReviewReceipt
+} from "@project-tharsis/claude-code-telegram-shared";
 import { parseSnapshotFromStdin, runMemoryReviewWorker } from "../src/memory-review-worker.js";
 import { buildMemoryReviewSnapshot, serializeMemoryReviewSnapshot } from "../src/memory-review-snapshot.js";
 import { MemoryReviewGenerationError } from "../src/memory-review-generator.js";
@@ -13,6 +18,7 @@ const snapshot = buildMemoryReviewSnapshot({
   userMessage: "remember I like concise answers",
   assistantFinal: "Noted, I will keep it concise.",
   currentMemoryIndex: "- no-em-dash.md",
+  nativeMemoryWatermark: "f".repeat(64),
   releaseSha: "e".repeat(40),
   packageVersion: "0.3.0"
 });
@@ -37,6 +43,7 @@ describe("producer/consumer snapshot wire shape round-trip", () => {
       userMessage: "remember I like concise answers",
       assistantFinal: "Noted, I will keep it concise.",
       currentMemoryIndex: "- no-em-dash.md",
+      nativeMemoryWatermark: "f".repeat(64),
       releaseSha: "e".repeat(40),
       packageVersion: "0.3.0"
     });
@@ -49,11 +56,29 @@ describe("producer/consumer snapshot wire shape round-trip", () => {
     expect(() => parseSnapshotFromStdin(Buffer.alloc(0))).toThrow("invalid snapshot input");
   });
 
+  test("strictly rejects tampered snapshot files before the reviewer sees them", () => {
+    const extraEnvelope = Buffer.from(JSON.stringify({ snapshot, extra: true }));
+    expect(() => parseSnapshotFromStdin(extraEnvelope)).toThrow("invalid snapshot input");
+
+    const { nativeMemoryWatermark: _omit, ...missingField } = snapshot;
+    expect(() => parseSnapshotFromStdin(Buffer.from(JSON.stringify({ snapshot: missingField })))).toThrow("snapshot");
+    expect(() => parseSnapshotFromStdin(Buffer.from(JSON.stringify({
+      snapshot: { ...snapshot, unexpected: "field" }
+    })))).toThrow("snapshot");
+    expect(() => parseSnapshotFromStdin(Buffer.from(JSON.stringify({
+      snapshot: { ...snapshot, userMessage: "Authorization: Bearer secret-token-value" }
+    })))).toThrow("snapshot");
+    expect(() => parseSnapshotFromStdin(Buffer.from(JSON.stringify({
+      snapshot: { ...snapshot, relevantTopics: [{ path: "../escape.md", contentHash: "a".repeat(64), excerpt: "x" }] }
+    })))).toThrow("snapshot");
+  });
+
   test("rejects a bare (unwrapped) snapshot object -- the wire shape must be {snapshot: ...}", () => {
     const built = buildMemoryReviewSnapshot({
       userMessage: "hi",
       assistantFinal: "hello",
       currentMemoryIndex: "",
+      nativeMemoryWatermark: "f".repeat(64),
       releaseSha: "e".repeat(40),
       packageVersion: "0.3.0"
     });
@@ -110,6 +135,9 @@ describe("immutable memory review worker boundary", () => {
     });
     expect(result.outcome).toBe("reviewed");
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("reviewed");
+    const persisted = readMemoryReviewProposalRecord(SESSION_ID, "prompt-1", { directory: join(directory, "proposals") });
+    expect(persisted?.native_memory_watermark).toBe(snapshot.nativeMemoryWatermark);
+    expect(persisted?.proposal.decision).toBe("create");
   });
 
   test("a no_op proposal still transitions the receipt to reviewed, never leaves it queued", async () => {
@@ -251,7 +279,71 @@ describe("immutable memory review worker boundary", () => {
     expect(calls).toBe(1);
   });
 
-  test("never writes to any path other than the receipt store directory", async () => {
+  test("allows only one concurrent worker to call the reviewer for one receipt", async () => {
+    seedReceipt(directory);
+    let calls = 0;
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const review = async () => {
+      calls += 1;
+      enter();
+      await gate;
+      return { decision: "no_op" as const, target: "managed_memory" as const, topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" as const };
+    };
+    const first = runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory, review });
+    await entered;
+    const duplicate = await runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory, review });
+    expect(duplicate).toEqual({ outcome: "failed", reason: "review_claim:busy" });
+    expect(calls).toBe(1);
+    release();
+    expect((await first).outcome).toBe("no_op");
+  });
+
+  test("reuses a durable bound proposal after a crash instead of repeating the model call", async () => {
+    seedReceipt(directory);
+    createMemoryReviewProposalRecord({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      releaseSha: "e".repeat(40),
+      lastAssistantMessageSha256: "b".repeat(64),
+      nativeMemoryWatermark: snapshot.nativeMemoryWatermark,
+      proposal: { decision: "no_op", target: "managed_memory", topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" }
+    }, { directory: join(directory, "proposals") });
+    let calls = 0;
+    const result = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      review: async () => { calls += 1; throw new Error("must not run"); }
+    });
+    expect(result.outcome).toBe("no_op");
+    expect(calls).toBe(0);
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("reviewed");
+  });
+
+  test("leaves the receipt queued when a generated proposal cannot be durably stored", async () => {
+    seedReceipt(directory);
+    const blocked = join(directory, "blocked-proposal-directory");
+    mkdirSync(blocked, { mode: 0o700 });
+    const result = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      proposalDirectory: blocked,
+      review: async () => {
+        chmodSync(blocked, 0o755);
+        return { decision: "no_op", target: "managed_memory", topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" };
+      }
+    });
+    expect(result).toEqual({ outcome: "failed", reason: "proposal_store:unavailable" });
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
+  });
+
+  test("writes only the receipt store and its dedicated proposal subdirectory", async () => {
     seedReceipt(directory);
     const { readdirSync, statSync } = await import("node:fs");
     const before = readdirSync(directory).map(name => `${name}:${statSync(join(directory, name)).mtimeMs}`);
@@ -263,6 +355,7 @@ describe("immutable memory review worker boundary", () => {
       review: async () => ({ decision: "no_op", target: "managed_memory", topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" })
     });
     const after = readdirSync(directory);
-    expect(after.length).toBe(before.length);
+    expect(after.filter(name => name === "proposals")).toHaveLength(1);
+    expect(after.length).toBe(before.length + 1);
   });
 });

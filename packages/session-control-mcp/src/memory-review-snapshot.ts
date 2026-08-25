@@ -13,7 +13,7 @@
  * not by a filter — there is no field here wide enough to hold them.
  */
 
-import { redactCredentials } from "@project-tharsis/claude-code-telegram-shared";
+import { containsCredentialShape, redactCredentials } from "@project-tharsis/claude-code-telegram-shared";
 
 const MAX_FIELD_CHARS = 1_200;
 const MAX_TOTAL_CHARS = 6_000;
@@ -62,6 +62,7 @@ export interface MemoryReviewSnapshotInput {
   currentMemoryIndex: string;
   relevantTopics?: MemoryReviewSnapshotTopicExcerpt[];
   nativeMemoryChangeSummary?: string;
+  nativeMemoryWatermark: string;
   releaseSha: string;
   packageVersion: string;
 }
@@ -75,11 +76,14 @@ export interface MemoryReviewSnapshot {
   currentMemoryIndex: string;
   relevantTopics: MemoryReviewSnapshotTopicExcerpt[];
   nativeMemoryChangeSummary: string;
+  nativeMemoryWatermark: string;
   releaseSha: string;
   packageVersion: string;
 }
 
 const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const TOPIC_PATH_RE = /^[^/\\\0]{1,128}\.md$/;
 
 function boundedList(values: unknown, limit: number, fieldChars = MAX_FIELD_CHARS): string[] {
   if (!Array.isArray(values)) return [];
@@ -105,7 +109,7 @@ export function buildMemoryReviewSnapshot(input: MemoryReviewSnapshotInput): Mem
 
   const relevantTopics: MemoryReviewSnapshotTopicExcerpt[] = Array.isArray(input.relevantTopics)
     ? input.relevantTopics.slice(0, MAX_TOPIC_EXCERPTS).map(topic => ({
-        path: bounded(topic?.path, 128).replace(/[^a-zA-Z0-9._/-]/g, "_"),
+        path: bounded(topic?.path, 128).replace(/[^a-zA-Z0-9._-]/g, "_"),
         contentHash: /^[0-9a-f]{64}$/.test(String(topic?.contentHash)) ? String(topic.contentHash) : "",
         excerpt: bounded(topic?.excerpt, MAX_FIELD_CHARS)
       }))
@@ -120,6 +124,7 @@ export function buildMemoryReviewSnapshot(input: MemoryReviewSnapshotInput): Mem
     currentMemoryIndex: bounded(input.currentMemoryIndex, MAX_FIELD_CHARS),
     relevantTopics,
     nativeMemoryChangeSummary: bounded(input.nativeMemoryChangeSummary, 400),
+    nativeMemoryWatermark: SHA256_RE.test(input.nativeMemoryWatermark) ? input.nativeMemoryWatermark : "0".repeat(64),
     releaseSha: RELEASE_SHA_RE.test(input.releaseSha) ? input.releaseSha : "0".repeat(40),
     packageVersion: bounded(input.packageVersion, 32)
   };
@@ -153,6 +158,77 @@ function scaleField(value: string, factor: number): string {
   const chars = Array.from(value);
   const keep = Math.max(0, Math.floor(chars.length * factor));
   return chars.slice(0, keep).join("");
+}
+
+function validText(value: unknown, maxChars: number, minChars = 0): value is string {
+  if (typeof value !== "string") return false;
+  const chars = Array.from(value).length;
+  return chars >= minChars && chars <= maxChars && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
+    && !containsCredentialShape(value);
+}
+
+/** Strict worker-side decode of the untrusted snapshot file. */
+export function validateMemoryReviewSnapshot(value: unknown): MemoryReviewSnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid snapshot shape");
+  const record = value as Record<string, unknown>;
+  const allowed = [
+    "userMessage", "assistantFinal", "recentCorrections", "earlierTurnDigests", "tools",
+    "currentMemoryIndex", "relevantTopics", "nativeMemoryChangeSummary", "nativeMemoryWatermark",
+    "releaseSha", "packageVersion"
+  ];
+  if (Object.keys(record).length !== allowed.length || allowed.some(key => !(key in record)) ||
+      !validText(record.userMessage, MAX_FIELD_CHARS, 1) || !validText(record.assistantFinal, MAX_FIELD_CHARS, 1) ||
+      !validText(record.currentMemoryIndex, MAX_FIELD_CHARS, 1) ||
+      !validText(record.nativeMemoryChangeSummary, 400) ||
+      typeof record.nativeMemoryWatermark !== "string" || !SHA256_RE.test(record.nativeMemoryWatermark) || /^0+$/.test(record.nativeMemoryWatermark) ||
+      typeof record.releaseSha !== "string" || !RELEASE_SHA_RE.test(record.releaseSha) || /^0+$/.test(record.releaseSha) ||
+      !validText(record.packageVersion, 32, 1) || !/^[0-9A-Za-z.+-]+$/.test(record.packageVersion)) {
+    throw new Error("invalid snapshot fields");
+  }
+  if (!Array.isArray(record.recentCorrections) || record.recentCorrections.length > 4 ||
+      !record.recentCorrections.every(item => validText(item, MAX_FIELD_CHARS)) ||
+      !Array.isArray(record.earlierTurnDigests) || record.earlierTurnDigests.length > MAX_EARLIER_DIGESTS ||
+      !record.earlierTurnDigests.every(item => validText(item, 240)) ||
+      !Array.isArray(record.tools) || record.tools.length > MAX_TOOL_ENTRIES ||
+      !Array.isArray(record.relevantTopics) || record.relevantTopics.length > MAX_TOPIC_EXCERPTS) {
+    throw new Error("invalid snapshot arrays");
+  }
+  const tools: MemoryReviewSnapshotToolEntry[] = record.tools.map(value => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid snapshot tool");
+    const tool = value as Record<string, unknown>;
+    if (Object.keys(tool).length !== 2 || !validText(tool.name, MAX_TOOL_NAME_CHARS, 1) ||
+        (tool.classification !== "success" && tool.classification !== "failure")) throw new Error("invalid snapshot tool");
+    return { name: tool.name, classification: tool.classification };
+  });
+  const relevantTopics: MemoryReviewSnapshotTopicExcerpt[] = record.relevantTopics.map(value => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid snapshot topic");
+    const topic = value as Record<string, unknown>;
+    if (Object.keys(topic).length !== 3 || typeof topic.path !== "string" || !TOPIC_PATH_RE.test(topic.path) ||
+        typeof topic.contentHash !== "string" || !SHA256_RE.test(topic.contentHash) ||
+        !validText(topic.excerpt, MAX_FIELD_CHARS)) throw new Error("invalid snapshot topic");
+    return { path: topic.path, contentHash: topic.contentHash, excerpt: topic.excerpt };
+  });
+  const snapshot: MemoryReviewSnapshot = {
+    userMessage: record.userMessage,
+    assistantFinal: record.assistantFinal,
+    recentCorrections: [...record.recentCorrections] as string[],
+    earlierTurnDigests: [...record.earlierTurnDigests] as string[],
+    tools,
+    currentMemoryIndex: record.currentMemoryIndex,
+    relevantTopics,
+    nativeMemoryChangeSummary: record.nativeMemoryChangeSummary,
+    nativeMemoryWatermark: record.nativeMemoryWatermark,
+    releaseSha: record.releaseSha,
+    packageVersion: record.packageVersion
+  };
+  const total = snapshot.userMessage.length + snapshot.assistantFinal.length
+    + snapshot.recentCorrections.reduce((sum, item) => sum + item.length, 0)
+    + snapshot.earlierTurnDigests.reduce((sum, item) => sum + item.length, 0)
+    + snapshot.currentMemoryIndex.length
+    + snapshot.relevantTopics.reduce((sum, topic) => sum + topic.excerpt.length, 0)
+    + snapshot.nativeMemoryChangeSummary.length;
+  if (total > MAX_TOTAL_CHARS) throw new Error("snapshot exceeds total character limit");
+  return snapshot;
 }
 
 interface SerializedMemoryReviewSnapshot {

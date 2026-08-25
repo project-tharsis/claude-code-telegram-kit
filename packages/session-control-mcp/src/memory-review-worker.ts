@@ -1,9 +1,16 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { MemoryReviewProposal } from "@project-tharsis/claude-code-telegram-shared";
-import { readMemoryReviewReceipt, transitionMemoryReviewReceipt } from "@project-tharsis/claude-code-telegram-shared";
+import {
+  acquireMemoryReviewProposalClaim,
+  createMemoryReviewProposalRecord,
+  readMemoryReviewProposalRecord,
+  readMemoryReviewReceipt,
+  transitionMemoryReviewReceipt
+} from "@project-tharsis/claude-code-telegram-shared";
 import { generateMemoryReviewProposal, MemoryReviewGenerationError } from "./memory-review-generator.js";
-import type { MemoryReviewSnapshot } from "./memory-review-snapshot.js";
+import { validateMemoryReviewSnapshot, type MemoryReviewSnapshot } from "./memory-review-snapshot.js";
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PROMPT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -19,6 +26,8 @@ export interface MemoryReviewWorkerOptions {
   promptId: string;
   snapshot: MemoryReviewSnapshot;
   receiptDirectory?: string;
+  proposalDirectory?: string;
+  now?: () => number;
   review?: (snapshot: MemoryReviewSnapshot) => Promise<MemoryReviewProposal>;
 }
 
@@ -34,30 +43,80 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
   if (!PROMPT_ID_RE.test(options.promptId)) throw new Error("invalid prompt identity");
 
   const storeOptions = options.receiptDirectory === undefined ? {} : { directory: options.receiptDirectory };
+  const proposalDirectory = options.proposalDirectory
+    ?? (options.receiptDirectory === undefined ? undefined : join(options.receiptDirectory, "proposals"));
+  const proposalStoreOptions = proposalDirectory === undefined ? {} : { directory: proposalDirectory };
   const receipt = readMemoryReviewReceipt(options.sessionId, options.promptId, storeOptions);
   if (receipt === null || receipt.status !== "queued") {
     throw new Error("no queued review receipt for this session/prompt");
   }
 
-  const review = options.review ?? (snapshot => generateMemoryReviewProposal(snapshot));
+  let claim: ReturnType<typeof acquireMemoryReviewProposalClaim>;
   try {
-    const proposal = await review(options.snapshot);
+    claim = acquireMemoryReviewProposalClaim(options.sessionId, options.promptId, proposalStoreOptions);
+  } catch {
+    return { outcome: "failed", reason: "review_claim:unavailable" };
+  }
+  if (claim.outcome === "busy") return { outcome: "failed", reason: "review_claim:busy" };
+
+  try {
+    const finish = (proposal: MemoryReviewProposal): MemoryReviewWorkerResult => {
     const transitioned = transitionMemoryReviewReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
-    if (!transitioned) throw new Error("review receipt transition failed");
+    if (!transitioned) {
+      const latest = readMemoryReviewReceipt(options.sessionId, options.promptId, storeOptions);
+      if (latest?.status !== "reviewed") return { outcome: "failed", reason: "receipt_transition:unavailable" };
+    }
     return proposal.decision === "no_op" ? { outcome: "no_op" } : { outcome: "reviewed", proposal };
+  };
+
+  let existing: ReturnType<typeof readMemoryReviewProposalRecord>;
+  try {
+    existing = readMemoryReviewProposalRecord(options.sessionId, options.promptId, proposalStoreOptions);
+  } catch {
+    return { outcome: "failed", reason: "proposal_store:unavailable" };
+  }
+  if (existing !== null) {
+    if (existing.release_sha !== receipt.release_sha ||
+        existing.last_assistant_message_sha256 !== receipt.last_assistant_message_sha256 ||
+        existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark) {
+      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      return { outcome: "failed", reason: "proposal_store:binding_mismatch" };
+    }
+    return finish(existing.proposal);
+  }
+
+  const review = options.review ?? (snapshot => generateMemoryReviewProposal(snapshot));
+  let proposal: MemoryReviewProposal;
+  try {
+    proposal = await review(options.snapshot);
   } catch (error) {
-    // A retryable generation error (timeout, rate_limited, or a transient command failure) must
-    // leave the receipt exactly as it was -- still "queued" -- so a later retry can still run.
-    // createMemoryReviewReceipt's singleflight check would otherwise treat any pre-existing
-    // receipt, including one wrongly finalized to "failed" by a transient error, as permanently
-    // un-reviewable. Only a proven-permanent error (e.g. schema/parse failure) finalizes to
-    // "failed"; see AGENTS.md / docs/design-invariants.md.
+    // Retryable generation failures preserve the queued receipt. Proven permanent model/schema
+    // failures terminalize it exactly once.
     const generationError = error instanceof MemoryReviewGenerationError ? error : null;
     if (generationError === null || !generationError.retryable) {
       transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
     }
     const reason = generationError ? `${generationError.phase}:${generationError.reason}` : "unknown";
     return { outcome: "failed", reason };
+  }
+
+  try {
+    const persisted = createMemoryReviewProposalRecord({
+      sessionId: options.sessionId,
+      promptId: options.promptId,
+      releaseSha: receipt.release_sha,
+      lastAssistantMessageSha256: receipt.last_assistant_message_sha256,
+      nativeMemoryWatermark: options.snapshot.nativeMemoryWatermark,
+      proposal
+    }, { ...proposalStoreOptions, now: options.now ?? Date.now });
+    return finish(persisted.record.proposal);
+  } catch {
+    // The model result was not durably acknowledged. Leave the receipt queued so a later worker
+    // can reuse an already-persisted proposal or safely retry generation.
+      return { outcome: "failed", reason: "proposal_store:unavailable" };
+    }
+  } finally {
+    claim.release();
   }
 }
 
@@ -72,11 +131,12 @@ interface WorkerStdin {
  */
 export function parseSnapshotFromStdin(raw: Buffer): MemoryReviewSnapshot {
   if (raw.byteLength === 0 || raw.byteLength > MAX_SNAPSHOT_BYTES) throw new Error("invalid snapshot input");
-  const parsed = JSON.parse(raw.toString("utf8")) as WorkerStdin;
-  if (typeof parsed !== "object" || parsed === null || typeof parsed.snapshot !== "object" || parsed.snapshot === null) {
+  const parsed: unknown = JSON.parse(raw.toString("utf8"));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 1 || !("snapshot" in parsed)) {
     throw new Error("invalid snapshot input");
   }
-  return parsed.snapshot;
+  return validateMemoryReviewSnapshot((parsed as WorkerStdin).snapshot);
 }
 
 function readSnapshotFromStdin(): MemoryReviewSnapshot {

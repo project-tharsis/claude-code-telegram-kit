@@ -8,6 +8,7 @@ function baseInput() {
     userMessage: "please remember I prefer short replies",
     assistantFinal: "Got it, I will keep replies short from now on.",
     currentMemoryIndex: "- no-em-dash.md\n- obsidian-vault.md",
+    nativeMemoryWatermark: "f".repeat(64),
     releaseSha: VALID_RELEASE_SHA,
     packageVersion: "0.3.0"
   };

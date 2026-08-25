@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readMemoryReviewReceipt } from "@project-tharsis/claude-code-telegram-shared";
-import { handleMemoryReviewCommand, type MemoryReviewCommandOptions } from "../src/memory-review-command.js";
+import { readMemoryObserverLedger, readMemoryReviewReceipt } from "@project-tharsis/claude-code-telegram-shared";
+import { handleMemoryReviewCommand, loadNativeMemoryReviewContext, type MemoryReviewCommandOptions } from "../src/memory-review-command.js";
 import { readMemoryReviewSnapshot } from "../src/memory-review-snapshot-store.js";
 import { parseSnapshotFromStdin } from "../src/memory-review-worker.js";
 
@@ -39,6 +39,7 @@ describe("memory review Stop-hook enqueue seam", () => {
       releaseSha: RELEASE_SHA,
       deliveryOutcome: "delivered",
       userCorrection: true,
+      observerEnabled: true,
       now: () => 1_000,
       readObserverLedger: () => ({
         schema: 1,
@@ -53,6 +54,13 @@ describe("memory review Stop-hook enqueue seam", () => {
         },
         watermark: { sequence: 0, observed_at: 1_000, inventory_sha256: "b".repeat(64) },
         events: []
+      }),
+      userMessage: "please remember I prefer concise replies",
+      loadNativeContext: () => ({
+        currentMemoryIndex: "- no-em-dash.md",
+        relevantTopics: [{ path: "no-em-dash.md", contentHash: "e".repeat(64), excerpt: "Avoid em dashes." }],
+        nativeMemoryChangeSummary: "modified:no-em-dash.md",
+        nativeMemoryWatermark: "d".repeat(64)
       }),
       ...overrides
     };
@@ -117,15 +125,11 @@ describe("memory review Stop-hook enqueue seam", () => {
     expect(receipt?.telegram_message_id).toBe(5);
   });
 
-  test("requires a fresh observer ledger from the same activated release before enqueue", async () => {
+  test("requires the observer path and a same-release startup ledger before enqueue", async () => {
     process.env.MEMORY_REVIEW_ENABLED = "true";
     for (const options of [
+      baseOptions({ observerEnabled: false }),
       baseOptions({ readObserverLedger: () => null }),
-      baseOptions({ now: () => 1_000_000, readObserverLedger: () => ({
-        schema: 1, recovery: null, next_sequence: 1,
-        latest: { observed_at: 1_000, release_sha: RELEASE_SHA, directory_sha256: "a".repeat(64), inventory_sha256: "b".repeat(64), files: [] },
-        watermark: { sequence: 0, observed_at: 1_000, inventory_sha256: "b".repeat(64) }, events: []
-      }) }),
       baseOptions({ readObserverLedger: () => ({
         schema: 1, recovery: null, next_sequence: 1,
         latest: { observed_at: 1_000, release_sha: "0".repeat(40), directory_sha256: "a".repeat(64), inventory_sha256: "b".repeat(64), files: [] },
@@ -135,6 +139,16 @@ describe("memory review Stop-hook enqueue seam", () => {
       await handleMemoryReviewCommand(basePayload(), options);
       expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toBeNull();
     }
+  });
+
+  test("does not expire a same-release startup ledger while the long-running session re-observes at Stop", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    let scheduled = false;
+    await handleMemoryReviewCommand(basePayload(), baseOptions({
+      now: () => 10_000_000,
+      schedule: async () => { scheduled = true; }
+    }));
+    expect(scheduled).toBe(true);
   });
 
   test("does not enqueue when no real delivery-confirmed signal is supplied (fails closed, never defaults to delivered)", async () => {
@@ -165,7 +179,6 @@ describe("memory review Stop-hook enqueue seam", () => {
     let scheduledBeforeSnapshotWritten: boolean | undefined;
     await handleMemoryReviewCommand(basePayload(), baseOptions({
       userMessage: "please remember I prefer concise replies",
-      currentMemoryIndex: "- no-em-dash.md",
       schedule: async () => {
         // The snapshot must already be durably written by the time scheduling happens, since
         // the scheduled job can run at any point after this call returns.
@@ -179,6 +192,9 @@ describe("memory review Stop-hook enqueue seam", () => {
     expect(snapshot.userMessage).toBe("please remember I prefer concise replies");
     expect(snapshot.assistantFinal).toBe("Understood.");
     expect(snapshot.currentMemoryIndex).toBe("- no-em-dash.md");
+    expect(snapshot.relevantTopics[0]?.path).toBe("no-em-dash.md");
+    expect(snapshot.nativeMemoryChangeSummary).toBe("modified:no-em-dash.md");
+    expect(snapshot.nativeMemoryWatermark).toBe("d".repeat(64));
     expect(snapshot.releaseSha).toBe(RELEASE_SHA);
   });
 
@@ -213,6 +229,14 @@ describe("memory review Stop-hook enqueue seam", () => {
     expect(scheduled).toBe(false);
   });
 
+  test("fails closed before receipt creation when native memory preflight is unavailable", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    await expect(handleMemoryReviewCommand(basePayload(), baseOptions({
+      loadNativeContext: () => { throw new Error("native memory unavailable"); }
+    }))).rejects.toThrow("native memory unavailable");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toBeNull();
+  });
+
   test("transitions the receipt to failed (not left stuck queued) when the snapshot write throws after receipt creation", async () => {
     process.env.MEMORY_REVIEW_ENABLED = "true";
     await expect(handleMemoryReviewCommand(basePayload(), baseOptions({
@@ -223,13 +247,39 @@ describe("memory review Stop-hook enqueue seam", () => {
     expect(receipt?.status).toBe("failed");
   });
 
-  test("transitions the receipt to failed (not left stuck queued) when the broker schedule call throws after the snapshot is written", async () => {
+  test("leaves the receipt queued when the broker outcome is uncertain after the snapshot is written", async () => {
     process.env.MEMORY_REVIEW_ENABLED = "true";
     await expect(handleMemoryReviewCommand(basePayload(), baseOptions({
       schedule: async () => { throw new Error("broker unreachable"); }
     }))).rejects.toThrow("broker unreachable");
     const receipt = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
-    expect(receipt?.status).toBe("failed");
+    expect(receipt?.status).toBe("queued");
+  });
+
+  test("loads real native memory context through the observer ledger without writing memory", () => {
+    const root = mkdtempSync(join(tmpdir(), "memory-review-native-context-"));
+    try {
+      const memory = join(root, "memory");
+      const ledger = join(root, "state", "observer");
+      const settings = join(root, "settings.json");
+      mkdirSync(memory, { mode: 0o755 });
+      writeFileSync(join(memory, "MEMORY.md"), "# Memory\n", { mode: 0o644 });
+      writeFileSync(join(memory, "preferences.md"), "Keep replies concise.\n", { mode: 0o644 });
+      writeFileSync(settings, JSON.stringify({ autoMemoryDirectory: memory }), { mode: 0o600 });
+
+      const context = loadNativeMemoryReviewContext({
+        releaseSha: RELEASE_SHA,
+        settingsPath: settings,
+        observerLedgerDirectory: ledger,
+        now: 1_000
+      });
+      expect(context.currentMemoryIndex).toBe("# Memory\n");
+      expect(context.relevantTopics[0]?.path).toBe("preferences.md");
+      expect(context.nativeMemoryWatermark).toMatch(/^[0-9a-f]{64}$/);
+      expect(readMemoryObserverLedger({ directory: ledger })?.latest.inventory_sha256).toBe(context.nativeMemoryWatermark);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("rejects a prompt_id outside the receipt store's strict charset at the earliest validation point (fails fast, not deep)", async () => {
