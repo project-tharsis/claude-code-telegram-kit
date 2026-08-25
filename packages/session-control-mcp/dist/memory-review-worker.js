@@ -434,6 +434,35 @@ function transitionMemoryReviewReceipt(sessionId, promptId, status, options = {}
     return readback !== null && readback.status === status;
   });
 }
+// packages/shared/src/runtime-failure.ts
+var RUNTIME_FAILURE_TYPES = [
+  "rate_limit",
+  "overloaded",
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "billing_error",
+  "invalid_request",
+  "model_not_found",
+  "server_error",
+  "max_output_tokens",
+  "unknown"
+];
+var RUNTIME_FAILURE_SET = new Set(RUNTIME_FAILURE_TYPES);
+var QUOTA_LIMIT_KEYS = new Set([
+  "remainingPercentage",
+  "resetsAt",
+  "rateLimitType",
+  "isUsingOverage",
+  "overageStatus",
+  "surpassedThreshold",
+  "isPerModel",
+  "isShowingWeeklyRefresh",
+  "isShowingFiveHourRefresh",
+  "status",
+  "unifiedRateLimitFallbackAvailable",
+  "overageDisabledReason",
+  "upgradePaths"
+]);
 // packages/shared/src/telegram-response.ts
 var MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 // packages/session-control-mcp/src/memory-review-generator.ts

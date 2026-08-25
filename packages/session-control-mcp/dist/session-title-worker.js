@@ -4,6 +4,186 @@
 // packages/session-control-mcp/src/session-title-worker.ts
 import { homedir as homedir2 } from "os";
 
+// packages/shared/src/credential-patterns.ts
+var CREDENTIAL_PATTERN_SOURCES = [
+  { source: "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----", flags: "" },
+  { source: "\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}", flags: "i" },
+  {
+    source: `(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)["']?\\s*[:=]\\s*["']?[^\\s,;"']+`,
+    flags: "i"
+  },
+  { source: "\\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\\b", flags: "" },
+  { source: "\\b[A-Fa-f0-9]{32,}\\b", flags: "" },
+  { source: "\\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\\b", flags: "" },
+  { source: "\\bxox[baprs]-[A-Za-z0-9-]{16,}\\b", flags: "" },
+  { source: "\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b", flags: "" },
+  { source: "\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b", flags: "" },
+  { source: "https?://[^:\\s/@]+:[^@\\s/]+@", flags: "i" }
+];
+function redactCredentials(value, marker = "[redacted]") {
+  let result = value;
+  for (const pattern of CREDENTIAL_PATTERN_SOURCES) {
+    result = result.replace(new RegExp(pattern.source, `${pattern.flags}g`), marker);
+  }
+  return result;
+}
+// packages/shared/src/fs-safety.ts
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from "fs";
+import { resolve } from "path";
+function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "directory") {
+  const absolute = resolve(path);
+  const parts = absolute.split("/").filter(Boolean);
+  let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    for (const part of parts) {
+      const child = `/proc/self/fd/${fd}/${part}`;
+      let before;
+      try {
+        before = lstatSync(child);
+      } catch (error) {
+        if (error.code !== "ENOENT")
+          throw error;
+        mkdirSync(child, directoryMode);
+        before = lstatSync(child);
+      }
+      if (!before.isDirectory() || before.isSymbolicLink()) {
+        throw new Error(`${label} is not a real directory`);
+      }
+      const next = openSync(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      const opened = fstatSync(next);
+      if (!opened.isDirectory() || opened.ino !== before.ino || opened.dev !== before.dev) {
+        closeSync(next);
+        throw new Error(`${label} changed during open`);
+      }
+      closeSync(fd);
+      fd = next;
+    }
+    const final = fstatSync(fd);
+    if ((final.mode & 4095) !== directoryMode || expectedUid !== undefined && final.uid !== expectedUid) {
+      throw new Error(`${label} validation failed`);
+    }
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+// packages/shared/src/isolated-cli-runner.ts
+var ISOLATED_CLI_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LC_ALL",
+  "TMPDIR",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL"
+];
+function isolatedCliEnvironment() {
+  const env = {};
+  for (const key of ISOLATED_CLI_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (typeof value === "string")
+      env[key] = value;
+  }
+  return env;
+}
+function concat(chunks) {
+  const result = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+async function readBoundedStream(stream, maxBytes) {
+  if (!stream)
+    return "";
+  const reader = stream.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (size <= maxBytes) {
+      const part = await reader.read();
+      if (part.done)
+        break;
+      const remaining = maxBytes + 1 - size;
+      const chunk = part.value.slice(0, remaining);
+      chunks.push(chunk);
+      size += chunk.byteLength;
+      if (part.value.byteLength > remaining)
+        break;
+    }
+  } finally {
+    await reader.cancel().catch(() => {
+      return;
+    });
+  }
+  return new TextDecoder().decode(concat(chunks)).slice(0, maxBytes);
+}
+
+class IsolatedCliTimeoutError extends Error {
+  constructor() {
+    super("isolated CLI process timed out");
+    this.name = "IsolatedCliTimeoutError";
+  }
+}
+async function runIsolatedCli(argv, options) {
+  const child = Bun.spawn(argv, { cwd: options.cwd ?? "/tmp", env: isolatedCliEnvironment(), stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, options.timeoutMs);
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      readBoundedStream(child.stdout, options.maxOutputBytes),
+      readBoundedStream(child.stderr, options.maxOutputBytes)
+    ]);
+    if (timedOut)
+      throw new IsolatedCliTimeoutError;
+    return { exitCode, stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// packages/shared/src/memory-review-proposal.ts
+var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
+var MEMORY_REVIEW_TARGETS = ["managed_memory"];
+var MEMORY_REVIEW_FRESHNESS = ["standing", "verify_before_use"];
+var MAX_TOPIC_CHARS = 64;
+var MAX_CONTENT_CHARS = 4000;
+var MAX_REASON_CHARS = 400;
+var MAX_EVIDENCE_ENTRIES = 8;
+var MAX_EVIDENCE_CHARS = 160;
+var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
+  type: "object",
+  properties: {
+    decision: { type: "string", enum: [...MEMORY_REVIEW_DECISIONS] },
+    target: { type: "string", enum: [...MEMORY_REVIEW_TARGETS] },
+    topic: { type: "string", maxLength: MAX_TOPIC_CHARS },
+    evidence: { type: "array", items: { type: "string", maxLength: MAX_EVIDENCE_CHARS }, maxItems: MAX_EVIDENCE_ENTRIES },
+    content: { type: "string", maxLength: MAX_CONTENT_CHARS },
+    reason: { type: "string", maxLength: MAX_REASON_CHARS },
+    freshness: { type: "string", enum: [...MEMORY_REVIEW_FRESHNESS] }
+  },
+  required: ["decision", "target", "topic", "evidence", "content", "reason", "freshness"],
+  additionalProperties: false
+});
+// packages/shared/src/memory-review-receipt.ts
+var MAX_BYTES = 8 * 1024;
+var MEMORY_REVIEW_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // packages/shared/src/runtime-failure.ts
 var RUNTIME_FAILURE_TYPES = [
   "rate_limit",
@@ -71,15 +251,15 @@ function parseTerminalTaskNotification(prompt) {
 }
 // packages/shared/src/telegram-authority.ts
 import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  openSync,
+  closeSync as closeSync2,
+  constants as constants2,
+  fstatSync as fstatSync2,
+  lstatSync as lstatSync2,
+  openSync as openSync2,
   readFileSync,
   realpathSync
 } from "fs";
-import { resolve } from "path";
+import { resolve as resolve2 } from "path";
 function assertAuthorizedChat(config, chatId) {
   if (!config.allowedChatIds.has(chatId))
     throw new Error("chat is not authorized");
@@ -88,35 +268,35 @@ function currentUid() {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 function openPrivateDirectory(path) {
-  const before = lstatSync(path);
+  const before = lstatSync2(path);
   if (!before.isDirectory() || before.isSymbolicLink()) {
     throw new Error("channel state directory must be a real directory");
   }
-  if (realpathSync(path) !== resolve(path)) {
+  if (realpathSync(path) !== resolve2(path)) {
     throw new Error("channel state directory must not traverse symlinks");
   }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  const opened = fstatSync(fd);
+  const fd = openSync2(path, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+  const opened = fstatSync2(fd);
   if (opened.dev !== before.dev || opened.ino !== before.ino) {
-    closeSync(fd);
+    closeSync2(fd);
     throw new Error("channel state directory changed during validation");
   }
   if ((opened.mode & 511) !== 448) {
-    closeSync(fd);
+    closeSync2(fd);
     throw new Error("channel state directory must have mode 0700");
   }
   const uid = currentUid();
   if (uid !== undefined && opened.uid !== uid) {
-    closeSync(fd);
+    closeSync2(fd);
     throw new Error("channel state directory must be owned by the sidecar user");
   }
   return fd;
 }
 function readSecureFileAt(directoryFd, name) {
   const anchoredPath = `/proc/self/fd/${directoryFd}/${name}`;
-  const fd = openSync(anchoredPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync2(anchoredPath, constants2.O_RDONLY | constants2.O_NOFOLLOW);
   try {
-    const opened = fstatSync(fd);
+    const opened = fstatSync2(fd);
     if (!opened.isFile() || opened.nlink !== 1) {
       throw new Error("channel state must be a single regular file");
     }
@@ -132,7 +312,7 @@ function readSecureFileAt(directoryFd, name) {
     }
     return readFileSync(fd, "utf8");
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function loadRuntimeConfig(stateDir, options = {}) {
@@ -144,7 +324,7 @@ function loadRuntimeConfig(stateDir, options = {}) {
     envText = readSecureFileAt(directoryFd, ".env");
     accessText = readSecureFileAt(directoryFd, "access.json");
   } finally {
-    closeSync(directoryFd);
+    closeSync2(directoryFd);
   }
   const tokenLines = envText.split(/\r?\n/).filter((line) => line.startsWith("TELEGRAM_BOT_TOKEN="));
   if (tokenLines.length !== 1)
@@ -247,16 +427,16 @@ function parseDirectTelegramEnvelope(prompt) {
 var MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 // packages/session-control-mcp/src/session-catalog.ts
 import {
-  closeSync as closeSync2,
-  constants as constants2,
-  fstatSync as fstatSync2,
-  lstatSync as lstatSync2,
-  openSync as openSync2,
+  closeSync as closeSync3,
+  constants as constants3,
+  fstatSync as fstatSync3,
+  lstatSync as lstatSync3,
+  openSync as openSync3,
   readSync,
   readdirSync,
   realpathSync as realpathSync2
 } from "fs";
-import { join, resolve as resolve2 } from "path";
+import { join, resolve as resolve3 } from "path";
 
 // packages/session-control-mcp/src/control-command.ts
 import { randomBytes as cryptoRandomBytes } from "crypto";
@@ -493,7 +673,7 @@ function parseTranscript(text, sessionId) {
 function openValidatedTranscript(path, expectedUid, maxFileBytes) {
   let before;
   try {
-    before = lstatSync2(path);
+    before = lstatSync3(path);
   } catch {
     return null;
   }
@@ -507,13 +687,13 @@ function openValidatedTranscript(path, expectedUid, maxFileBytes) {
     return null;
   let fd;
   try {
-    fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+    fd = openSync3(path, constants3.O_RDONLY | constants3.O_NOFOLLOW);
   } catch {
     return null;
   }
-  const opened = fstatSync2(fd);
+  const opened = fstatSync3(fd);
   if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size === 0 || opened.size > maxFileBytes || opened.nlink !== 1 || (opened.mode & 18) !== 0 || expectedUid !== undefined && opened.uid !== expectedUid) {
-    closeSync2(fd);
+    closeSync3(fd);
     return null;
   }
   return { fd, size: opened.size };
@@ -525,8 +705,8 @@ function readUsableSessionTranscript(options) {
   }
   const expectedUid = options.expectedUid ?? currentUid2();
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
-  const directory = resolve2(options.directory);
-  const directoryInfo = lstatSync2(directory);
+  const directory = resolve3(options.directory);
+  const directoryInfo = lstatSync3(directory);
   if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
     throw new Error("configured sessions directory is not a real directory");
   }
@@ -544,7 +724,7 @@ function readUsableSessionTranscript(options) {
     }
     return text;
   } finally {
-    closeSync2(opened.fd);
+    closeSync3(opened.fd);
   }
 }
 function contentBlocks(value) {
@@ -592,7 +772,7 @@ function boundedText(value, maxChars) {
   return Array.from(value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, maxChars).join("");
 }
 function scanIncompleteBackgroundTasks(options) {
-  const opened = openValidatedTranscript(join(resolve2(options.directory), `${options.sessionId}.jsonl`), options.expectedUid ?? currentUid2(), DEFAULT_MAX_FILE_BYTES);
+  const opened = openValidatedTranscript(join(resolve3(options.directory), `${options.sessionId}.jsonl`), options.expectedUid ?? currentUid2(), DEFAULT_MAX_FILE_BYTES);
   if (opened === null)
     return true;
   const taskIds = new Set;
@@ -638,7 +818,7 @@ function scanIncompleteBackgroundTasks(options) {
       consume(pending);
     return overflow || taskIds.size > 0;
   } finally {
-    closeSync2(opened.fd);
+    closeSync3(opened.fd);
   }
 }
 function readSessionTitleContext(options) {
@@ -714,13 +894,12 @@ function readSessionTitleContext(options) {
 
 // packages/session-control-mcp/src/session-title-state.ts
 import {
-  closeSync as closeSync3,
-  constants as constants3,
-  fstatSync as fstatSync3,
+  closeSync as closeSync4,
+  constants as constants4,
+  fstatSync as fstatSync4,
   fsyncSync,
-  lstatSync as lstatSync3,
-  mkdirSync,
-  openSync as openSync3,
+  lstatSync as lstatSync4,
+  openSync as openSync4,
   readSync as readSync2,
   renameSync,
   unlinkSync,
@@ -728,9 +907,9 @@ import {
 } from "fs";
 import { spawn } from "child_process";
 import { homedir } from "os";
-import { join as join2, resolve as resolve3 } from "path";
+import { join as join2, resolve as resolve4 } from "path";
 var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-var MAX_BYTES = 8 * 1024;
+var MAX_BYTES2 = 8 * 1024;
 var MAX_TITLE_CHARS2 = 60;
 var STATE_VERSION = 1;
 var DIRECTORY_MODE = 448;
@@ -771,46 +950,11 @@ function assertTitle(title) {
     throw new Error("invalid session title");
 }
 function expectedDirectory(options) {
-  const path = resolve3(options.directory ?? defaultSessionTitleStateDirectory());
+  const path = resolve4(options.directory ?? defaultSessionTitleStateDirectory());
   return { path, expectedUid: options.expectedUid ?? uid() };
 }
 function openDirectory(path, expectedUid) {
-  const absolute = resolve3(path);
-  const parts = absolute.split("/").filter(Boolean);
-  let fd = openSync3("/", constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
-  try {
-    for (const part of parts) {
-      const child = `/proc/self/fd/${fd}/${part}`;
-      let before;
-      try {
-        before = lstatSync3(child);
-      } catch (error) {
-        if (error.code !== "ENOENT")
-          throw error;
-        mkdirSync(child, DIRECTORY_MODE);
-        before = lstatSync3(child);
-      }
-      if (!before.isDirectory() || before.isSymbolicLink()) {
-        throw new Error("state directory is not a real directory");
-      }
-      const next = openSync3(child, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
-      const opened = fstatSync3(next);
-      if (!opened.isDirectory() || opened.ino !== before.ino || opened.dev !== before.dev) {
-        closeSync3(next);
-        throw new Error("state directory changed");
-      }
-      closeSync3(fd);
-      fd = next;
-    }
-    const final = fstatSync3(fd);
-    if ((final.mode & 4095) !== DIRECTORY_MODE || expectedUid !== undefined && final.uid !== expectedUid) {
-      throw new Error("state directory validation failed");
-    }
-    return fd;
-  } catch (error) {
-    closeSync3(fd);
-    throw error;
-  }
+  return openDirectoryFd(path, expectedUid, DIRECTORY_MODE, "state directory");
 }
 function statePath(directory, sessionId) {
   assertSessionId(sessionId);
@@ -850,19 +994,19 @@ function validateState(value, sessionId) {
 function readLeaf(path, expectedUid, sessionId) {
   let before;
   try {
-    before = lstatSync3(path);
+    before = lstatSync4(path);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
     throw error;
   }
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 4095) !== FILE_MODE || expectedUid !== undefined && before.uid !== expectedUid || before.size > MAX_BYTES) {
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 4095) !== FILE_MODE || expectedUid !== undefined && before.uid !== expectedUid || before.size > MAX_BYTES2) {
     throw new Error("unsafe title state file");
   }
-  const fd = openSync3(path, constants3.O_RDONLY | constants3.O_NOFOLLOW);
+  const fd = openSync4(path, constants4.O_RDONLY | constants4.O_NOFOLLOW);
   try {
-    const opened = fstatSync3(fd);
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE || expectedUid !== undefined && opened.uid !== expectedUid || opened.size > MAX_BYTES) {
+    const opened = fstatSync4(fd);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE || expectedUid !== undefined && opened.uid !== expectedUid || opened.size > MAX_BYTES2) {
       throw new Error("title state file changed");
     }
     const buffer = Buffer.alloc(opened.size);
@@ -875,7 +1019,7 @@ function readLeaf(path, expectedUid, sessionId) {
     }
     return validateState(JSON.parse(buffer.toString("utf8")), sessionId);
   } finally {
-    closeSync3(fd);
+    closeSync4(fd);
   }
 }
 function writeAll(fd, bytes) {
@@ -899,7 +1043,7 @@ function canonicalState(state) {
     value.retryAt = state.retryAt;
   value.updatedAt = state.updatedAt;
   const bytes = Buffer.from(JSON.stringify(value));
-  if (bytes.length > MAX_BYTES)
+  if (bytes.length > MAX_BYTES2)
     throw new Error("title state exceeds size limit");
   return bytes;
 }
@@ -910,7 +1054,7 @@ function withDirectory(options, action) {
   try {
     return action(path, dirfd, expectedUid);
   } finally {
-    closeSync3(dirfd);
+    closeSync4(dirfd);
   }
 }
 function readSessionTitleState(options) {
@@ -921,7 +1065,7 @@ function claimAutoTitle(options) {
     const leafPath = join2(`/proc/self/fd/${dirfd}`, `${options.sessionId}.json`);
     let fd;
     try {
-      fd = openSync3(leafPath, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | constants3.O_NOFOLLOW, FILE_MODE);
+      fd = openSync4(leafPath, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | constants4.O_NOFOLLOW, FILE_MODE);
     } catch (error) {
       if (error.code === "EEXIST")
         return false;
@@ -932,7 +1076,7 @@ function claimAutoTitle(options) {
       fsyncSync(fd);
     } catch (error) {
       try {
-        closeSync3(fd);
+        closeSync4(fd);
       } finally {
         try {
           unlinkSync(leafPath);
@@ -940,7 +1084,7 @@ function claimAutoTitle(options) {
       }
       throw error;
     }
-    closeSync3(fd);
+    closeSync4(fd);
     fsyncSync(dirfd);
     return true;
   });
@@ -1008,20 +1152,20 @@ async function withSessionTitleLock(options, action, timeoutMs = 20000) {
   let lockFd = null;
   try {
     const lockPath = `/proc/self/fd/${dirfd}/${options.sessionId}.lock`;
-    lockFd = openSync3(lockPath, constants3.O_RDWR | constants3.O_CREAT | constants3.O_NOFOLLOW, FILE_MODE);
-    const opened = fstatSync3(lockFd);
-    const named = lstatSync3(lockPath);
+    lockFd = openSync4(lockPath, constants4.O_RDWR | constants4.O_CREAT | constants4.O_NOFOLLOW, FILE_MODE);
+    const opened = fstatSync4(lockFd);
+    const named = lstatSync4(lockPath);
     if (!opened.isFile() || opened.dev !== named.dev || opened.ino !== named.ino || opened.nlink !== 1 || (opened.mode & 4095) !== FILE_MODE || expectedUid !== undefined && opened.uid !== expectedUid || opened.size > 1024) {
       throw new Error("unsafe title lock file");
     }
   } catch (error) {
     if (lockFd !== null) {
-      closeSync3(lockFd);
+      closeSync4(lockFd);
       lockFd = null;
     }
     throw error;
   } finally {
-    closeSync3(dirfd);
+    closeSync4(dirfd);
   }
   try {
     await new Promise((resolveLock, rejectLock) => {
@@ -1037,7 +1181,7 @@ async function withSessionTitleLock(options, action, timeoutMs = 20000) {
     return await action();
   } finally {
     if (lockFd !== null)
-      closeSync3(lockFd);
+      closeSync4(lockFd);
   }
 }
 function replaceLeaf(directory, dirfd, path, state) {
@@ -1045,16 +1189,16 @@ function replaceLeaf(directory, dirfd, path, state) {
   const anchoredDirectory = `/proc/self/fd/${dirfd}`;
   const temp = join2(anchoredDirectory, tempName);
   const target = join2(anchoredDirectory, path.slice(directory.length + 1));
-  const fd = openSync3(temp, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | constants3.O_NOFOLLOW, FILE_MODE);
+  const fd = openSync4(temp, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | constants4.O_NOFOLLOW, FILE_MODE);
   try {
     writeAll(fd, canonicalState(state));
     fsyncSync(fd);
-    closeSync3(fd);
+    closeSync4(fd);
     renameSync(temp, target);
     fsyncSync(dirfd);
   } catch (error) {
     try {
-      closeSync3(fd);
+      closeSync4(fd);
     } catch {}
     try {
       unlinkSync(temp);
@@ -1096,18 +1240,9 @@ var GENERIC_TITLES = new Set([
 ]);
 var UUID2 = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 var PATH = /(?:^|\s)(?:[a-zA-Z]:[\\/]|~[\\/]|\\\\|\/(?:home|Users|srv|etc|var|opt|tmp)\/|\.\.?[\\/])/;
-var SECRET_ASSIGNMENT = /(?:password|passwd|token|secret|api[_ -]?key|authorization|credential)\s*[:=]\s*[^\s,;]+/gi;
-var BEARER = /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
-var SECRET_TOKEN = /\b(?:sk|pk|key|token|secret)[-_][A-Za-z0-9_-]{12,}\b|\b[A-Fa-f0-9]{32,}\b/g;
-var GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
-var SLACK_TOKEN = /\bxox[baprs]-[A-Za-z0-9-]{16,}\b/g;
-var JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
-var AWS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
-var URL_CREDENTIAL = /https?:\/\/[^:\s/@]+:[^@\s/]+@/gi;
-var PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
 var SENSITIVE_OUTPUT = /(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|https?:\/\/[^:\s/@]+:[^@\s/]+@)/i;
 function redact(value) {
-  return value.replace(PRIVATE_KEY, "[redacted]").replace(SECRET_ASSIGNMENT, "[redacted]").replace(BEARER, "[redacted]").replace(SECRET_TOKEN, "[redacted]").replace(GITHUB_TOKEN, "[redacted]").replace(SLACK_TOKEN, "[redacted]").replace(JWT, "[redacted]").replace(AWS_KEY, "[redacted]").replace(URL_CREDENTIAL, "[redacted]");
+  return redactCredentials(value);
 }
 function bounded(value, limit) {
   return redact(typeof value === "string" ? value : "").slice(0, limit);
@@ -1122,85 +1257,13 @@ function buildPrompt(context) {
   ].join(`
 `);
 }
-async function readBounded(stream) {
-  if (!stream)
-    return "";
-  const reader = stream.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (size <= MAX_OUTPUT_BYTES) {
-      const part = await reader.read();
-      if (part.done)
-        break;
-      const remaining = MAX_OUTPUT_BYTES + 1 - size;
-      const chunk = part.value.slice(0, remaining);
-      chunks.push(chunk);
-      size += chunk.byteLength;
-      if (part.value.byteLength > remaining)
-        break;
-    }
-  } finally {
-    await reader.cancel().catch(() => {
-      return;
-    });
-  }
-  return new TextDecoder().decode(concat(chunks)).slice(0, MAX_OUTPUT_BYTES);
-}
-function concat(chunks) {
-  const result = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
-}
-function titleEnvironment() {
-  const env = {};
-  for (const key of [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "LC_ALL",
-    "TMPDIR",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL"
-  ]) {
-    const value = process.env[key];
-    if (typeof value === "string")
-      env[key] = value;
-  }
-  return env;
-}
 async function defaultRunner(argv, options) {
-  const child = Bun.spawn(argv, { cwd: "/tmp", env: titleEnvironment(), stdout: "pipe", stderr: "pipe" });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill();
-  }, options.timeoutMs);
   try {
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      readBounded(child.stdout),
-      readBounded(child.stderr)
-    ]);
-    if (timedOut)
+    return await runIsolatedCli(argv, { timeoutMs: options.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES });
+  } catch (error) {
+    if (error instanceof IsolatedCliTimeoutError)
       throw new SessionTitleGenerationError("generate", "timeout", true);
-    return { exitCode, stdout, stderr };
-  } finally {
-    clearTimeout(timer);
+    throw error;
   }
 }
 function isValidSessionTitle(title) {
@@ -1312,7 +1375,7 @@ async function generateSessionTitle(context, options = {}) {
 var SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var MAX_OUTPUT_BYTES2 = 32 * 1024;
 var GENERIC_ERROR2 = "Session rename failed";
-async function readBounded2(stream) {
+async function readBounded(stream) {
   if (stream === null)
     return "";
   const reader = stream.getReader();
@@ -1357,8 +1420,8 @@ async function defaultRunner2(argv, options) {
   try {
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,
-      readBounded2(child.stdout),
-      readBounded2(child.stderr)
+      readBounded(child.stdout),
+      readBounded(child.stderr)
     ]);
     if (timedOut)
       throw new Error(GENERIC_ERROR2);
