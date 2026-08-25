@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Memory review Stop hooks now wait boundedly for exact-turn Telegram delivery evidence because Claude Code runs matching Stop handlers in parallel; missing or mismatched evidence still fails closed.
+
 ## [0.4.0] - 2026-08-25
 
 ### Added

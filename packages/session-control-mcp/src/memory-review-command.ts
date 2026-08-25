@@ -29,6 +29,16 @@ const PACKAGE_VERSION = "0.4.0";
 const MAX_STDIN_BYTES = 256 * 1024;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
+const DEFAULT_DELIVERY_WAIT_MS = 3_000;
+const DEFAULT_DELIVERY_POLL_MS = 100;
+
+function boundedDuration(value: number | undefined, fallback: number, max: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(Math.floor(value as number), max)) : fallback;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise(resolveSleep => setTimeout(resolveSleep, ms));
+}
 
 interface HookPayload {
   hook_event_name?: unknown;
@@ -57,6 +67,10 @@ export interface MemoryReviewCommandOptions {
   /** Test seam only. Production delivery authority comes from the renderer evidence store. */
   deliveryOutcome?: "delivered" | "rejected" | "uncertain" | "too_large";
   deliveryEvidenceDirectory?: string;
+  /** Matching Stop hooks run in parallel; wait briefly for renderer evidence from the same turn. */
+  deliveryEvidenceWaitMs?: number;
+  deliveryEvidencePollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   /** Threaded into the bounded snapshot; see MemoryReviewSnapshotInput.userMessage. */
   userMessage?: string;
   /** Deterministic native memory context loader. Tests may replace it without touching production memory. */
@@ -152,16 +166,10 @@ export async function handleMemoryReviewCommand(
 
   const assistantText = typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : "";
   if (assistantText.trim() === "") return;
-  // Stop payload arrays are the registry authority. Missing fields are not equivalent to idle.
-  if (!hasIdleTurnAuthority({
-    stopHookActive: payload.stop_hook_active,
-    backgroundTasks: payload.background_tasks,
-    sessionCrons: payload.session_crons,
-  })) return;
-
   const releaseSha = options.releaseSha ?? process.env.CLAUDE_RUNTIME_RELEASE_SHA ?? "";
   if (!RELEASE_SHA_RE.test(releaseSha)) return;
-  const observedAt = (options.now ?? Date.now)();
+  const now = options.now ?? Date.now;
+  let observedAt = now();
   const assistantMessageSha256 = sha256Hex(assistantText);
   const readReceipt = options.readReceipt ?? ((sessionId, promptId) => readMemoryReviewReceipt(
     sessionId,
@@ -170,13 +178,26 @@ export async function handleMemoryReviewCommand(
   ));
   const hasExistingReceipt = readReceipt(payload.session_id, payload.prompt_id) !== null;
 
-  const deliveryEvidence: MemoryDeliveryEvidence | null = readMemoryDeliveryEvidence(
-    payload.session_id,
-    payload.prompt_id,
+  const readEvidence = (): MemoryDeliveryEvidence | null => readMemoryDeliveryEvidence(
+    payload.session_id as string,
+    payload.prompt_id as string,
     options.deliveryEvidenceDirectory === undefined
       ? { now: () => observedAt }
       : { directory: options.deliveryEvidenceDirectory, now: () => observedAt },
   );
+  let deliveryEvidence = readEvidence();
+  if (deliveryEvidence === null && options.deliveryOutcome === undefined) {
+    let remaining = boundedDuration(options.deliveryEvidenceWaitMs, DEFAULT_DELIVERY_WAIT_MS, 20_000);
+    const poll = Math.max(10, boundedDuration(options.deliveryEvidencePollMs, DEFAULT_DELIVERY_POLL_MS, 1_000));
+    const sleep = options.sleep ?? defaultSleep;
+    while (deliveryEvidence === null && remaining > 0) {
+      const delay = Math.min(poll, remaining);
+      await sleep(delay);
+      remaining -= delay;
+      observedAt = now();
+      deliveryEvidence = readEvidence();
+    }
+  }
   if (
     deliveryEvidence !== null &&
     (deliveryEvidence.release_sha !== releaseSha ||
@@ -184,6 +205,13 @@ export async function handleMemoryReviewCommand(
       deliveryEvidence.observed_at > observedAt ||
       observedAt - deliveryEvidence.observed_at > 120_000)
   ) return;
+  // Consume the immutable Stop registry snapshot only after the exact delivered turn exists.
+  // This gates reviewer enqueue only; native-memory apply has its own fresh no-wait authority.
+  if (!hasIdleTurnAuthority({
+    stopHookActive: payload.stop_hook_active,
+    backgroundTasks: payload.background_tasks,
+    sessionCrons: payload.session_crons,
+  })) return;
   const deliveryOutcome = deliveryEvidence?.outcome ?? options.deliveryOutcome ?? "uncertain";
   const telegramMessageId = deliveryEvidence?.source_message_id ?? options.telegramMessageId;
   const userMessage = deliveryEvidence?.user_message ?? options.userMessage ?? "";

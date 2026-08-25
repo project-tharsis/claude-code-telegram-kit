@@ -158,6 +158,7 @@ describe("memory review Stop-hook enqueue seam", () => {
     process.env.MEMORY_REVIEW_ENABLED = "true";
     let scheduled = false;
     const { deliveryOutcome: _omit, ...withoutDeliveryOutcome } = baseOptions({
+      deliveryEvidenceWaitMs: 0,
       schedule: async () => { scheduled = true; }
     });
     await handleMemoryReviewCommand(basePayload(), withoutDeliveryOutcome);
@@ -222,6 +223,53 @@ describe("memory review Stop-hook enqueue seam", () => {
     } finally {
       rmSync(evidenceDirectory, { recursive: true, force: true });
     }
+  });
+
+  test("waits boundedly for evidence from the parallel renderer Stop hook", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    const evidenceDirectory = mkdtempSync(join(tmpdir(), "memory-evidence-race-"));
+    const { persistMemoryDeliveryEvidence } = await import("@project-tharsis/claude-code-telegram-shared");
+    const timer = setTimeout(() => persistMemoryDeliveryEvidence({
+      sessionId: SESSION_ID, promptId: "prompt-1", sourceMessageId: 5,
+      deliveredMessageIds: [6], assistantMessage: "Understood.", releaseSha: RELEASE_SHA,
+      observedAt: 1_000, userMessage: "请记住简短回答", toolIterations: 1,
+    }, { directory: evidenceDirectory }), 25);
+    try {
+      let scheduled = false;
+      const configured = baseOptions({
+        deliveryEvidenceDirectory: evidenceDirectory,
+        deliveryEvidenceWaitMs: 200,
+        deliveryEvidencePollMs: 10,
+        schedule: async () => { scheduled = true; },
+      });
+      const { deliveryOutcome: _d, telegramMessageId: _m, userCorrection: _c,
+        userMessage: _u, turnOrdinal: _o, toolIterations: _t, ...production } = configured;
+      await handleMemoryReviewCommand(basePayload(), production);
+      expect(scheduled).toBe(true);
+      expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
+    } finally {
+      clearTimeout(timer);
+      rmSync(evidenceDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("stops polling at the configured evidence wait bound", async () => {
+    process.env.MEMORY_REVIEW_ENABLED = "true";
+    const evidenceDirectory = mkdtempSync(join(tmpdir(), "memory-evidence-timeout-"));
+    const delays: number[] = [];
+    try {
+      const configured = baseOptions({
+        deliveryEvidenceDirectory: evidenceDirectory,
+        deliveryEvidenceWaitMs: 25,
+        deliveryEvidencePollMs: 10,
+        sleep: async ms => { delays.push(ms); },
+      });
+      const { deliveryOutcome: _d, telegramMessageId: _m, userCorrection: _c,
+        userMessage: _u, turnOrdinal: _o, toolIterations: _t, ...production } = configured;
+      await handleMemoryReviewCommand(basePayload(), production);
+      expect(delays).toEqual([10, 10, 5]);
+      expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toBeNull();
+    } finally { rmSync(evidenceDirectory, { recursive: true, force: true }); }
   });
 
   test("requires exact empty registry arrays for idle authority", async () => {
