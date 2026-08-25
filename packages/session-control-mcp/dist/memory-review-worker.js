@@ -146,11 +146,27 @@ class IsolatedCliTimeoutError extends Error {
   }
 }
 async function runIsolatedCli(argv, options) {
-  const child = Bun.spawn(argv, { cwd: options.cwd ?? "/tmp", env: isolatedCliEnvironment(), stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(argv, {
+    cwd: options.cwd ?? "/tmp",
+    env: isolatedCliEnvironment(),
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: true
+  });
   let timedOut = false;
+  const killProcessGroup = () => {
+    try {
+      if (child.pid > 1)
+        process.kill(-child.pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill(9);
+      } catch {}
+    }
+  };
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill();
+    killProcessGroup();
   }, options.timeoutMs);
   try {
     const [exitCode, stdout, stderr] = await Promise.all([

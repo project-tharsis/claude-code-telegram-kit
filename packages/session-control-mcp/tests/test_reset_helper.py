@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -328,6 +329,44 @@ def _write_receipt(directory: Path, session_id: str, overrides=None) -> Path:
     return path
 
 
+class IsolatedProcessGroupTests(unittest.TestCase):
+    def test_timeout_kills_and_reaps_descendants(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pid_file = root / "grandchild.pid"
+            helper = root / "spawn_descendant.py"
+            helper.write_text(
+                "import subprocess, sys, time\n"
+                "from pathlib import Path\n"
+                "child = subprocess.Popen(['/bin/sleep', '60'])\n"
+                "Path(sys.argv[1]).write_text(str(child.pid))\n"
+                "time.sleep(60)\n"
+            )
+            with self.assertRaises(subprocess.TimeoutExpired):
+                reset._run_isolated_process_group(
+                    [sys.executable, str(helper), str(pid_file)],
+                    input_bytes=b"",
+                    timeout=0.2,
+                    cwd=root,
+                    env=dict(os.environ),
+                    preexec_fn=lambda: None,
+                    pass_fds=(),
+                )
+            pid = int(pid_file.read_text())
+            alive = True
+            for _ in range(40):
+                stat_path = Path(f"/proc/{pid}/stat")
+                if not stat_path.exists():
+                    alive = False
+                    break
+                fields = stat_path.read_text().split()
+                if len(fields) > 2 and fields[2] == "Z":
+                    alive = False
+                    break
+                time.sleep(0.025)
+            self.assertFalse(alive)
+
+
 class TitleSessionTests(unittest.TestCase):
     def _title_assets(self, root: Path, home: Path):
         bun = home / ".bun/bin/bun"
@@ -359,7 +398,7 @@ class TitleSessionTests(unittest.TestCase):
                     mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
                     mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
                     mock.patch.object(reset, "TITLE_WORKER_PATH", worker), \
-                    mock.patch.object(reset.subprocess, "run", return_value=completed) as run, \
+                    mock.patch.object(reset, "_run_isolated_process_group", return_value=completed) as run, \
                     mock.patch.dict(reset.os.environ, {
                         "CLAUDE_CODE_OAUTH_TOKEN": "opaque-test-token",
                         "SHOULD_NOT_COPY": "private"
@@ -387,7 +426,7 @@ class TitleSessionTests(unittest.TestCase):
                     mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
                     mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
                     mock.patch.object(reset, "TITLE_WORKER_PATH", worker), \
-                    mock.patch.object(reset.subprocess, "run") as run, \
+                    mock.patch.object(reset, "_run_isolated_process_group") as run, \
                     mock.patch.dict(reset.os.environ, {}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "authenticated title source"):
                     reset.title_session(config, session_id=NEW_SESSION, timeout=30)
@@ -441,7 +480,7 @@ class MemoryReviewSessionTests(unittest.TestCase):
                     mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
                     mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
                     mock.patch.object(reset, "MEMORY_REVIEW_WORKER_PATH", worker), \
-                    mock.patch.object(reset.subprocess, "run", return_value=completed) as run, \
+                    mock.patch.object(reset, "_run_isolated_process_group", return_value=completed) as run, \
                     mock.patch.dict(reset.os.environ, {
                         "CLAUDE_CODE_OAUTH_TOKEN": "opaque-test-token",
                         "SHOULD_NOT_COPY": "private"
@@ -461,7 +500,7 @@ class MemoryReviewSessionTests(unittest.TestCase):
             self.assertNotIn("TELEGRAM_STATE_DIR", kwargs["env"])
             # The real snapshot bytes handleMemoryReviewCommand wrote are fed to the worker's
             # stdin unparsed -- this is the fix for the "always empty stdin" wiring gap.
-            self.assertEqual(kwargs["input"], snapshot_bytes)
+            self.assertEqual(kwargs["input_bytes"], snapshot_bytes)
 
     def test_fails_closed_when_no_snapshot_was_ever_written_for_this_session_and_prompt(self):
         with tempfile.TemporaryDirectory() as td:
@@ -478,7 +517,7 @@ class MemoryReviewSessionTests(unittest.TestCase):
                     mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
                     mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
                     mock.patch.object(reset, "MEMORY_REVIEW_WORKER_PATH", worker), \
-                    mock.patch.object(reset.subprocess, "run") as run, \
+                    mock.patch.object(reset, "_run_isolated_process_group") as run, \
                     mock.patch.dict(reset.os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "opaque-test-token"}, clear=True):
                 with self.assertRaisesRegex(ValueError, "memory review snapshot is not available"):
                     reset.memory_review_session(config, session_id=NEW_SESSION, prompt_id="never-enqueued", timeout=30)
@@ -496,7 +535,7 @@ class MemoryReviewSessionTests(unittest.TestCase):
                     mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
                     mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
                     mock.patch.object(reset, "MEMORY_REVIEW_WORKER_PATH", worker), \
-                    mock.patch.object(reset.subprocess, "run") as run, \
+                    mock.patch.object(reset, "_run_isolated_process_group") as run, \
                     mock.patch.dict(reset.os.environ, {}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "authenticated review source"):
                     reset.memory_review_session(config, session_id=NEW_SESSION, prompt_id="prompt-1", timeout=30)

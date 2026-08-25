@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 SCRIPT = Path(__file__).parents[1] / "runtime_activate.py"
@@ -127,6 +128,56 @@ class RuntimeActivationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "secure regular"):
             with runtime.ReleaseAuthority(self.config, SHA):
                 pass
+
+    def test_compatibility_checker_executes_pinned_root_asset_fd(self):
+        checker = Path(self.temp.name) / "checker.py"
+        checker.write_text("print('ok')\n")
+        checker.chmod(0o755)
+        actual = checker.stat()
+        info = SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o755,
+            st_uid=0,
+            st_nlink=1,
+            st_size=actual.st_size,
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+        )
+        config = runtime.Config(
+            self.prefix,
+            self.config.service_user,
+            receipt_dir=self.receipts,
+            settings=Path(self.temp.name) / "settings.json",
+        )
+        completed = runtime.subprocess.CompletedProcess([], 0, '{"compatible":true}', "")
+        with mock.patch.object(runtime, "COMPATIBILITY_CHECK", checker), \
+                mock.patch.object(Path, "lstat", return_value=info), \
+                mock.patch.object(runtime.subprocess, "run", return_value=completed) as run:
+            runtime._check_claude_compatibility(config)
+        argv = run.call_args.args[0]
+        self.assertTrue(argv[1].startswith("/proc/self/fd/"))
+        self.assertEqual(run.call_args.kwargs["pass_fds"], (int(argv[1].split("/")[-1]),))
+
+    def test_compatibility_failure_prevents_generation_write_and_restart(self):
+        calls = []
+        writes = []
+        with mock.patch.object(
+            runtime,
+            "_check_claude_compatibility",
+            side_effect=RuntimeError("incompatible"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "incompatible"):
+                runtime.activate(
+                    self.config,
+                    SHA,
+                    observer=FakeObserver([]),
+                    run=self.run_recorder(calls),
+                    generation=GEN,
+                    write_env=lambda sha, generation: writes.append((sha, generation)),
+                )
+        self.assertEqual(calls, [])
+        self.assertEqual(writes, [])
+        self.assertEqual(list(self.receipts.iterdir()), [])
+
 
     def test_success_requires_new_exact_generation_and_two_stable_role_observations(self):
         calls = []
