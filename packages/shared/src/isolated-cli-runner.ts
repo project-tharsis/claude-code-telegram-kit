@@ -4,7 +4,7 @@
  * The session-title generator and the Memory Harness review generator each spawn an isolated,
  * one-shot `claude` CLI process under the exact same untrusted-code-execution isolation
  * contract: a fixed environment-variable allowlist, a hard wall-clock timeout that kills the
- * child, and a bounded stdout/stderr reader that never buffers past a fixed byte cap. This is
+ * detached process group, and a bounded stdout/stderr reader that never buffers past a fixed byte cap. This is
  * the actual security boundary for that isolation surface, so it is defined in exactly one
  * place -- a hardening fix here (timeout handling, env allowlist, output bounding) can no
  * longer silently drift out of sync between the two call sites. Callers layer their own
@@ -81,16 +81,29 @@ export class IsolatedCliTimeoutError extends Error {
 }
 
 /**
- * Spawns `argv[0]` as a one-shot, environment-allowlisted, output-bounded, hard-timeout-killed
- * child process and returns its exit code plus bounded stdout/stderr. Throws
- * `IsolatedCliTimeoutError` if the process is still running at `options.timeoutMs`.
+ * Spawns `argv[0]` in a detached process group with an environment allowlist, bounded output,
+ * and a hard timeout. Timeout sends SIGKILL to the whole group and awaits the direct child;
+ * descendant reaping remains the operating system's init/subreaper responsibility.
  */
 export async function runIsolatedCli(argv: string[], options: RunIsolatedCliOptions): Promise<IsolatedCliResult> {
-  const child = Bun.spawn(argv, { cwd: options.cwd ?? "/tmp", env: isolatedCliEnvironment(), stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(argv, {
+    cwd: options.cwd ?? "/tmp",
+    env: isolatedCliEnvironment(),
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: true,
+  });
   let timedOut = false;
+  const killProcessGroup = (): void => {
+    try {
+      if (child.pid > 1) process.kill(-child.pid, "SIGKILL");
+    } catch {
+      try { child.kill(9); } catch { /* already exited */ }
+    }
+  };
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill();
+    killProcessGroup();
   }, options.timeoutMs);
   try {
     const [exitCode, stdout, stderr] = await Promise.all([

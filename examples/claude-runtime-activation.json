@@ -1,6 +1,7 @@
 {
   "prefix": "/home/USER/.local/share/claude-code-telegram-kit",
   "service_user": "USER",
+  "settings": "/home/USER/claude-bot-workspace/telegram-settings.json",
   "service": "claude-telegram.service",
   "receipt_dir": "/var/lib/claude-code-telegram-kit/activation",
   "timeout": 60

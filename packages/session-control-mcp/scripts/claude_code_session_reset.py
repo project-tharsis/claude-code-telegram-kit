@@ -17,6 +17,7 @@ import os
 import pwd
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -1493,6 +1494,41 @@ def model_session(
         os.close(lock_fd)
 
 
+def _run_isolated_process_group(
+    argv: list[str],
+    *,
+    input_bytes: bytes,
+    timeout: float,
+    cwd: Path,
+    env: dict[str, str],
+    preexec_fn: Callable[[], None],
+    pass_fds: tuple[int, ...],
+) -> subprocess.CompletedProcess[bytes]:
+    """Run in a new session; timeout kills the group and reaps the direct worker."""
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        cwd=cwd,
+        env=env,
+        preexec_fn=preexec_fn,
+        pass_fds=pass_fds,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(input=input_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
 def _run_isolated_worker(
     config: ResetConfig,
     account: Any,
@@ -1600,14 +1636,10 @@ def _run_isolated_worker(
             os.setgid(account.pw_gid)
             os.setuid(config.service_uid)
 
-        result = subprocess.run(
+        result = _run_isolated_process_group(
             [f"/proc/self/fd/{bun_fd}", str(worker_path), *argv_tail],
-            input=load_input(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            input_bytes=load_input(),
             timeout=timeout,
-            check=False,
-            text=False,
             cwd=config.workspace,
             env=env,
             preexec_fn=drop_privileges,

@@ -24,6 +24,7 @@ CGROUP_ROOT = Path("/sys/fs/cgroup")
 ROOT_LOCK = Path("/run/lock/claude-code-telegram-kit/root/runtime-activate.lock")
 SHARED_LOCK = Path("/run/lock/claude-code-telegram-kit/shared/deploy-activation.lock")
 ACTIVATION_ENV = Path("/run/claude-code-telegram-activation/activation.env")
+COMPATIBILITY_CHECK = Path("/usr/local/sbin/claude-check-compatibility")
 RECEIPT_DIR = Path("/var/lib/claude-code-telegram-kit/activation")
 MAX_JSON_BYTES = 64 * 1024
 
@@ -45,6 +46,7 @@ class Config:
     service: str = SERVICE
     receipt_dir: Path = RECEIPT_DIR
     timeout: float = 60.0
+    settings: Path | None = None
 
     @property
     def account(self) -> pwd.struct_passwd:
@@ -70,8 +72,8 @@ class Config:
                 or info.st_nlink != 1):
             raise ValueError("activation config is not a secure root-owned file")
         data = json.loads(path.read_text(encoding="utf-8"))
-        allowed = {"prefix", "service_user", "service", "receipt_dir", "timeout"}
-        if not isinstance(data, dict) or set(data) - allowed or not {"prefix", "service_user"} <= set(data):
+        allowed = {"prefix", "service_user", "service", "receipt_dir", "timeout", "settings"}
+        if not isinstance(data, dict) or set(data) - allowed or not {"prefix", "service_user", "settings"} <= set(data):
             raise ValueError("activation config is incomplete or has unknown fields")
         prefix = data["prefix"]
         user = data["service_user"]
@@ -88,10 +90,17 @@ class Config:
         timeout = float(data.get("timeout", 60.0))
         if not 0 < timeout <= 300:
             raise ValueError("activation timeout is out of bounds")
+        settings = data.get("settings")
+        if not isinstance(settings, str) or not Path(settings).is_absolute() or ".." in Path(settings).parts:
+            raise ValueError("activation settings must be an absolute non-traversing path")
         account = pwd.getpwnam(user)
+        try:
+            Path(settings).relative_to(Path(account.pw_dir))
+        except ValueError as exc:
+            raise ValueError("activation settings must stay under the service home") from exc
         if account.pw_uid == 0:
             raise ValueError("activation service_user must be unprivileged")
-        return cls(Path(prefix), user, service, RECEIPT_DIR, timeout)
+        return cls(Path(prefix), user, service, RECEIPT_DIR, timeout, Path(settings))
 
 
 def _validate_directory(info: os.stat_result, uid: int, mode: int, label: str) -> None:
@@ -481,6 +490,60 @@ def _open_root_lock(path: Path, service_gid: int | None = None) -> int:
         os.close(parent_fd)
 
 
+def _check_claude_compatibility(config: Config) -> None:
+    if config.settings is None:
+        return
+    info = COMPATIBILITY_CHECK.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o755
+            or info.st_size < 1 or info.st_size > MAX_JSON_BYTES):
+        raise ValueError("compatibility preflight is not a secure root asset")
+    script_fd = os.open(COMPATIBILITY_CHECK, os.O_RDONLY | os.O_NOFOLLOW)
+    opened = os.fstat(script_fd)
+    if opened.st_dev != info.st_dev or opened.st_ino != info.st_ino:
+        os.close(script_fd)
+        raise ValueError("compatibility preflight changed during validation")
+    os.set_inheritable(script_fd, True)
+
+    def drop_privileges() -> None:
+        os.setgroups([])
+        os.setgid(config.service_gid)
+        os.setuid(config.service_uid)
+
+    def invoke() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "/usr/bin/python3", f"/proc/self/fd/{script_fd}",
+                "--claude", str(config.service_home / ".local/bin/claude"),
+                "--settings", str(config.settings),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            cwd=config.service_home,
+            env={
+                "HOME": str(config.service_home),
+                "USER": config.service_user,
+                "LOGNAME": config.service_user,
+                "PATH": f"{config.service_home}/.local/bin:/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+            },
+            preexec_fn=drop_privileges,
+            pass_fds=(script_fd,),
+        )
+
+    try:
+        result = invoke()
+    finally:
+        os.close(script_fd)
+    if result.returncode != 0:
+        raise RuntimeError("Claude compatibility preflight failed")
+    payload = json.loads(result.stdout)
+    if not isinstance(payload, dict) or payload.get("compatible") is not True:
+        raise RuntimeError("Claude compatibility preflight returned an invalid receipt")
+
+
 def activate(
     config: Config,
     sha: str,
@@ -497,6 +560,7 @@ def activate(
     if len(generation) != 32 or any(char not in "0123456789abcdef" for char in generation):
         raise ValueError("activation generation is invalid")
     with ReleaseAuthority(config, sha) as authority:
+        _check_claude_compatibility(config)
         write_env(sha, generation)
         obs = observer or SystemdCgroupObserver(config, run)
         before = obs.observe()
