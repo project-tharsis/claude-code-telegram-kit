@@ -27,7 +27,7 @@ function containsCredentialShape(value) {
 // packages/shared/src/fs-safety.ts
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from "fs";
 import { resolve } from "path";
-function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "directory") {
+function walkDirectory(path, expectedUid, label, createMissing, createMode, finalMode) {
   const absolute = resolve(path);
   const parts = absolute.split("/").filter(Boolean);
   let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -38,9 +38,9 @@ function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "direct
       try {
         before = lstatSync(child);
       } catch (error) {
-        if (error.code !== "ENOENT")
+        if (!createMissing || error.code !== "ENOENT")
           throw error;
-        mkdirSync(child, directoryMode);
+        mkdirSync(child, createMode);
         before = lstatSync(child);
       }
       if (!before.isDirectory() || before.isSymbolicLink()) {
@@ -56,7 +56,7 @@ function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "direct
       fd = next;
     }
     const final = fstatSync(fd);
-    if ((final.mode & 4095) !== directoryMode || expectedUid !== undefined && final.uid !== expectedUid) {
+    if (!final.isDirectory() || !finalMode(final.mode & 4095) || expectedUid !== undefined && final.uid !== expectedUid) {
       throw new Error(`${label} validation failed`);
     }
     return fd;
@@ -64,6 +64,16 @@ function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "direct
     closeSync(fd);
     throw error;
   }
+}
+function openDirectoryFd(path, expectedUid, directoryMode = 448, label = "directory") {
+  const mode = directoryMode & 4095;
+  const fd = walkDirectory(path, expectedUid, label, true, mode, (candidate) => candidate === mode);
+  const final = fstatSync(fd);
+  if ((final.mode & 4095) !== mode) {
+    closeSync(fd);
+    throw new Error(`${label} validation failed`);
+  }
+  return fd;
 }
 // packages/shared/src/isolated-cli-runner.ts
 var ISOLATED_CLI_ENV_ALLOWLIST = [
@@ -158,106 +168,6 @@ async function runIsolatedCli(argv, options) {
 // packages/shared/src/memory-observer-ledger.ts
 var MAX_LEDGER_BYTES = 256 * 1024;
 var MEMORY_OBSERVER_LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-// packages/shared/src/memory-review-proposal.ts
-var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
-var MEMORY_REVIEW_TARGETS = ["managed_memory"];
-var MEMORY_REVIEW_FRESHNESS = ["standing", "verify_before_use"];
-var MAX_TOPIC_CHARS = 64;
-var MAX_CONTENT_CHARS = 4000;
-var MAX_REASON_CHARS = 400;
-var MAX_EVIDENCE_ENTRIES = 8;
-var MAX_EVIDENCE_CHARS = 160;
-var TOPIC_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-var PATH_LIKE_RE = /(?:^|[\s"'`])(?:\.\.[\\/]|~[\\/]|\/(?:home|Users|srv|etc|var|opt|tmp|root)\/|[A-Za-z]:[\\/]|\\\\)/;
-var CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
-function isBoundedString(value, maxChars, minChars = 1) {
-  if (typeof value !== "string")
-    return false;
-  const length = Array.from(value).length;
-  if (length < minChars || length > maxChars)
-    return false;
-  return !CONTROL_CHARS_RE.test(value);
-}
-function validateMemoryReviewProposal(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("proposal must be a JSON object");
-  }
-  const record = value;
-  const allowedKeys = ["decision", "target", "topic", "evidence", "content", "reason", "freshness"];
-  const keys = Object.keys(record);
-  if (keys.length !== allowedKeys.length || allowedKeys.some((key) => !(key in record))) {
-    throw new Error("proposal has an unsupported field shape");
-  }
-  if (typeof record.decision !== "string" || !MEMORY_REVIEW_DECISIONS.includes(record.decision)) {
-    throw new Error("invalid proposal decision");
-  }
-  if (typeof record.target !== "string" || !MEMORY_REVIEW_TARGETS.includes(record.target)) {
-    throw new Error("unsupported proposal target");
-  }
-  if (typeof record.freshness !== "string" || !MEMORY_REVIEW_FRESHNESS.includes(record.freshness)) {
-    throw new Error("invalid proposal freshness");
-  }
-  if (!isBoundedString(record.topic, MAX_TOPIC_CHARS) || !TOPIC_RE.test(record.topic) || PATH_LIKE_RE.test(record.topic)) {
-    throw new Error("invalid proposal topic");
-  }
-  const contentMinChars = record.decision === "no_op" ? 0 : 1;
-  if (!isBoundedString(record.content, MAX_CONTENT_CHARS, contentMinChars))
-    throw new Error("invalid proposal content");
-  if (!isBoundedString(record.reason, MAX_REASON_CHARS))
-    throw new Error("invalid proposal reason");
-  if (PATH_LIKE_RE.test(record.content) || PATH_LIKE_RE.test(record.reason)) {
-    throw new Error("proposal contains a path-like value");
-  }
-  if (containsCredentialShape(record.content) || containsCredentialShape(record.reason)) {
-    throw new Error("proposal contains a credential-shaped value");
-  }
-  if (!Array.isArray(record.evidence) || record.evidence.length > MAX_EVIDENCE_ENTRIES) {
-    throw new Error("invalid proposal evidence");
-  }
-  for (const item of record.evidence) {
-    if (!isBoundedString(item, MAX_EVIDENCE_CHARS) || PATH_LIKE_RE.test(item) || containsCredentialShape(item)) {
-      throw new Error("invalid proposal evidence entry");
-    }
-  }
-  return {
-    decision: record.decision,
-    target: record.target,
-    topic: record.topic,
-    evidence: [...record.evidence],
-    content: record.content,
-    reason: record.reason,
-    freshness: record.freshness
-  };
-}
-function parseMemoryReviewProposal(raw, maxBytes = 32 * 1024) {
-  if (Buffer.byteLength(raw, "utf8") > maxBytes)
-    return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  try {
-    return validateMemoryReviewProposal(parsed);
-  } catch {
-    return null;
-  }
-}
-var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
-  type: "object",
-  properties: {
-    decision: { type: "string", enum: [...MEMORY_REVIEW_DECISIONS] },
-    target: { type: "string", enum: [...MEMORY_REVIEW_TARGETS] },
-    topic: { type: "string", maxLength: MAX_TOPIC_CHARS },
-    evidence: { type: "array", items: { type: "string", maxLength: MAX_EVIDENCE_CHARS }, maxItems: MAX_EVIDENCE_ENTRIES },
-    content: { type: "string", maxLength: MAX_CONTENT_CHARS },
-    reason: { type: "string", maxLength: MAX_REASON_CHARS },
-    freshness: { type: "string", enum: [...MEMORY_REVIEW_FRESHNESS] }
-  },
-  required: ["decision", "target", "topic", "evidence", "content", "reason", "freshness"],
-  additionalProperties: false
-});
 // packages/shared/src/memory-review-proposal-store.ts
 import { createHash } from "crypto";
 import {
@@ -459,6 +369,107 @@ function transitionMemoryReviewReceipt(sessionId, promptId, status, options = {}
     return readback !== null && readback.status === status;
   });
 }
+
+// packages/shared/src/memory-review-proposal.ts
+var MEMORY_REVIEW_DECISIONS = ["create", "patch", "no_op"];
+var MEMORY_REVIEW_TARGETS = ["managed_memory"];
+var MEMORY_REVIEW_FRESHNESS = ["standing", "verify_before_use"];
+var MAX_TOPIC_CHARS = 64;
+var MAX_CONTENT_CHARS = 4000;
+var MAX_REASON_CHARS = 400;
+var MAX_EVIDENCE_ENTRIES = 8;
+var MAX_EVIDENCE_CHARS = 160;
+var TOPIC_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+var PATH_LIKE_RE = /(?:^|[\s"'`])(?:\.\.[\\/]|~[\\/]|\/(?:home|Users|srv|etc|var|opt|tmp|root)\/|[A-Za-z]:[\\/]|\\\\)/;
+var CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+function isBoundedString(value, maxChars, minChars = 1) {
+  if (typeof value !== "string")
+    return false;
+  const length = Array.from(value).length;
+  if (length < minChars || length > maxChars)
+    return false;
+  return !CONTROL_CHARS_RE.test(value);
+}
+function validateMemoryReviewProposal(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("proposal must be a JSON object");
+  }
+  const record = value;
+  const allowedKeys = ["decision", "target", "topic", "evidence", "content", "reason", "freshness"];
+  const keys = Object.keys(record);
+  if (keys.length !== allowedKeys.length || allowedKeys.some((key) => !(key in record))) {
+    throw new Error("proposal has an unsupported field shape");
+  }
+  if (typeof record.decision !== "string" || !MEMORY_REVIEW_DECISIONS.includes(record.decision)) {
+    throw new Error("invalid proposal decision");
+  }
+  if (typeof record.target !== "string" || !MEMORY_REVIEW_TARGETS.includes(record.target)) {
+    throw new Error("unsupported proposal target");
+  }
+  if (typeof record.freshness !== "string" || !MEMORY_REVIEW_FRESHNESS.includes(record.freshness)) {
+    throw new Error("invalid proposal freshness");
+  }
+  if (!isBoundedString(record.topic, MAX_TOPIC_CHARS) || !TOPIC_RE.test(record.topic) || PATH_LIKE_RE.test(record.topic)) {
+    throw new Error("invalid proposal topic");
+  }
+  const contentMinChars = record.decision === "no_op" ? 0 : 1;
+  if (!isBoundedString(record.content, MAX_CONTENT_CHARS, contentMinChars))
+    throw new Error("invalid proposal content");
+  if (!isBoundedString(record.reason, MAX_REASON_CHARS))
+    throw new Error("invalid proposal reason");
+  if (PATH_LIKE_RE.test(record.content) || PATH_LIKE_RE.test(record.reason)) {
+    throw new Error("proposal contains a path-like value");
+  }
+  if (containsCredentialShape(record.content) || containsCredentialShape(record.reason)) {
+    throw new Error("proposal contains a credential-shaped value");
+  }
+  if (!Array.isArray(record.evidence) || record.evidence.length > MAX_EVIDENCE_ENTRIES) {
+    throw new Error("invalid proposal evidence");
+  }
+  for (const item of record.evidence) {
+    if (!isBoundedString(item, MAX_EVIDENCE_CHARS) || PATH_LIKE_RE.test(item) || containsCredentialShape(item)) {
+      throw new Error("invalid proposal evidence entry");
+    }
+  }
+  return {
+    decision: record.decision,
+    target: record.target,
+    topic: record.topic,
+    evidence: [...record.evidence],
+    content: record.content,
+    reason: record.reason,
+    freshness: record.freshness
+  };
+}
+function parseMemoryReviewProposal(raw, maxBytes = 32 * 1024) {
+  if (Buffer.byteLength(raw, "utf8") > maxBytes)
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  try {
+    return validateMemoryReviewProposal(parsed);
+  } catch {
+    return null;
+  }
+}
+var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
+  type: "object",
+  properties: {
+    decision: { type: "string", enum: [...MEMORY_REVIEW_DECISIONS] },
+    target: { type: "string", enum: [...MEMORY_REVIEW_TARGETS] },
+    topic: { type: "string", maxLength: MAX_TOPIC_CHARS },
+    evidence: { type: "array", items: { type: "string", maxLength: MAX_EVIDENCE_CHARS }, maxItems: MAX_EVIDENCE_ENTRIES },
+    content: { type: "string", maxLength: MAX_CONTENT_CHARS },
+    reason: { type: "string", maxLength: MAX_REASON_CHARS },
+    freshness: { type: "string", enum: [...MEMORY_REVIEW_FRESHNESS] }
+  },
+  required: ["decision", "target", "topic", "evidence", "content", "reason", "freshness"],
+  additionalProperties: false
+});
 
 // packages/shared/src/memory-review-proposal-store.ts
 var SESSION_UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -788,9 +799,14 @@ function readMemoryReviewProposalRecord(sessionId, promptId, options = {}) {
     return record;
   });
 }
+
 // packages/shared/src/native-memory-observer.ts
 var SETTINGS_MAX_BYTES = 64 * 1024;
 var MAX_NATIVE_MEMORY_FILE_BYTES = 64 * 1024;
+
+// packages/shared/src/memory-applier-state.ts
+var MAX_MEMORY_FILE_BYTES = 64 * 1024;
+var MAX_STATE_BYTES = 512 * 1024;
 // packages/shared/src/runtime-failure.ts
 var RUNTIME_FAILURE_TYPES = [
   "rate_limit",

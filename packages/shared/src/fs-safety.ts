@@ -1,29 +1,15 @@
-/**
- * Shared symlink-safe, directory-fd-anchored directory-open primitive.
- *
- * Every durable Memory Harness / session-title state store (memory-review-receipt.ts,
- * memory-review-snapshot-store.ts in session-control-mcp, session-title-state.ts) walks its
- * configured directory path one segment at a time through `/proc/self/fd/<fd>/<segment>`, so a
- * symlink swapped in mid-walk can never redirect a later segment outside the intended tree, and
- * verifies the final directory's mode/uid before returning its descriptor. This was previously
- * copy-pasted byte-for-byte into all three call sites; it now lives in exactly one place so a
- * future hardening fix (or a bug fix) to this security boundary cannot silently drift out of
- * sync between them. Every check here (O_NOFOLLOW, ino/dev pinning, symlink rejection, mode/uid
- * validation) is preserved exactly as it was in each of the three original copies.
- */
-
+/** Shared directory-FD-anchored open primitives. */
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import { resolve } from "node:path";
 
-/**
- * Opens `path`, creating any missing segments along the way, anchored through
- * `/proc/self/fd/<fd>/<segment>` at every step so a symlink swap mid-walk can never redirect a
- * later segment outside the intended tree. Returns an open directory file descriptor the caller
- * owns and must close. Throws if any segment is not a real (non-symlink) directory, if the
- * directory changes identity (ino/dev) between creation-check and open, or if the final
- * directory's mode or owning uid does not match `directoryMode` / `expectedUid`.
- */
-export function openDirectoryFd(path: string, expectedUid: number | undefined, directoryMode = 0o700, label = "directory"): number {
+function walkDirectory(
+  path: string,
+  expectedUid: number | undefined,
+  label: string,
+  createMissing: boolean,
+  createMode: number,
+  finalMode: (mode: number) => boolean,
+): number {
   const absolute = resolve(path);
   const parts = absolute.split("/").filter(Boolean);
   let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -34,8 +20,8 @@ export function openDirectoryFd(path: string, expectedUid: number | undefined, d
       try {
         before = lstatSync(child);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        mkdirSync(child, directoryMode);
+        if (!createMissing || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        mkdirSync(child, createMode);
         before = lstatSync(child);
       }
       if (!before.isDirectory() || before.isSymbolicLink()) {
@@ -51,7 +37,8 @@ export function openDirectoryFd(path: string, expectedUid: number | undefined, d
       fd = next;
     }
     const final = fstatSync(fd);
-    if ((final.mode & 0o7777) !== directoryMode || (expectedUid !== undefined && final.uid !== expectedUid)) {
+    if (!final.isDirectory() || !finalMode(final.mode & 0o7777) ||
+        (expectedUid !== undefined && final.uid !== expectedUid)) {
       throw new Error(`${label} validation failed`);
     }
     return fd;
@@ -59,4 +46,36 @@ export function openDirectoryFd(path: string, expectedUid: number | undefined, d
     closeSync(fd);
     throw error;
   }
+}
+
+/**
+ * Opens `path`, creating missing segments as 0700 directories. The final directory must be exact
+ * `directoryMode`; the caller owns the returned descriptor.
+ */
+export function openDirectoryFd(
+  path: string,
+  expectedUid: number | undefined,
+  directoryMode = 0o700,
+  label = "directory",
+): number {
+  const mode = directoryMode & 0o7777;
+  const fd = walkDirectory(path, expectedUid, label, true, mode, candidate => candidate === mode);
+  const final = fstatSync(fd);
+  if ((final.mode & 0o7777) !== mode) {
+    closeSync(fd);
+    throw new Error(`${label} validation failed`);
+  }
+  return fd;
+}
+
+/**
+ * Opens an existing user-owned directory without creating any segment. Final group/other write
+ * bits are forbidden, while normal native-memory modes such as 0755 are accepted.
+ */
+export function openExistingDirectoryFd(
+  path: string,
+  expectedUid: number | undefined,
+  label = "directory",
+): number {
+  return walkDirectory(path, expectedUid, label, false, 0o700, mode => (mode & 0o022) === 0);
 }
