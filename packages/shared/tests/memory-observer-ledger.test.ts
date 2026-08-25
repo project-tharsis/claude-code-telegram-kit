@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -110,6 +111,41 @@ describe("native memory observer ledger", () => {
     expect(recovered.recovery).toBe("corrupt_ledger_rebuilt");
     expect(recovered.latest.files.map(file => file.path)).toEqual(["MEMORY.md"]);
     expect(readMemoryObserverLedger({ directory: state })).toEqual(recovered);
+  });
+
+  test("records an authority change instead of false file deltas when autoMemoryDirectory moves", () => {
+    writeMemory(join(memory, "MEMORY.md"), "root A\n");
+    const first = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA, now: 1_000 });
+    recordMemoryObservation(first, { directory: state });
+
+    const other = join(root, "other-memory");
+    mkdirSync(other, { mode: 0o755 });
+    writeMemory(join(other, "MEMORY.md"), "root B\n");
+    const second = observeNativeMemory({ memoryDirectory: other, releaseSha: RELEASE_SHA, now: 2_000 });
+    const ledger = recordMemoryObservation(second, { directory: state });
+    const event = ledger.events.at(-1)!;
+    expect(event.kind).toBe("authority_changed");
+    expect(event.path).toBeNull();
+    expect(event.before_directory_sha256).toBe(first.directory_sha256);
+    expect(event.after_directory_sha256).toBe(second.directory_sha256);
+    expect(ledger.latest.directory_sha256).toBe(second.directory_sha256);
+  });
+
+  test("serializes writers with a PID/start-time lock and recovers a dead-owner lock", () => {
+    writeMemory(join(memory, "MEMORY.md"), "index\n");
+    const observation = observeNativeMemory({ memoryDirectory: memory, releaseSha: RELEASE_SHA, now: 1_000 });
+    recordMemoryObservation(observation, { directory: state });
+    const raw = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    const fields = raw.slice(raw.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const startTicks = fields[19]!;
+    const lock = join(state, "ledger.lock");
+    writeFileSync(lock, JSON.stringify({ schema: 1, pid: process.pid, start_ticks: startTicks }), { mode: 0o600 });
+    expect(() => recordMemoryObservation(observation, { directory: state })).toThrow("busy");
+
+    rmSync(lock);
+    writeFileSync(lock, JSON.stringify({ schema: 1, pid: 99_999_999, start_ticks: "1" }), { mode: 0o600 });
+    expect(recordMemoryObservation(observation, { directory: state }).latest.inventory_sha256).toBe(observation.watermark);
+    expect(readdirSync(state)).not.toContain("ledger.lock");
   });
 
   test("rejects unsafe ledger leaves instead of following or overwriting them", () => {

@@ -13,6 +13,7 @@ import {
   fsyncSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
   renameSync,
   unlinkSync,
@@ -29,21 +30,24 @@ const MEMORY_PATH_RE = /^[^/\\\0]{1,255}\.md$/;
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const LEDGER_NAME = "ledger.json";
+const LOCK_NAME = "ledger.lock";
 const MAX_LEDGER_BYTES = 256 * 1024;
 export const MEMORY_OBSERVER_LEDGER_MAX_EVENTS = 2_048;
 export const MEMORY_OBSERVER_LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
-export type MemoryObserverChangeKind = "created" | "modified" | "deleted";
+export type MemoryObserverChangeKind = "created" | "modified" | "deleted" | "authority_changed";
 
 export interface MemoryObserverLedgerFile extends NativeMemoryFileInventory {}
 
 export interface MemoryObserverEvent {
   sequence: number;
   observed_at: number;
-  path: string;
+  path: string | null;
   kind: MemoryObserverChangeKind;
   before_sha256: string | null;
   after_sha256: string | null;
+  before_directory_sha256: string | null;
+  after_directory_sha256: string;
   provenance: "claude_native_auto_memory";
   release_sha: string;
 }
@@ -88,6 +92,90 @@ export function defaultMemoryObserverLedgerDirectory(): string {
 
 function currentUid(): number | undefined {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
+}
+
+function processStartTicks(pid: number): string | null {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = raw.lastIndexOf(")");
+    if (close < 0) return null;
+    const fields = raw.slice(close + 2).trim().split(/\s+/);
+    const ticks = fields[19];
+    return typeof ticks === "string" && /^\d+$/.test(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
+interface LedgerLockRecord {
+  schema: 1;
+  pid: number;
+  start_ticks: string;
+}
+
+function readLedgerLock(dirfd: number, expectedUid: number | undefined): { record: LedgerLockRecord; dev: number; ino: number } {
+  const path = join(`/proc/self/fd/${dirfd}`, LOCK_NAME);
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size < 1 || before.size > 256 ||
+      (before.mode & 0o7777) !== FILE_MODE || (expectedUid !== undefined && before.uid !== expectedUid)) {
+    throw new Error("unsafe ledger lock");
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1 ||
+        opened.size !== before.size || (opened.mode & 0o7777) !== FILE_MODE ||
+        (expectedUid !== undefined && opened.uid !== expectedUid)) throw new Error("unsafe ledger lock");
+    const parsed: unknown = JSON.parse(readAll(fd, opened.size).toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("invalid ledger lock");
+    const record = parsed as Record<string, unknown>;
+    if (Object.keys(record).length !== 3 || record.schema !== 1 || !Number.isSafeInteger(record.pid) || Number(record.pid) < 1 ||
+        typeof record.start_ticks !== "string" || !/^\d+$/.test(record.start_ticks)) throw new Error("invalid ledger lock");
+    return { record: record as unknown as LedgerLockRecord, dev: opened.dev, ino: opened.ino };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function acquireLedgerLock(dirfd: number, expectedUid: number | undefined): () => void {
+  const path = join(`/proc/self/fd/${dirfd}`, LOCK_NAME);
+  const startTicks = processStartTicks(process.pid);
+  if (startTicks === null) throw new Error("ledger lock process identity unavailable");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd: number;
+    try {
+      fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, FILE_MODE);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lock = readLedgerLock(dirfd, expectedUid);
+      if (processStartTicks(lock.record.pid) === lock.record.start_ticks) throw new Error("memory observer ledger is busy");
+      const current = lstatSync(path);
+      if (current.dev !== lock.dev || current.ino !== lock.ino) throw new Error("ledger lock changed during recovery");
+      unlinkSync(path);
+      fsyncSync(dirfd);
+      continue;
+    }
+    let identity: ReturnType<typeof fstatSync>;
+    try {
+      const record: LedgerLockRecord = { schema: 1, pid: process.pid, start_ticks: startTicks };
+      writeAll(fd, Buffer.from(JSON.stringify(record)));
+      fsyncSync(fd);
+      identity = fstatSync(fd);
+    } catch (error) {
+      try { unlinkSync(path); } catch { /* best effort */ }
+      throw error;
+    } finally {
+      closeSync(fd);
+    }
+    fsyncSync(dirfd);
+    return () => {
+      const current = lstatSync(path);
+      if (current.dev !== identity.dev || current.ino !== identity.ino) throw new Error("ledger lock ownership changed");
+      unlinkSync(path);
+      fsyncSync(dirfd);
+    };
+  }
+  throw new Error("unable to acquire memory observer ledger lock");
 }
 
 function assertLimits(options: MemoryObserverLedgerOptions): { maxEvents: number; retentionMs: number } {
@@ -144,15 +232,25 @@ function validEvent(value: unknown): value is MemoryObserverEvent {
   const record = value as Record<string, unknown>;
   const nullableSha = (candidate: unknown): boolean => candidate === null || (typeof candidate === "string" && SHA256_RE.test(candidate));
   const kind = String(record.kind);
+  const sameDirectory = typeof record.before_directory_sha256 === "string" &&
+    record.before_directory_sha256 === record.after_directory_sha256 && SHA256_RE.test(record.before_directory_sha256);
   const shapeMatchesKind =
-    (kind === "created" && record.before_sha256 === null && typeof record.after_sha256 === "string" && SHA256_RE.test(record.after_sha256)) ||
-    (kind === "modified" && typeof record.before_sha256 === "string" && SHA256_RE.test(record.before_sha256) &&
+    (kind === "authority_changed" && record.path === null && record.before_sha256 === null && record.after_sha256 === null &&
+      typeof record.before_directory_sha256 === "string" && SHA256_RE.test(record.before_directory_sha256) &&
+      typeof record.after_directory_sha256 === "string" && SHA256_RE.test(record.after_directory_sha256) &&
+      record.before_directory_sha256 !== record.after_directory_sha256) ||
+    (kind === "created" && MEMORY_PATH_RE.test(String(record.path)) && record.before_sha256 === null &&
+      typeof record.after_sha256 === "string" && SHA256_RE.test(record.after_sha256) &&
+      (record.before_directory_sha256 === null || sameDirectory)) ||
+    (kind === "modified" && MEMORY_PATH_RE.test(String(record.path)) && sameDirectory &&
+      typeof record.before_sha256 === "string" && SHA256_RE.test(record.before_sha256) &&
       typeof record.after_sha256 === "string" && SHA256_RE.test(record.after_sha256) && record.before_sha256 !== record.after_sha256) ||
-    (kind === "deleted" && typeof record.before_sha256 === "string" && SHA256_RE.test(record.before_sha256) && record.after_sha256 === null);
-  return Object.keys(record).length === 8 && Number.isSafeInteger(record.sequence) && Number(record.sequence) >= 1 &&
-    Number.isSafeInteger(record.observed_at) && Number(record.observed_at) >= 0 &&
-    MEMORY_PATH_RE.test(String(record.path)) && shapeMatchesKind &&
-    nullableSha(record.before_sha256) && nullableSha(record.after_sha256) &&
+    (kind === "deleted" && MEMORY_PATH_RE.test(String(record.path)) && sameDirectory &&
+      typeof record.before_sha256 === "string" && SHA256_RE.test(record.before_sha256) && record.after_sha256 === null);
+  return Object.keys(record).length === 10 && Number.isSafeInteger(record.sequence) && Number(record.sequence) >= 1 &&
+    Number.isSafeInteger(record.observed_at) && Number(record.observed_at) >= 0 && shapeMatchesKind &&
+    nullableSha(record.before_sha256) && nullableSha(record.after_sha256) && nullableSha(record.before_directory_sha256) &&
+    typeof record.after_directory_sha256 === "string" && SHA256_RE.test(record.after_directory_sha256) &&
     record.provenance === "claude_native_auto_memory" && RELEASE_SHA_RE.test(String(record.release_sha));
 }
 
@@ -239,6 +337,20 @@ function deltaEvents(
   observation: NativeMemoryObservation,
   startSequence: number
 ): MemoryObserverEvent[] {
+  if (previous !== null && previous.latest.directory_sha256 !== observation.directory_sha256) {
+    return [{
+      sequence: startSequence,
+      observed_at: observation.observed_at,
+      path: null,
+      kind: "authority_changed",
+      before_sha256: null,
+      after_sha256: null,
+      before_directory_sha256: previous.latest.directory_sha256,
+      after_directory_sha256: observation.directory_sha256,
+      provenance: "claude_native_auto_memory",
+      release_sha: observation.release_sha
+    }];
+  }
   const before = new Map((previous?.latest.files ?? []).map(file => [file.path, file]));
   const after = new Map(observation.files.map(file => [file.path, file]));
   const paths = [...new Set([...before.keys(), ...after.keys()])].sort();
@@ -259,6 +371,8 @@ function deltaEvents(
       kind,
       before_sha256: oldFile?.sha256 ?? null,
       after_sha256: newFile?.sha256 ?? null,
+      before_directory_sha256: previous?.latest.directory_sha256 ?? null,
+      after_directory_sha256: observation.directory_sha256,
       provenance: "claude_native_auto_memory",
       release_sha: observation.release_sha
     });
@@ -311,7 +425,9 @@ export function recordMemoryObservation(
   assertOutsideNativeMemory(directory, observation.memoryDirectory);
   const expectedUid = options.expectedUid ?? currentUid();
   const dirfd = openDirectoryFd(directory, expectedUid, DIRECTORY_MODE, "memory observer ledger directory");
+  let releaseLock: (() => void) | null = null;
   try {
+    releaseLock = acquireLedgerLock(dirfd, expectedUid);
     let previous: MemoryObserverLedger | null;
     let recovery: MemoryObserverLedger["recovery"] = null;
     try {
@@ -353,6 +469,10 @@ export function recordMemoryObservation(
     writeLedger(dirfd, ledger, expectedUid, maxEvents);
     return ledger;
   } finally {
-    closeSync(dirfd);
+    try {
+      releaseLock?.();
+    } finally {
+      closeSync(dirfd);
+    }
   }
 }

@@ -201,6 +201,11 @@ function readMemoryLeaf(
     }
     const size = Number(opened.size);
     const bytes = readAll(fd, size, "memory file");
+    const after = fstatSync(fd, { bigint: true });
+    if (!after.isFile() || after.dev !== opened.dev || after.ino !== opened.ino || after.nlink !== opened.nlink ||
+        after.mode !== opened.mode || after.uid !== opened.uid || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs) {
+      throw new Error("memory file changed during read");
+    }
     return {
       path: name,
       sha256: sha256(bytes),
