@@ -8,6 +8,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The public `examples/CLAUDE.md` template no longer leaks the deployment-specific `Claudio` identity or private formatting preference; it now contains only the generic Claude Code transport boundary.
 - Memory review Stop hooks now wait boundedly for exact-turn Telegram delivery evidence because Claude Code runs matching Stop handlers in parallel; missing or mismatched evidence still fails closed.
 
 ## [0.4.0] - 2026-08-25

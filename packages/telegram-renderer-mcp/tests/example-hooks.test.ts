@@ -46,7 +46,9 @@ function toolsFor(event: string): Array<{ server: string; tool: string; input: R
 }
 
 describe("supported Claude Code hook configuration", () => {
-  test("keeps model guidance transport-transparent and free of runtime inventory", () => {
+  test("keeps public model guidance generic, transport-transparent, and free of runtime inventory", () => {
+    expect(guidance).toStartWith("# Claude Code runtime boundary\n");
+    expect(guidance).not.toContain("Claudio");
     expect(guidance).toContain("ordinary Claude Code TUI session");
     expect(guidance).toContain("Use normal assistant text, tool calls, and final responses");
     expect(guidance).toContain("The deterministic harness owns delivery and control routing");
