@@ -22,7 +22,7 @@ export interface MemoryReviewGeneratorOptions {
 }
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
-const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_TIMEOUT_MS = 75_000;
 const GENERIC_ERROR = "Memory review generation failed";
 
 export type MemoryReviewGenerationPhase = "generate" | "parse";
@@ -101,7 +101,7 @@ export async function generateMemoryReviewProposal(
   const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 120_000));
   const argv = [
     options.claudePath ?? "claude", "-p", buildPrompt(snapshot),
-    "--model", "haiku", "--output-format", "json", "--json-schema", MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA,
+    "--model", "haiku", "--effort", "low", "--output-format", "json", "--json-schema", MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA,
     "--max-turns", "1", "--no-session-persistence", "--setting-sources", "",
     "--settings", "{}", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
     "--tools", "", "--permission-mode", "dontAsk"

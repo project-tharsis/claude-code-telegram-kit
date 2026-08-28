@@ -31,9 +31,11 @@ const VALID_PROPOSAL = {
 describe("isolated memory review generator argv contract", () => {
   test("never passes --resume, --channels, or a Bash/Read/Edit/Write tool allowance", async () => {
     let capturedArgv: string[] = [];
+    let capturedTimeoutMs = 0;
     await generateMemoryReviewProposal(snapshot, {
-      run: async argv => {
+      run: async (argv, options) => {
         capturedArgv = argv;
+        capturedTimeoutMs = options.timeoutMs;
         return { exitCode: 0, stdout: structuredOutput(VALID_PROPOSAL) };
       }
     });
@@ -50,6 +52,9 @@ describe("isolated memory review generator argv contract", () => {
     expect(capturedArgv[toolsIndex + 1]).toBe("");
     expect(capturedArgv).toContain("--max-turns");
     expect(capturedArgv[capturedArgv.indexOf("--max-turns") + 1]).toBe("1");
+    expect(capturedArgv).toContain("--effort");
+    expect(capturedArgv[capturedArgv.indexOf("--effort") + 1]).toBe("low");
+    expect(capturedTimeoutMs).toBe(75_000);
   });
 
   test("returns a validated proposal for well-formed model output", async () => {
