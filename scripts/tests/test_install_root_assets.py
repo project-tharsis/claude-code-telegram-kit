@@ -165,6 +165,14 @@ class RootAssetInstallerTests(unittest.TestCase):
             self.install()
         self.assertFalse((self.state / "installed.json").exists())
 
+    def test_upgrade_hardens_a_legacy_root_owned_backup_directory(self):
+        self.state.mkdir(mode=0o700)
+        backups = self.state / "backups"
+        backups.mkdir(mode=0o755)
+        backups.chmod(0o755)
+        self.install()
+        self.assertEqual(backups.stat().st_mode & 0o777, 0o700)
+
     def test_repeated_upgrades_in_one_process_do_not_collide_on_backup_names(self):
         with mock.patch.object(root_assets.time, "time", return_value=100):
             first = self.install()
