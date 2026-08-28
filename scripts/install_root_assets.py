@@ -193,6 +193,10 @@ def _read_preserved_root_asset(
             remaining -= len(chunk)
         after = os.fstat(fd)
         if (after.st_dev != opened.st_dev or after.st_ino != opened.st_ino
+                or not stat.S_ISREG(after.st_mode)
+                or after.st_uid != opened.st_uid or after.st_gid != opened.st_gid
+                or after.st_nlink != opened.st_nlink
+                or stat.S_IMODE(after.st_mode) != stat.S_IMODE(opened.st_mode)
                 or after.st_size != opened.st_size or after.st_mtime_ns != opened.st_mtime_ns):
             raise PermissionError(f"preserved root asset changed during read: {path}")
         return b"".join(chunks)

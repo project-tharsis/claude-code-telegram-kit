@@ -165,6 +165,36 @@ class RootAssetInstallerTests(unittest.TestCase):
             self.install()
         self.assertFalse((self.state / "installed.json").exists())
 
+    def test_preserved_config_rechecks_security_metadata_after_read(self):
+        activation = self.root / "activation.json"
+        activation.parent.mkdir(parents=True)
+        activation.write_text('{"settings":"stable"}\n')
+        activation.chmod(0o600)
+        real = activation.stat()
+        fields = {
+            "st_dev": real.st_dev,
+            "st_ino": real.st_ino,
+            "st_uid": real.st_uid,
+            "st_gid": real.st_gid,
+            "st_nlink": real.st_nlink,
+            "st_mode": real.st_mode,
+            "st_size": real.st_size,
+            "st_mtime_ns": real.st_mtime_ns,
+        }
+        changes = {
+            "uid": {"st_uid": real.st_uid + 1},
+            "gid": {"st_gid": real.st_gid + 1},
+            "mode": {"st_mode": (real.st_mode & ~0o777) | 0o644},
+            "links": {"st_nlink": 2},
+        }
+        for name, changed in changes.items():
+            with self.subTest(name=name):
+                opened = SimpleNamespace(**fields)
+                after = SimpleNamespace(**{**fields, **changed})
+                with mock.patch.object(root_assets.os, "fstat", side_effect=[opened, after]):
+                    with self.assertRaisesRegex(PermissionError, "changed during read"):
+                        root_assets._read_preserved_root_asset(activation, 0o600, self.uid, self.gid)
+
     def test_upgrade_hardens_a_legacy_root_owned_backup_directory(self):
         self.state.mkdir(mode=0o700)
         backups = self.state / "backups"
