@@ -11,6 +11,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - The public `examples/CLAUDE.md` template no longer leaks the deployment-specific `Claudio` identity or private formatting preference; it now contains only the generic Claude Code transport boundary.
 - Memory review Stop hooks now wait boundedly for exact-turn Telegram delivery evidence because Claude Code runs matching Stop handlers in parallel; missing or mismatched evidence still fails closed.
 - Memory review structured-output schemas now stay within Anthropic's supported JSON Schema subset while host validation retains the stricter bounds. Receipt v3 records only allowlisted attempt/failure telemetry, upgrades queued v2 receipts on first mutation, retries a proven transient isolated-review failure once, and terminalizes the second failure instead of leaving a stale queue forever.
+- Root-asset upgrades now preserve an existing secure deployment-specific `activation.json` instead of overwriting it with the generic example; first installs still bootstrap the rendered template, unsafe existing files fail closed, and the manifest records the exact preserved bytes.
 
 ## [0.4.0] - 2026-08-25
 
