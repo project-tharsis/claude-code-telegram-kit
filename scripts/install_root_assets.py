@@ -106,20 +106,31 @@ def _secure_state_root(state_root: Path, owner_uid: int = 0) -> None:
 def _backup(destinations: list[Path], state_root: Path, owner_uid: int = 0, owner_gid: int = 0) -> Path:
     backups = state_root / "backups"
     backups.mkdir(parents=True, exist_ok=True, mode=0o700)
-    info = backups.lstat()
-    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != owner_uid or info.st_gid != owner_gid
-            or stat.S_IMODE(info.st_mode) != 0o700):
-        raise PermissionError("root asset backup directory is not secure")
-    for _attempt in range(8):
-        backup = backups / f"{int(time.time())}-{os.getpid()}-{os.urandom(6).hex()}"
-        try:
-            backup.mkdir(mode=0o700)
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise FileExistsError("could not allocate a unique root asset backup")
+    backups_fd = os.open(backups, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(backups_fd)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid or info.st_gid != owner_gid):
+            raise PermissionError("root asset backup directory is not secure")
+        if stat.S_IMODE(info.st_mode) != 0o700:
+            os.fchmod(backups_fd, 0o700)
+            os.fsync(backups_fd)
+        hardened = os.fstat(backups_fd)
+        if (hardened.st_dev != info.st_dev or hardened.st_ino != info.st_ino
+                or hardened.st_uid != owner_uid or hardened.st_gid != owner_gid
+                or stat.S_IMODE(hardened.st_mode) != 0o700):
+            raise PermissionError("root asset backup directory hardening failed")
+        for _attempt in range(8):
+            backup_name = f"{int(time.time())}-{os.getpid()}-{os.urandom(6).hex()}"
+            try:
+                os.mkdir(backup_name, mode=0o700, dir_fd=backups_fd)
+                backup = backups / backup_name
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise FileExistsError("could not allocate a unique root asset backup")
+    finally:
+        os.close(backups_fd)
     records = []
     for index, destination in enumerate(destinations):
         record = {"destination": str(destination), "exists": destination.exists()}
