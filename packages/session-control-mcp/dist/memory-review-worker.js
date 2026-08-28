@@ -1013,7 +1013,7 @@ async function generateMemoryReviewProposal(snapshot, options = {}) {
     "--json-schema",
     MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA,
     "--max-turns",
-    "1",
+    "2",
     "--no-session-persistence",
     "--setting-sources",
     "",

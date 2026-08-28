@@ -92,7 +92,8 @@ function parseProposal(stdout: string): MemoryReviewProposal | null {
  * Runs one authenticated, isolated, one-shot Claude call to review an already-delivered
  * turn. This is the exact isolation contract required by the handoff doc's section A5:
  * no `--channels`, no `--resume`/session fork, `--no-session-persistence`,
- * `--setting-sources ""`, no MCP servers, no tools, one bounded turn, one bounded output.
+ * `--setting-sources ""`, no MCP servers, no tools, a two-turn ceiling for structured-output
+ * completion, and one bounded output.
  */
 export async function generateMemoryReviewProposal(
   snapshot: MemoryReviewSnapshot,
@@ -102,7 +103,7 @@ export async function generateMemoryReviewProposal(
   const argv = [
     options.claudePath ?? "claude", "-p", buildPrompt(snapshot),
     "--model", "haiku", "--effort", "low", "--output-format", "json", "--json-schema", MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA,
-    "--max-turns", "1", "--no-session-persistence", "--setting-sources", "",
+    "--max-turns", "2", "--no-session-persistence", "--setting-sources", "",
     "--settings", "{}", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
     "--tools", "", "--permission-mode", "dontAsk"
   ];

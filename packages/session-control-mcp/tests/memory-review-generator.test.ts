@@ -51,7 +51,7 @@ describe("isolated memory review generator argv contract", () => {
     const toolsIndex = capturedArgv.indexOf("--tools");
     expect(capturedArgv[toolsIndex + 1]).toBe("");
     expect(capturedArgv).toContain("--max-turns");
-    expect(capturedArgv[capturedArgv.indexOf("--max-turns") + 1]).toBe("1");
+    expect(capturedArgv[capturedArgv.indexOf("--max-turns") + 1]).toBe("2");
     expect(capturedArgv).toContain("--effort");
     expect(capturedArgv[capturedArgv.indexOf("--effort") + 1]).toBe("low");
     expect(capturedTimeoutMs).toBe(75_000);
