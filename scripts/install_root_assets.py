@@ -28,6 +28,7 @@ class Asset:
     destination: str
     mode: int
     render_user: bool = False
+    preserve_existing: bool = False
 
 
 ASSETS = (
@@ -40,7 +41,7 @@ ASSETS = (
     Asset("packages/session-control-mcp/dist/memory-review-worker.js", "/usr/local/libexec/claude-code-telegram-kit/memory-review-worker.js", 0o444),
     Asset("scripts/runtime_activate.py", "/usr/local/sbin/claude-runtime-activate", 0o755),
     Asset("scripts/check_claude_compatibility.py", "/usr/local/sbin/claude-check-compatibility", 0o755),
-    Asset("examples/claude-runtime-activation.json", "/etc/claude-code-telegram-kit/activation.json", 0o600, True),
+    Asset("examples/claude-runtime-activation.json", "/etc/claude-code-telegram-kit/activation.json", 0o600, True, True),
     Asset("examples/claude-telegram-activation.conf", "/etc/systemd/system/claude-telegram.service.d/30-runtime-activation.conf", 0o644),
     Asset("examples/claude-code-telegram-kit-tmpfiles.conf", "/usr/lib/tmpfiles.d/claude-code-telegram-kit.conf", 0o644, True),
     Asset("examples/claude-code-control.socket", "/etc/systemd/system/claude-code-control.socket", 0o644, True),
@@ -103,8 +104,22 @@ def _secure_state_root(state_root: Path, owner_uid: int = 0) -> None:
 
 
 def _backup(destinations: list[Path], state_root: Path, owner_uid: int = 0, owner_gid: int = 0) -> Path:
-    backup = state_root / "backups" / f"{int(time.time())}-{os.getpid()}"
-    backup.mkdir(parents=True, mode=0o700)
+    backups = state_root / "backups"
+    backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = backups.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != owner_uid or info.st_gid != owner_gid
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise PermissionError("root asset backup directory is not secure")
+    for _attempt in range(8):
+        backup = backups / f"{int(time.time())}-{os.getpid()}-{os.urandom(6).hex()}"
+        try:
+            backup.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError("could not allocate a unique root asset backup")
     records = []
     for index, destination in enumerate(destinations):
         record = {"destination": str(destination), "exists": destination.exists()}
@@ -134,6 +149,44 @@ def _verify_destination(path: Path, expected: bytes, mode: int, owner_uid: int =
         raise ValueError(f"unsafe installed asset: {path}")
     if stat.S_IMODE(info.st_mode) != mode or _sha256(path.read_bytes()) != _sha256(expected):
         raise ValueError(f"installed asset mismatch: {path}")
+
+
+def _read_preserved_root_asset(
+    path: Path,
+    mode: int,
+    owner_uid: int = 0,
+    owner_gid: int = 0,
+    max_bytes: int = 64 * 1024,
+) -> bytes:
+    before = path.lstat()
+    if (not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != owner_uid or before.st_gid != owner_gid
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != mode
+            or before.st_size < 2 or before.st_size > max_bytes):
+        raise PermissionError(f"unsafe preserved root asset: {path}")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev != before.st_dev or opened.st_ino != before.st_ino
+                or opened.st_uid != owner_uid or opened.st_gid != owner_gid
+                or opened.st_nlink != 1 or stat.S_IMODE(opened.st_mode) != mode
+                or opened.st_size != before.st_size):
+            raise PermissionError(f"preserved root asset changed during read: {path}")
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                raise OSError(f"short preserved root asset read: {path}")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(fd)
+        if (after.st_dev != opened.st_dev or after.st_ino != opened.st_ino
+                or after.st_size != opened.st_size or after.st_mtime_ns != opened.st_mtime_ns):
+            raise PermissionError(f"preserved root asset changed during read: {path}")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def _verify_runtime(path: Path, service_uid: int) -> tuple[str, str]:
@@ -203,10 +256,22 @@ def install_release(
         for asset in ASSETS
     ]
     destinations = [_destination(asset, root_prefix) for asset, _data in rendered]
+    prepared: list[tuple[Asset, bytes, Path, bool]] = []
+    for (asset, rendered_data), destination in zip(rendered, destinations):
+        preserved = False
+        data = rendered_data
+        if asset.preserve_existing:
+            try:
+                data = _read_preserved_root_asset(destination, asset.mode, owner_uid, owner_gid)
+                preserved = True
+            except FileNotFoundError:
+                pass
+        prepared.append((asset, data, destination, preserved))
     backup = _backup(destinations, state_root, owner_uid, owner_gid)
     try:
-        for (asset, data), destination in zip(rendered, destinations):
-            _atomic_write(destination, data, asset.mode, owner_uid, owner_gid)
+        for asset, data, destination, preserved in prepared:
+            if not preserved:
+                _atomic_write(destination, data, asset.mode, owner_uid, owner_gid)
             _verify_destination(destination, data, asset.mode, owner_uid, owner_gid)
         manifest = {
             "commit": commit,
@@ -215,7 +280,7 @@ def install_release(
             "backup": str(backup),
             "assets": [
                 {"destination": str(destination), "sha256": _sha256(data), "mode": oct(asset.mode)}
-                for (asset, data), destination in zip(rendered, destinations)
+                for asset, data, destination, _preserved in prepared
             ],
         }
         _atomic_write(state_root / "installed.json", json.dumps(manifest, separators=(",", ":")).encode(), 0o600, owner_uid, owner_gid)

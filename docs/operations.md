@@ -33,6 +33,13 @@ python3 scripts/deploy_local.py status
 sudo /usr/local/sbin/claude-runtime-activate "$sha"
 ```
 
+On the first install, the root-asset installer bootstraps
+`/etc/claude-code-telegram-kit/activation.json` from the rendered example. Set its `settings`
+path to the deployment's real Claude settings file before activation. Later upgrades preserve
+that existing config byte-for-byte only when it remains a root-owned, single-link regular file
+at mode `0600`; an unsafe existing config aborts the install before any backup or write. The
+installed root-asset manifest records the exact preserved bytes.
+
 The root activator accepts only the exact SHA. Its fixed root-owned configuration names the
 service account (the installer renders `USER` to that account); it does not accept unit, path,
 argv, or runtime-role overrides. Before restart it writes a root-owned activation generation

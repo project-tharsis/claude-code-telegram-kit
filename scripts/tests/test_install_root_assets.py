@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import grp
+import hashlib
 import importlib.util
 import json
 import os
@@ -36,7 +37,9 @@ class RootAssetInstallerTests(unittest.TestCase):
         for asset in root_assets.ASSETS:
             path = self.repo / asset.source
             path.parent.mkdir(parents=True, exist_ok=True)
-            if asset.source.endswith("claude-code-telegram-kit-tmpfiles.conf"):
+            if asset.source.endswith("claude-runtime-activation.json"):
+                content = '{"settings":"/home/USER/claude-bot-workspace/telegram-settings.json"}\n'
+            elif asset.source.endswith("claude-code-telegram-kit-tmpfiles.conf"):
                 content = "d /run/example 0750 root SERVICE_GROUP -\n# USER\n"
             else:
                 content = "SocketUser=USER\n" if asset.render_user else f"asset:{asset.source}\n"
@@ -87,6 +90,8 @@ class RootAssetInstallerTests(unittest.TestCase):
         tmpfiles_text = (self.root / "usr/lib/tmpfiles.d/claude-code-telegram-kit.conf").read_text()
         self.assertIn(f"root {group}", tmpfiles_text)
         self.assertNotIn("SERVICE_GROUP", tmpfiles_text)
+        activation = (self.root / "etc/claude-code-telegram-kit/activation.json").read_text()
+        self.assertIn(f"/home/{self.user}/claude-bot-workspace/telegram-settings.json", activation)
 
         rolled = root_assets.rollback_release(state_root=self.state, owner_uid=self.uid, owner_gid=self.gid)
         self.assertEqual(rolled["rolled_back"], self.commit)
@@ -104,6 +109,69 @@ class RootAssetInstallerTests(unittest.TestCase):
         rolled = root_assets.rollback_release(state_root=self.state, owner_uid=self.uid, owner_gid=self.gid)
         self.assertEqual(rolled["backup"], second["backup"])
         self.assertEqual((self.state / "installed.json").read_bytes(), previous)
+
+    def test_upgrade_preserves_secure_deployment_activation_config_and_manifests_its_bytes(self):
+        activation = self.root / "etc/claude-code-telegram-kit/activation.json"
+        custom = b'{"settings":"/srv/claude-deployment/telegram-settings.json"}\n'
+        with mock.patch.object(root_assets.time, "time", side_effect=[100, 101]):
+            self.install()
+            activation.write_bytes(custom)
+            activation.chmod(0o600)
+            before = activation.stat()
+            second = self.install()
+        after = activation.stat()
+        self.assertEqual((after.st_dev, after.st_ino, after.st_mtime_ns), (before.st_dev, before.st_ino, before.st_mtime_ns))
+        self.assertEqual(activation.read_bytes(), custom)
+        record = next(item for item in second["assets"] if item["destination"].endswith("/activation.json"))
+        self.assertEqual(record["sha256"], hashlib.sha256(custom).hexdigest())
+        rolled = root_assets.rollback_release(state_root=self.state, owner_uid=self.uid, owner_gid=self.gid)
+        self.assertEqual(rolled["backup"], second["backup"])
+        self.assertEqual(activation.read_bytes(), custom)
+
+    def test_upgrade_rejects_an_unsafe_existing_activation_config(self):
+        activation = self.root / "etc/claude-code-telegram-kit/activation.json"
+        activation.parent.mkdir(parents=True)
+        activation.write_text('{"settings":"unsafe"}\n')
+        activation.chmod(0o644)
+        with self.assertRaisesRegex(PermissionError, "preserved root asset"):
+            self.install()
+        self.assertEqual(activation.read_text(), '{"settings":"unsafe"}\n')
+        self.assertFalse((self.state / "installed.json").exists())
+
+    def test_upgrade_rejects_symlink_hardlink_and_oversized_activation_configs(self):
+        activation = self.root / "etc/claude-code-telegram-kit/activation.json"
+        activation.parent.mkdir(parents=True)
+
+        target = self.root / "symlink-target.json"
+        target.write_text('{"settings":"target"}\n')
+        target.chmod(0o600)
+        activation.symlink_to(target)
+        with self.assertRaisesRegex(PermissionError, "preserved root asset"):
+            self.install()
+        activation.unlink()
+
+        activation.write_text('{"settings":"hardlink"}\n')
+        activation.chmod(0o600)
+        sibling = activation.with_name("activation-hardlink.json")
+        os.link(activation, sibling)
+        with self.assertRaisesRegex(PermissionError, "preserved root asset"):
+            self.install()
+        sibling.unlink()
+        activation.unlink()
+
+        activation.write_bytes(b"x" * (64 * 1024 + 1))
+        activation.chmod(0o600)
+        with self.assertRaisesRegex(PermissionError, "preserved root asset"):
+            self.install()
+        self.assertFalse((self.state / "installed.json").exists())
+
+    def test_repeated_upgrades_in_one_process_do_not_collide_on_backup_names(self):
+        with mock.patch.object(root_assets.time, "time", return_value=100):
+            first = self.install()
+            second = self.install()
+        self.assertNotEqual(first["backup"], second["backup"])
+        self.assertTrue(Path(first["backup"]).is_dir())
+        self.assertTrue(Path(second["backup"]).is_dir())
 
     def test_activation_tmpfiles_repairs_control_socket_parent_and_isolates_env(self):
         policy = (SCRIPT.parents[1] / "examples/claude-code-telegram-kit-tmpfiles.conf").read_text()
