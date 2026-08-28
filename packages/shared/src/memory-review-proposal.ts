@@ -125,10 +125,10 @@ export const MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
   properties: {
     decision: { type: "string", enum: [...MEMORY_REVIEW_DECISIONS] },
     target: { type: "string", enum: [...MEMORY_REVIEW_TARGETS] },
-    topic: { type: "string", maxLength: MAX_TOPIC_CHARS },
-    evidence: { type: "array", items: { type: "string", maxLength: MAX_EVIDENCE_CHARS }, maxItems: MAX_EVIDENCE_ENTRIES },
-    content: { type: "string", maxLength: MAX_CONTENT_CHARS },
-    reason: { type: "string", maxLength: MAX_REASON_CHARS },
+    topic: { type: "string", description: `lowercase slug, at most ${MAX_TOPIC_CHARS} Unicode characters` },
+    evidence: { type: "array", items: { type: "string", description: `at most ${MAX_EVIDENCE_CHARS} Unicode characters` }, description: `at most ${MAX_EVIDENCE_ENTRIES} entries` },
+    content: { type: "string", description: `at most ${MAX_CONTENT_CHARS} Unicode characters` },
+    reason: { type: "string", description: `at most ${MAX_REASON_CHARS} Unicode characters` },
     freshness: { type: "string", enum: [...MEMORY_REVIEW_FRESHNESS] }
   },
   required: ["decision", "target", "topic", "evidence", "content", "reason", "freshness"],

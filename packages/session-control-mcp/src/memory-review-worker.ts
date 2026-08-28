@@ -8,6 +8,10 @@ import {
   createMemoryReviewProposalRecord,
   readMemoryReviewProposalRecord,
   readMemoryReviewReceipt,
+  beginMemoryReviewAttempt,
+  recordMemoryReviewFailure,
+  type MemoryReviewFailurePhase,
+  type MemoryReviewFailureReason,
   transitionMemoryReviewReceipt
 } from "@project-tharsis/claude-code-telegram-shared";
 import { generateMemoryReviewProposal, MemoryReviewGenerationError } from "./memory-review-generator.js";
@@ -20,7 +24,14 @@ const MAX_SNAPSHOT_BYTES = 32 * 1024;
 export type MemoryReviewWorkerResult =
   | { outcome: "reviewed"; proposal: MemoryReviewProposal }
   | { outcome: "no_op" }
+  | { outcome: "retry"; reason: string }
   | { outcome: "failed"; reason: string };
+
+export function memoryReviewWorkerExitCode(result: MemoryReviewWorkerResult): number {
+  if (result.outcome === "retry") return 75;
+  if (result.outcome === "failed") return 1;
+  return 0;
+}
 
 export interface MemoryReviewWorkerOptions {
   sessionId: string;
@@ -30,6 +41,7 @@ export interface MemoryReviewWorkerOptions {
   proposalDirectory?: string;
   now?: () => number;
   review?: (snapshot: MemoryReviewSnapshot) => Promise<MemoryReviewProposal>;
+  transitionReceipt?: typeof transitionMemoryReviewReceipt;
 }
 
 /**
@@ -52,11 +64,36 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
     throw new Error("no queued review receipt for this session/prompt");
   }
 
+  const transitionReceipt = options.transitionReceipt ?? transitionMemoryReviewReceipt;
+  let currentReceipt = receipt;
+  const persistFailure = (
+    phase: MemoryReviewFailurePhase,
+    reason: MemoryReviewFailureReason,
+    terminal: boolean
+  ): MemoryReviewWorkerResult => {
+    const persisted = recordMemoryReviewFailure(
+      options.sessionId, options.promptId, phase, reason, terminal, storeOptions
+    );
+    if (persisted === null) return { outcome: "failed", reason: "receipt_transition:unavailable" };
+    currentReceipt = persisted;
+    return terminal
+      ? { outcome: "failed", reason: `${phase}:${reason}` }
+      : { outcome: "retry", reason: `${phase}:${reason}` };
+  };
+  const recoverableFailure = (
+    phase: MemoryReviewFailurePhase,
+    reason: MemoryReviewFailureReason
+  ): MemoryReviewWorkerResult => persistFailure(
+    phase,
+    reason,
+    currentReceipt.attempts >= 2 || currentReceipt.failure_phase !== undefined
+  );
+
   let claim: ReturnType<typeof acquireMemoryReviewProposalClaim>;
   try {
     claim = acquireMemoryReviewProposalClaim(options.sessionId, options.promptId, proposalStoreOptions);
   } catch {
-    return { outcome: "failed", reason: "review_claim:unavailable" };
+    return recoverableFailure("review_claim", "unavailable");
   }
   if (claim.outcome === "busy") return { outcome: "failed", reason: "review_claim:busy" };
 
@@ -66,14 +103,27 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
         options.snapshot.releaseSha !== receipt.release_sha ||
         options.snapshot.assistantMessageSha256 !== receipt.last_assistant_message_sha256 ||
         snapshotSha256 !== receipt.snapshot_sha256) {
-      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      persistFailure("snapshot", "binding_mismatch", true);
       return { outcome: "failed", reason: "snapshot:binding_mismatch" };
     }
     const finish = (proposal: MemoryReviewProposal): MemoryReviewWorkerResult => {
-    const transitioned = transitionMemoryReviewReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
+    let transitioned: boolean;
+    try {
+      transitioned = transitionReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
+    } catch {
+      return recoverableFailure("receipt_transition", "unavailable");
+    }
     if (!transitioned) {
-      const latest = readMemoryReviewReceipt(options.sessionId, options.promptId, storeOptions);
-      if (latest?.status !== "reviewed") return { outcome: "failed", reason: "receipt_transition:unavailable" };
+      let latest: ReturnType<typeof readMemoryReviewReceipt>;
+      try {
+        latest = readMemoryReviewReceipt(options.sessionId, options.promptId, storeOptions);
+      } catch {
+        return recoverableFailure("receipt_transition", "unavailable");
+      }
+      if (latest?.status !== "reviewed") {
+        if (latest?.status === "queued") currentReceipt = latest;
+        return recoverableFailure("receipt_transition", "unavailable");
+      }
     }
     return proposal.decision === "no_op" ? { outcome: "no_op" } : { outcome: "reviewed", proposal };
   };
@@ -83,10 +133,10 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
     existing = readMemoryReviewProposalRecord(options.sessionId, options.promptId, proposalStoreOptions);
   } catch (error) {
     if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
-      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      persistFailure("proposal_store", "invalid_record", true);
       return { outcome: "failed", reason: `proposal_store:${error.reason}` };
     }
-    return { outcome: "failed", reason: "proposal_store:unavailable" };
+    return recoverableFailure("proposal_store", "unavailable");
   }
   if (existing !== null) {
     if (existing.session_id !== options.sessionId || existing.prompt_id !== options.promptId ||
@@ -94,12 +144,18 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
         existing.last_assistant_message_sha256 !== receipt.last_assistant_message_sha256 ||
         existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark ||
         existing.snapshot_sha256 !== snapshotSha256) {
-      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      persistFailure("proposal_store", "binding_mismatch", true);
       return { outcome: "failed", reason: "proposal_store:binding_mismatch" };
     }
     return finish(existing.proposal);
   }
 
+  const attempt = beginMemoryReviewAttempt(options.sessionId, options.promptId, storeOptions);
+  if (attempt === null) {
+    persistFailure("worker", "unavailable", true);
+    return { outcome: "failed", reason: "review_attempt:exhausted" };
+  }
+  currentReceipt = attempt;
   const review = options.review ?? (snapshot => generateMemoryReviewProposal(snapshot));
   let proposal: MemoryReviewProposal;
   try {
@@ -108,11 +164,12 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
     // Retryable generation failures preserve the queued receipt. Proven permanent model/schema
     // failures terminalize it exactly once.
     const generationError = error instanceof MemoryReviewGenerationError ? error : null;
-    if (generationError === null || !generationError.retryable) {
-      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
-    }
-    const reason = generationError ? `${generationError.phase}:${generationError.reason}` : "unknown";
-    return { outcome: "failed", reason };
+    const phase = generationError?.phase === "parse" ? "parse" : "generate" as MemoryReviewFailurePhase;
+    const reason: MemoryReviewFailureReason = generationError?.reason === "timeout" ? "timeout"
+      : generationError?.reason === "rate_limited" ? "rate_limited"
+      : generationError?.reason === "invalid_output" ? "invalid_output" : "command_failed";
+    if (generationError !== null && generationError.retryable) return recoverableFailure(phase, reason);
+    return persistFailure(phase, reason, true);
   }
 
   try {
@@ -130,10 +187,10 @@ export async function runMemoryReviewWorker(options: MemoryReviewWorkerOptions):
     // Unknown I/O durability stays retryable. Validated corruption/conflicts are permanent local
     // failures and must not leave a receipt retrying forever.
     if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
-      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      persistFailure("proposal_store", "invalid_record", true);
       return { outcome: "failed", reason: `proposal_store:${error.reason}` };
     }
-    return { outcome: "failed", reason: "proposal_store:unavailable" };
+    return recoverableFailure("proposal_store", "unavailable");
   }
   } finally {
     claim.release();
@@ -176,7 +233,7 @@ if (import.meta.main) {
       }
       const snapshot = readSnapshotFromStdin();
       const result = await runMemoryReviewWorker({ sessionId, promptId, snapshot });
-      if (result.outcome === "failed") throw new Error(`memory review failed: ${result.reason}`);
+      process.exitCode = memoryReviewWorkerExitCode(result);
     } catch {
       process.exitCode = 1;
     }

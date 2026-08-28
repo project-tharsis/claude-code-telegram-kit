@@ -3,12 +3,13 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  beginMemoryReviewAttempt,
   createMemoryReviewProposalRecord,
   createMemoryReviewReceipt,
   readMemoryReviewProposalRecord,
   readMemoryReviewReceipt
 } from "@project-tharsis/claude-code-telegram-shared";
-import { parseSnapshotFromStdin, runMemoryReviewWorker } from "../src/memory-review-worker.js";
+import { memoryReviewWorkerExitCode, parseSnapshotFromStdin, runMemoryReviewWorker } from "../src/memory-review-worker.js";
 import { buildMemoryReviewSnapshot, memoryReviewSnapshotDigest, serializeMemoryReviewSnapshot } from "../src/memory-review-snapshot.js";
 import { MemoryReviewGenerationError } from "../src/memory-review-generator.js";
 
@@ -187,7 +188,7 @@ describe("immutable memory review worker boundary", () => {
       receiptDirectory: directory,
       review: async () => { throw new MemoryReviewGenerationError("generate", "timeout", true); }
     });
-    expect(result.outcome).toBe("failed");
+    expect(result.outcome).toBe("retry");
     // A timeout is retryable (AGENTS.md / design-invariants: only a proven local or permanent
     // rejection may finalize a failure state), so the receipt must stay "queued", not "failed" --
     // a permanently "failed" receipt could never be reviewed again (createMemoryReviewReceipt's
@@ -204,7 +205,7 @@ describe("immutable memory review worker boundary", () => {
       receiptDirectory: directory,
       review: async () => { throw new MemoryReviewGenerationError("generate", "rate_limited", true); }
     });
-    expect(result.outcome).toBe("failed");
+    expect(result.outcome).toBe("retry");
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
   });
 
@@ -217,7 +218,7 @@ describe("immutable memory review worker boundary", () => {
       receiptDirectory: directory,
       review: async () => { throw new MemoryReviewGenerationError("generate", "timeout", true); }
     });
-    expect(timedOut.outcome).toBe("failed");
+    expect(timedOut.outcome).toBe("retry");
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
 
     const retried = await runMemoryReviewWorker({
@@ -335,6 +336,7 @@ describe("immutable memory review worker boundary", () => {
     expect(calls).toBe(1);
     release();
     expect((await first).outcome).toBe("no_op");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "reviewed", attempts: 1 });
   });
 
   test("reuses a durable bound proposal after a crash instead of repeating the model call", async () => {
@@ -361,23 +363,113 @@ describe("immutable memory review worker boundary", () => {
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("reviewed");
   });
 
-  test("leaves the receipt queued when a generated proposal cannot be durably stored", async () => {
+  test("retries a transient proposal-store failure once, then terminalizes with sanitized telemetry", async () => {
     seedReceipt(directory);
     const blocked = join(directory, "blocked-proposal-directory");
     mkdirSync(blocked, { mode: 0o700 });
-    const result = await runMemoryReviewWorker({
+    const failStore = async () => {
+      chmodSync(blocked, 0o755);
+      return { decision: "no_op" as const, target: "managed_memory" as const, topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" as const };
+    };
+    const first = await runMemoryReviewWorker({
       sessionId: SESSION_ID,
       promptId: "prompt-1",
       snapshot,
       receiptDirectory: directory,
       proposalDirectory: blocked,
+      review: failStore
+    });
+    expect(first).toEqual({ outcome: "retry", reason: "proposal_store:unavailable" });
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "queued", attempts: 1, failure_phase: "proposal_store", failure_reason: "unavailable" });
+
+    chmodSync(blocked, 0o700);
+    const second = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      proposalDirectory: blocked,
+      review: failStore
+    });
+    expect(second).toEqual({ outcome: "failed", reason: "proposal_store:unavailable" });
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "failed", attempts: 2, failure_phase: "proposal_store", failure_reason: "unavailable" });
+  });
+
+  test("retries a failed receipt transition by reusing the durable proposal without another model call", async () => {
+    seedReceipt(directory);
+    let calls = 0;
+    const first = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      transitionReceipt: () => { throw new Error("transient receipt I/O"); },
       review: async () => {
-        chmodSync(blocked, 0o755);
+        calls += 1;
         return { decision: "no_op", target: "managed_memory", topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" };
       }
     });
-    expect(result).toEqual({ outcome: "failed", reason: "proposal_store:unavailable" });
-    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.status).toBe("queued");
+    expect(first).toEqual({ outcome: "retry", reason: "receipt_transition:unavailable" });
+    expect(calls).toBe(1);
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "queued", attempts: 1, failure_phase: "receipt_transition", failure_reason: "unavailable" });
+
+    const second = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      review: async () => { calls += 1; throw new Error("must reuse durable proposal"); }
+    });
+    expect(second.outcome).toBe("no_op");
+    expect(calls).toBe(1);
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "reviewed", attempts: 1, failure_phase: "receipt_transition", failure_reason: "unavailable" });
+  });
+
+  test("writes sanitized retry telemetry, bounds attempts, and terminalizes the second retryable failure", async () => {
+    seedReceipt(directory);
+    const retry = async () => { throw new MemoryReviewGenerationError("generate", "timeout", true); };
+    expect(await runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory, review: retry }))
+      .toEqual({ outcome: "retry", reason: "generate:timeout" });
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "queued", attempts: 1, failure_phase: "generate", failure_reason: "timeout" });
+    expect(await runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory, review: retry }))
+      .toEqual({ outcome: "failed", reason: "generate:timeout" });
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "failed", attempts: 2, failure_phase: "generate", failure_reason: "timeout" });
+    expect(memoryReviewWorkerExitCode({ outcome: "retry", reason: "generate:timeout" })).toBe(75);
+    expect(memoryReviewWorkerExitCode({ outcome: "failed", reason: "generate:command_failed" })).toBe(1);
+  });
+
+  test("second-attempt success reviews while preserving prior sanitized failure telemetry", async () => {
+    seedReceipt(directory);
+    let calls = 0;
+    const review = async () => {
+      calls += 1;
+      if (calls === 1) throw new MemoryReviewGenerationError("generate", "rate_limited", true);
+      return { decision: "no_op" as const, target: "managed_memory" as const, topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" as const };
+    };
+    expect(await runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory, review }))
+      .toEqual({ outcome: "retry", reason: "generate:rate_limited" });
+    expect((await runMemoryReviewWorker({ sessionId: SESSION_ID, promptId: "prompt-1", snapshot, receiptDirectory: directory, review })).outcome).toBe("no_op");
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "reviewed", attempts: 2, failure_phase: "generate", failure_reason: "rate_limited" });
+  });
+
+  test("never calls the model after the bounded attempt budget is exhausted", async () => {
+    seedReceipt(directory);
+    expect(beginMemoryReviewAttempt(SESSION_ID, "prompt-1", { directory })?.attempts).toBe(1);
+    expect(beginMemoryReviewAttempt(SESSION_ID, "prompt-1", { directory })?.attempts).toBe(2);
+    let calls = 0;
+    const result = await runMemoryReviewWorker({
+      sessionId: SESSION_ID,
+      promptId: "prompt-1",
+      snapshot,
+      receiptDirectory: directory,
+      review: async () => {
+        calls += 1;
+        return { decision: "no_op", target: "managed_memory", topic: "no-op", evidence: [], content: "", reason: "already known", freshness: "standing" };
+      }
+    });
+    expect(calls).toBe(0);
+    expect(result).toEqual({ outcome: "failed", reason: "review_attempt:exhausted" });
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })).toMatchObject({ status: "failed", attempts: 2, failure_phase: "worker", failure_reason: "unavailable" });
   });
 
   test("writes only the receipt store and its dedicated proposal subdirectory", async () => {

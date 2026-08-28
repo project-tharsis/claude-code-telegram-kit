@@ -134,7 +134,7 @@ function validateBinding(options: ApplyMemoryReviewProposalOptions): string | nu
     return "release_mismatch";
   }
   if (
-    receipt.schema !== 2 ||
+    receipt.schema !== 3 ||
     proposalRecord.schema !== 1 ||
     !SESSION_RE.test(receipt.session_id) ||
     !PROMPT_RE.test(receipt.prompt_id) ||

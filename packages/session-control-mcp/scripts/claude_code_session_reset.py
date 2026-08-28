@@ -1529,6 +1529,10 @@ def _run_isolated_process_group(
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
+class RetryableMemoryReviewFailure(RuntimeError):
+    """Private fixed-code signal; never contains model/provider output."""
+
+
 def _run_isolated_worker(
     config: ResetConfig,
     account: Any,
@@ -1541,6 +1545,7 @@ def _run_isolated_worker(
     load_input: Callable[[], bytes],
     timeout: float,
     failure_message: str,
+    retryable_exit_code: int | None = None,
 ) -> None:
     """Runs one fixed, immutable isolated worker once as the authenticated service user.
 
@@ -1645,6 +1650,8 @@ def _run_isolated_worker(
             preexec_fn=drop_privileges,
             pass_fds=(bun_fd,),
         )
+        if retryable_exit_code is not None and result.returncode == retryable_exit_code:
+            raise RetryableMemoryReviewFailure("memory review retry requested")
         if result.returncode != 0:
             raise RuntimeError(failure_message)
     finally:
@@ -1722,8 +1729,8 @@ def title_session(config: ResetConfig, *, session_id: str, timeout: float) -> di
     return {"status": "title_complete"}
 
 
-def memory_review_session(config: ResetConfig, *, session_id: str, prompt_id: str, timeout: float) -> dict[str, Any]:
-    """Run the fixed, immutable Memory Harness reviewer worker once as the service user.
+def memory_review_session(config: ResetConfig, *, session_id: str, prompt_id: str, timeout: float, retry_delay: float = 1.0, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Run the fixed, immutable Memory Harness reviewer at most twice as the service user.
 
     This shares title_session's root bundle / manifest / pinned Bun FD execution pattern
     exactly via _run_isolated_worker (handoff doc section A5): the same manifest, the same
@@ -1742,18 +1749,20 @@ def memory_review_session(config: ResetConfig, *, session_id: str, prompt_id: st
     transcript = config.project_sessions / f"{session_id}.jsonl"
     _secure_regular_file(transcript, config.service_uid, 0o600, "session transcript")
     account = pwd.getpwnam(config.service_user)
-    _run_isolated_worker(
-        config,
-        account,
-        worker_path=MEMORY_REVIEW_WORKER_PATH,
-        worker_kind="memory review",
-        auth_source_label="review source",
-        argv_tail=[session_id, prompt_id],
-        extra_env={},
-        load_input=lambda: _read_memory_review_snapshot(config, account, session_id=session_id, prompt_id=prompt_id),
-        timeout=timeout,
-        failure_message="memory review job failed",
-    )
+    def run_once() -> None:
+        _run_isolated_worker(config, account, worker_path=MEMORY_REVIEW_WORKER_PATH, worker_kind="memory review",
+                             auth_source_label="review source", argv_tail=[session_id, prompt_id], extra_env={},
+                             load_input=lambda: _read_memory_review_snapshot(config, account, session_id=session_id, prompt_id=prompt_id),
+                             timeout=timeout, failure_message="memory review job failed", retryable_exit_code=75)
+
+    try:
+        run_once()
+    except RetryableMemoryReviewFailure:
+        sleep(max(0.0, min(retry_delay, 30.0)))
+        try:
+            run_once()
+        except RetryableMemoryReviewFailure:
+            raise RuntimeError("memory review job failed") from None
     return {"status": "memory_review_complete"}
 
 def main(argv: list[str] | None = None) -> int:

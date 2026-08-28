@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createMemoryReviewReceipt,
+  beginMemoryReviewAttempt,
+  recordMemoryReviewFailure,
+  memoryReviewReceiptKey,
   MEMORY_REVIEW_RECEIPT_MAX_ENTRIES,
   readMemoryReviewReceipt,
   transitionMemoryReviewReceipt,
@@ -45,7 +48,7 @@ describe("durable memory review receipt store", () => {
     expect(result.outcome).toBe("created");
     if (result.outcome !== "created") throw new Error("unreachable");
     expect(result.receipt.status).toBe("queued");
-    expect(result.receipt.schema).toBe(2);
+    expect(result.receipt.schema).toBe(3);
     expect(result.receipt.snapshot_sha256).toBe("c".repeat(64));
 
     const { statSync } = require("node:fs") as typeof import("node:fs");
@@ -167,5 +170,31 @@ describe("durable memory review receipt store", () => {
     const fresh = createMemoryReviewReceipt(baseInput({ promptId: "prompt-fresh", createdAt: now }), { directory, maxEntries: cap });
     expect(fresh.outcome).toBe("created");
     expect(readMemoryReviewReceipt(SESSION_ID, "prompt-expired", { directory })).toBeNull();
+  });
+
+  test("reads v2 and atomically upgrades it on the first attempt mutation", () => {
+    const input = baseInput();
+    const name = `${memoryReviewReceiptKey(SESSION_ID, "prompt-1")}.json`;
+    const v2 = { schema: 2, session_id: input.sessionId, prompt_id: input.promptId, last_assistant_message_sha256: input.lastAssistantMessageSha256,
+      snapshot_sha256: input.snapshotSha256, transcript_path: input.transcriptPath, telegram_message_id: input.telegramMessageId,
+      release_sha: input.releaseSha, tool_iterations: input.toolIterations, created_at: Date.now(), status: "queued" };
+    writeFileSync(join(directory, name), JSON.stringify(v2), { mode: 0o600 });
+    chmodSync(join(directory, name), 0o600);
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.attempts).toBe(0);
+    expect(beginMemoryReviewAttempt(SESSION_ID, "prompt-1", { directory })?.schema).toBe(3);
+    expect(readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory })?.attempts).toBe(1);
+  });
+
+  test("failure telemetry is bounded and terminalizes only when requested", () => {
+    createMemoryReviewReceipt(baseInput(), { directory });
+    const fresh = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
+    expect(() => validateMemoryReviewReceiptShape({ ...fresh, failure_phase: "review_claim", failure_reason: "unavailable" })).not.toThrow();
+    expect(beginMemoryReviewAttempt(SESSION_ID, "prompt-1", { directory })?.attempts).toBe(1);
+    expect(recordMemoryReviewFailure(SESSION_ID, "prompt-1", "generate", "timeout", false, { directory })?.status).toBe("queued");
+    const stored = readMemoryReviewReceipt(SESSION_ID, "prompt-1", { directory });
+    expect(stored?.failure_phase).toBe("generate");
+    expect(stored?.failure_reason).toBe("timeout");
+    expect(() => validateMemoryReviewReceiptShape({ ...stored, failure_reason: undefined })).toThrow("failure telemetry");
+    expect(recordMemoryReviewFailure(SESSION_ID, "prompt-1", "generate", "timeout", true, { directory })?.status).toBe("failed");
   });
 });
