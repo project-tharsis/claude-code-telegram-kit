@@ -12,6 +12,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Memory review Stop hooks now wait boundedly for exact-turn Telegram delivery evidence because Claude Code runs matching Stop handlers in parallel; missing or mismatched evidence still fails closed.
 - Memory review structured-output schemas now stay within Anthropic's supported JSON Schema subset while host validation retains the stricter bounds. Receipt v3 records only allowlisted attempt/failure telemetry, upgrades queued v2 receipts on first mutation, retries a proven transient isolated-review failure once, and terminalizes the second failure instead of leaving a stale queue forever.
 - Root-asset upgrades now preserve an existing secure deployment-specific `activation.json` instead of overwriting it with the generic example; first installs still bootstrap the rendered template, unsafe existing files fail closed, and the manifest records the exact preserved bytes.
+- The isolated Memory reviewer now uses low Claude effort with a bounded 75-second generation timeout, leaving margin under the root worker's 90-second process boundary for real review prompts that exceeded the previous 45-second limit.
 
 ## [0.4.0] - 2026-08-25
 

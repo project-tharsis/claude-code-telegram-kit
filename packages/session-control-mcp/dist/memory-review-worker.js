@@ -928,7 +928,7 @@ var QUOTA_LIMIT_KEYS = new Set([
 var MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 // packages/session-control-mcp/src/memory-review-generator.ts
 var MAX_OUTPUT_BYTES = 64 * 1024;
-var DEFAULT_TIMEOUT_MS = 45000;
+var DEFAULT_TIMEOUT_MS = 75000;
 var GENERIC_ERROR = "Memory review generation failed";
 
 class MemoryReviewGenerationError extends Error {
@@ -1006,6 +1006,8 @@ async function generateMemoryReviewProposal(snapshot, options = {}) {
     buildPrompt(snapshot),
     "--model",
     "haiku",
+    "--effort",
+    "low",
     "--output-format",
     "json",
     "--json-schema",
