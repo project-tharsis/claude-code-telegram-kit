@@ -82,8 +82,14 @@ the title worker: no `--channels`, no `--resume`/session fork, `--no-session-per
 bounded output. The reviewer only ever emits the strict `{decision, target, topic, evidence,
 content, reason, freshness}` proposal shape; any out-of-schema field, overlong string,
 path-like value, credential-shaped content, or unsupported target is rejected before the
-worker transitions its bound receipt out of `queued`. This PR performs no memory mutation:
-the worker never has write authority over anything but its own bound receipt's status field.
+worker transitions its bound receipt out of `queued`. The API-facing schema uses only
+Anthropic-supported structured-output keywords; stricter character, path, and credential
+bounds remain host-enforced. Receipt v3 adds only an attempt counter and allowlisted failure
+phase/reason, reads legacy v2 receipts, and atomically upgrades them on the first retry
+mutation. A fixed temporary-failure exit code lets the root helper retry the same isolated
+reviewer once after one second; a second retryable failure becomes terminal. This performs no
+native-memory mutation: the worker can write only its bound receipt and immutable bound
+proposal.
 
 ## Native memory observer and provenance ledger (PR 2)
 
@@ -115,7 +121,7 @@ fields, nested paths, over-budget text, or credential-shaped content before any 
 
 Validated reviewer output is persisted immutably at
 `~/.local/state/claude-code-telegram-kit/memory-review/proposals/`, bound to the receipt identity,
-release SHA, assistant digest, receipt-v2 snapshot digest, and native-memory watermark. A PID/start-time claim singleflights the
+release SHA, assistant digest, receipt snapshot digest, and native-memory watermark. A PID/start-time claim singleflights the
 reviewer model call and recovers after a crashed owner. If the proposal lands but receipt transition
 does not, a later worker reuses the durable proposal instead of calling the model again. Snapshot
 write failures are proven local and terminal; uncertain broker scheduling outcomes leave the receipt

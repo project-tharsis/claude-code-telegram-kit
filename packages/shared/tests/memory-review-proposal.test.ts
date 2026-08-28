@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import cases from "../fixtures/memory-review-proposal-cases.json" with { type: "json" };
-import { validateMemoryReviewProposal } from "../src/memory-review-proposal.js";
+import { MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA, validateMemoryReviewProposal } from "../src/memory-review-proposal.js";
+
+test("Claude Code wire schema uses only supported structured-output constraints", () => {
+  const schema = JSON.parse(MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA) as Record<string, any>;
+  const serialized = JSON.stringify(schema);
+  expect(serialized).not.toMatch(/maxLength|maxItems|minLength|minItems/);
+  expect(schema.additionalProperties).toBe(false);
+  expect(schema.required).toHaveLength(7);
+});
 
 interface Case {
   name: string;
@@ -23,6 +31,18 @@ describe("strict memory review proposal schema", () => {
       }
     });
   }
+
+  test("keeps strict host-side bounds after wire-only constraints are removed", () => {
+    const base = {
+      decision: "create", target: "managed_memory", topic: "a", evidence: ["e"],
+      content: "c", reason: "r", freshness: "standing"
+    };
+    expect(() => validateMemoryReviewProposal({ ...base, topic: "a".repeat(65) })).toThrow();
+    expect(() => validateMemoryReviewProposal({ ...base, evidence: Array(9).fill("e") })).toThrow();
+    expect(() => validateMemoryReviewProposal({ ...base, evidence: ["e".repeat(161)] })).toThrow();
+    expect(() => validateMemoryReviewProposal({ ...base, content: "c".repeat(4001) })).toThrow();
+    expect(() => validateMemoryReviewProposal({ ...base, reason: "r".repeat(401) })).toThrow();
+  });
 
   test("rejects a non-object payload", () => {
     expect(() => validateMemoryReviewProposal("not an object")).toThrow();

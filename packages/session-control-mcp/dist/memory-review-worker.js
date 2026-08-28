@@ -224,7 +224,10 @@ var PROMPT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 var SHA256_RE = /^[0-9a-f]{64}$/;
 var RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
 var STATUSES = ["queued", "reviewed", "failed"];
-var MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 2;
+var MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 3;
+var MEMORY_REVIEW_MAX_ATTEMPTS = 2;
+var MEMORY_REVIEW_FAILURE_PHASES = ["generate", "parse", "snapshot", "proposal_store", "receipt_transition", "review_claim", "worker"];
+var MEMORY_REVIEW_FAILURE_REASONS = ["timeout", "rate_limited", "command_failed", "invalid_output", "binding_mismatch", "unavailable", "busy", "invalid_record"];
 var DIRECTORY_MODE = 448;
 var FILE_MODE = 384;
 var MAX_BYTES = 8 * 1024;
@@ -280,11 +283,15 @@ function validateMemoryReviewReceiptShape(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error("invalid receipt shape");
   const record = value;
-  const allowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "snapshot_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
+  const baseAllowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "snapshot_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
+  const v3Allowed = [...baseAllowed, "attempts", "failure_phase", "failure_reason"];
   const keys = Object.keys(record);
-  if (keys.length !== allowed.length || allowed.some((key) => !(key in record)))
+  if (record.schema === 2) {
+    if (keys.length !== baseAllowed.length || baseAllowed.some((key) => !(key in record)))
+      throw new Error("invalid receipt field shape");
+  } else if (keys.some((key) => !v3Allowed.includes(key)) || baseAllowed.some((key) => !(key in record)))
     throw new Error("invalid receipt field shape");
-  if (record.schema !== MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION)
+  if (record.schema !== 2 && record.schema !== MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION)
     throw new Error("invalid receipt schema version");
   if (typeof record.status !== "string" || !STATUSES.includes(record.status))
     throw new Error("invalid receipt status");
@@ -300,7 +307,25 @@ function validateMemoryReviewReceiptShape(value) {
     created_at: record.created_at
   };
   assertBounds(candidate);
-  return { schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION, ...candidate, status: record.status };
+  const attempts = record.schema === 2 ? 0 : record.attempts;
+  if (!Number.isSafeInteger(attempts) || attempts < 0 || attempts > MEMORY_REVIEW_MAX_ATTEMPTS)
+    throw new Error("invalid receipt attempts");
+  const hasFailurePhase = record.schema === 3 && record.failure_phase !== undefined;
+  const hasFailureReason = record.schema === 3 && record.failure_reason !== undefined;
+  if (hasFailurePhase !== hasFailureReason)
+    throw new Error("invalid receipt failure telemetry");
+  if (record.schema !== 2 && (record.failure_phase !== undefined && !MEMORY_REVIEW_FAILURE_PHASES.includes(record.failure_phase)))
+    throw new Error("invalid receipt failure phase");
+  if (record.schema !== 2 && (record.failure_reason !== undefined && !MEMORY_REVIEW_FAILURE_REASONS.includes(record.failure_reason)))
+    throw new Error("invalid receipt failure reason");
+  return {
+    schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION,
+    ...candidate,
+    status: record.status,
+    attempts,
+    ...record.schema === 3 && record.failure_phase !== undefined ? { failure_phase: record.failure_phase } : {},
+    ...record.schema === 3 && record.failure_reason !== undefined ? { failure_reason: record.failure_reason } : {}
+  };
 }
 function writeAll(fd, bytes) {
   let offset = 0;
@@ -384,6 +409,47 @@ function transitionMemoryReviewReceipt(sessionId, promptId, status, options = {}
     const readback = readLeaf(dirfd, name, expectedUid);
     return readback !== null && readback.status === status;
   });
+}
+function mutateQueuedReceipt(sessionId, promptId, updater, options = {}) {
+  const key = memoryReviewReceiptKey(sessionId, promptId);
+  return withDirectory(options, (dirfd, expectedUid) => {
+    const name = `${key}.json`;
+    const current = readLeaf(dirfd, name, expectedUid);
+    if (current === null || current.status !== "queued")
+      return null;
+    const next = updater(current);
+    if (next === null)
+      return null;
+    validateMemoryReviewReceiptShape(next);
+    const temp = join(`/proc/self/fd/${dirfd}`, `.${key}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
+    const fd = openSync2(temp, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, FILE_MODE);
+    try {
+      writeAll(fd, canonicalBytes(next));
+      fsyncSync(fd);
+      closeSync2(fd);
+      renameSync(temp, join(`/proc/self/fd/${dirfd}`, name));
+      fsyncSync(dirfd);
+    } catch (error) {
+      try {
+        closeSync2(fd);
+      } catch {}
+      try {
+        unlinkSync(temp);
+      } catch {}
+      throw error;
+    }
+    return readLeaf(dirfd, name, expectedUid);
+  });
+}
+function beginMemoryReviewAttempt(sessionId, promptId, options = {}) {
+  return mutateQueuedReceipt(sessionId, promptId, (receipt) => {
+    if (receipt.attempts >= MEMORY_REVIEW_MAX_ATTEMPTS)
+      return null;
+    return { ...receipt, attempts: receipt.attempts + 1 };
+  }, options);
+}
+function recordMemoryReviewFailure(sessionId, promptId, phase, reason, terminal, options = {}) {
+  return mutateQueuedReceipt(sessionId, promptId, (receipt) => ({ ...receipt, status: terminal ? "failed" : "queued", failure_phase: phase, failure_reason: reason }), options);
 }
 
 // packages/shared/src/memory-review-proposal.ts
@@ -477,10 +543,10 @@ var MEMORY_REVIEW_PROPOSAL_JSON_SCHEMA = JSON.stringify({
   properties: {
     decision: { type: "string", enum: [...MEMORY_REVIEW_DECISIONS] },
     target: { type: "string", enum: [...MEMORY_REVIEW_TARGETS] },
-    topic: { type: "string", maxLength: MAX_TOPIC_CHARS },
-    evidence: { type: "array", items: { type: "string", maxLength: MAX_EVIDENCE_CHARS }, maxItems: MAX_EVIDENCE_ENTRIES },
-    content: { type: "string", maxLength: MAX_CONTENT_CHARS },
-    reason: { type: "string", maxLength: MAX_REASON_CHARS },
+    topic: { type: "string", description: `lowercase slug, at most ${MAX_TOPIC_CHARS} Unicode characters` },
+    evidence: { type: "array", items: { type: "string", description: `at most ${MAX_EVIDENCE_CHARS} Unicode characters` }, description: `at most ${MAX_EVIDENCE_ENTRIES} entries` },
+    content: { type: "string", description: `at most ${MAX_CONTENT_CHARS} Unicode characters` },
+    reason: { type: "string", description: `at most ${MAX_REASON_CHARS} Unicode characters` },
     freshness: { type: "string", enum: [...MEMORY_REVIEW_FRESHNESS] }
   },
   required: ["decision", "target", "topic", "evidence", "content", "reason", "freshness"],
@@ -1075,6 +1141,13 @@ function memoryReviewSnapshotDigest(snapshot) {
 var SESSION_UUID3 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var PROMPT_ID_RE3 = /^[A-Za-z0-9._-]{1,128}$/;
 var MAX_SNAPSHOT_BYTES = 32 * 1024;
+function memoryReviewWorkerExitCode(result) {
+  if (result.outcome === "retry")
+    return 75;
+  if (result.outcome === "failed")
+    return 1;
+  return 0;
+}
 async function runMemoryReviewWorker(options) {
   if (!SESSION_UUID3.test(options.sessionId))
     throw new Error("invalid session identity");
@@ -1087,26 +1160,49 @@ async function runMemoryReviewWorker(options) {
   if (receipt === null || receipt.status !== "queued") {
     throw new Error("no queued review receipt for this session/prompt");
   }
+  const transitionReceipt = options.transitionReceipt ?? transitionMemoryReviewReceipt;
+  let currentReceipt = receipt;
+  const persistFailure = (phase, reason, terminal) => {
+    const persisted = recordMemoryReviewFailure(options.sessionId, options.promptId, phase, reason, terminal, storeOptions);
+    if (persisted === null)
+      return { outcome: "failed", reason: "receipt_transition:unavailable" };
+    currentReceipt = persisted;
+    return terminal ? { outcome: "failed", reason: `${phase}:${reason}` } : { outcome: "retry", reason: `${phase}:${reason}` };
+  };
+  const recoverableFailure = (phase, reason) => persistFailure(phase, reason, currentReceipt.attempts >= 2 || currentReceipt.failure_phase !== undefined);
   let claim;
   try {
     claim = acquireMemoryReviewProposalClaim(options.sessionId, options.promptId, proposalStoreOptions);
   } catch {
-    return { outcome: "failed", reason: "review_claim:unavailable" };
+    return recoverableFailure("review_claim", "unavailable");
   }
   if (claim.outcome === "busy")
     return { outcome: "failed", reason: "review_claim:busy" };
   try {
     const snapshotSha256 = memoryReviewSnapshotDigest(options.snapshot);
     if (options.snapshot.sessionId !== options.sessionId || options.snapshot.promptId !== options.promptId || options.snapshot.releaseSha !== receipt.release_sha || options.snapshot.assistantMessageSha256 !== receipt.last_assistant_message_sha256 || snapshotSha256 !== receipt.snapshot_sha256) {
-      transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+      persistFailure("snapshot", "binding_mismatch", true);
       return { outcome: "failed", reason: "snapshot:binding_mismatch" };
     }
     const finish = (proposal2) => {
-      const transitioned = transitionMemoryReviewReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
+      let transitioned;
+      try {
+        transitioned = transitionReceipt(options.sessionId, options.promptId, "reviewed", storeOptions);
+      } catch {
+        return recoverableFailure("receipt_transition", "unavailable");
+      }
       if (!transitioned) {
-        const latest = readMemoryReviewReceipt(options.sessionId, options.promptId, storeOptions);
-        if (latest?.status !== "reviewed")
-          return { outcome: "failed", reason: "receipt_transition:unavailable" };
+        let latest;
+        try {
+          latest = readMemoryReviewReceipt(options.sessionId, options.promptId, storeOptions);
+        } catch {
+          return recoverableFailure("receipt_transition", "unavailable");
+        }
+        if (latest?.status !== "reviewed") {
+          if (latest?.status === "queued")
+            currentReceipt = latest;
+          return recoverableFailure("receipt_transition", "unavailable");
+        }
       }
       return proposal2.decision === "no_op" ? { outcome: "no_op" } : { outcome: "reviewed", proposal: proposal2 };
     };
@@ -1115,29 +1211,35 @@ async function runMemoryReviewWorker(options) {
       existing = readMemoryReviewProposalRecord(options.sessionId, options.promptId, proposalStoreOptions);
     } catch (error) {
       if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
-        transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+        persistFailure("proposal_store", "invalid_record", true);
         return { outcome: "failed", reason: `proposal_store:${error.reason}` };
       }
-      return { outcome: "failed", reason: "proposal_store:unavailable" };
+      return recoverableFailure("proposal_store", "unavailable");
     }
     if (existing !== null) {
       if (existing.session_id !== options.sessionId || existing.prompt_id !== options.promptId || existing.release_sha !== receipt.release_sha || existing.last_assistant_message_sha256 !== receipt.last_assistant_message_sha256 || existing.native_memory_watermark !== options.snapshot.nativeMemoryWatermark || existing.snapshot_sha256 !== snapshotSha256) {
-        transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+        persistFailure("proposal_store", "binding_mismatch", true);
         return { outcome: "failed", reason: "proposal_store:binding_mismatch" };
       }
       return finish(existing.proposal);
     }
+    const attempt = beginMemoryReviewAttempt(options.sessionId, options.promptId, storeOptions);
+    if (attempt === null) {
+      persistFailure("worker", "unavailable", true);
+      return { outcome: "failed", reason: "review_attempt:exhausted" };
+    }
+    currentReceipt = attempt;
     const review = options.review ?? ((snapshot) => generateMemoryReviewProposal(snapshot));
     let proposal;
     try {
       proposal = await review(options.snapshot);
     } catch (error) {
       const generationError = error instanceof MemoryReviewGenerationError ? error : null;
-      if (generationError === null || !generationError.retryable) {
-        transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
-      }
-      const reason = generationError ? `${generationError.phase}:${generationError.reason}` : "unknown";
-      return { outcome: "failed", reason };
+      const phase = generationError?.phase === "parse" ? "parse" : "generate";
+      const reason = generationError?.reason === "timeout" ? "timeout" : generationError?.reason === "rate_limited" ? "rate_limited" : generationError?.reason === "invalid_output" ? "invalid_output" : "command_failed";
+      if (generationError !== null && generationError.retryable)
+        return recoverableFailure(phase, reason);
+      return persistFailure(phase, reason, true);
     }
     try {
       const persisted = createMemoryReviewProposalRecord({
@@ -1152,10 +1254,10 @@ async function runMemoryReviewWorker(options) {
       return finish(persisted.record.proposal);
     } catch (error) {
       if (error instanceof MemoryReviewProposalStoreError && error.permanent) {
-        transitionMemoryReviewReceipt(options.sessionId, options.promptId, "failed", storeOptions);
+        persistFailure("proposal_store", "invalid_record", true);
         return { outcome: "failed", reason: `proposal_store:${error.reason}` };
       }
-      return { outcome: "failed", reason: "proposal_store:unavailable" };
+      return recoverableFailure("proposal_store", "unavailable");
     }
   } finally {
     claim.release();
@@ -1186,8 +1288,7 @@ if (import.meta.main) {
       }
       const snapshot = readSnapshotFromStdin();
       const result = await runMemoryReviewWorker({ sessionId, promptId, snapshot });
-      if (result.outcome === "failed")
-        throw new Error(`memory review failed: ${result.reason}`);
+      process.exitCode = memoryReviewWorkerExitCode(result);
     } catch {
       process.exitCode = 1;
     }
@@ -1195,5 +1296,6 @@ if (import.meta.main) {
 }
 export {
   runMemoryReviewWorker,
-  parseSnapshotFromStdin
+  parseSnapshotFromStdin,
+  memoryReviewWorkerExitCode
 };

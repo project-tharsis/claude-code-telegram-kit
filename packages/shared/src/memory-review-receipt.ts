@@ -38,7 +38,12 @@ const RECEIPT_KEY_RE = /^[0-9a-f]{64}$/;
 const STATUSES = ["queued", "reviewed", "failed"] as const;
 export type MemoryReviewReceiptStatus = (typeof STATUSES)[number];
 
-export const MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 2;
+export const MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION = 3;
+export const MEMORY_REVIEW_MAX_ATTEMPTS = 2;
+export const MEMORY_REVIEW_FAILURE_PHASES = ["generate", "parse", "snapshot", "proposal_store", "receipt_transition", "review_claim", "worker"] as const;
+export type MemoryReviewFailurePhase = (typeof MEMORY_REVIEW_FAILURE_PHASES)[number];
+export const MEMORY_REVIEW_FAILURE_REASONS = ["timeout", "rate_limited", "command_failed", "invalid_output", "binding_mismatch", "unavailable", "busy", "invalid_record"] as const;
+export type MemoryReviewFailureReason = (typeof MEMORY_REVIEW_FAILURE_REASONS)[number];
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MAX_BYTES = 8 * 1024;
@@ -46,7 +51,7 @@ export const MEMORY_REVIEW_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const MEMORY_REVIEW_RECEIPT_MAX_ENTRIES = 2_048;
 
 export interface MemoryReviewReceipt {
-  schema: 2;
+  schema: 3;
   session_id: string;
   prompt_id: string;
   last_assistant_message_sha256: string;
@@ -57,6 +62,9 @@ export interface MemoryReviewReceipt {
   tool_iterations: number;
   created_at: number;
   status: MemoryReviewReceiptStatus;
+  attempts: number;
+  failure_phase?: MemoryReviewFailurePhase;
+  failure_reason?: MemoryReviewFailureReason;
 }
 
 export function defaultMemoryReviewReceiptDirectory(): string {
@@ -122,10 +130,13 @@ function assertBounds(receipt: Omit<MemoryReviewReceipt, "schema" | "status">): 
 export function validateMemoryReviewReceiptShape(value: unknown): MemoryReviewReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid receipt shape");
   const record = value as Record<string, unknown>;
-  const allowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "snapshot_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
+  const baseAllowed = ["schema", "session_id", "prompt_id", "last_assistant_message_sha256", "snapshot_sha256", "transcript_path", "telegram_message_id", "release_sha", "tool_iterations", "created_at", "status"];
+  const v3Allowed = [...baseAllowed, "attempts", "failure_phase", "failure_reason"];
   const keys = Object.keys(record);
-  if (keys.length !== allowed.length || allowed.some(key => !(key in record))) throw new Error("invalid receipt field shape");
-  if (record.schema !== MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION) throw new Error("invalid receipt schema version");
+  if (record.schema === 2) {
+    if (keys.length !== baseAllowed.length || baseAllowed.some(key => !(key in record))) throw new Error("invalid receipt field shape");
+  } else if (keys.some(key => !v3Allowed.includes(key)) || baseAllowed.some(key => !(key in record))) throw new Error("invalid receipt field shape");
+  if (record.schema !== 2 && record.schema !== MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION) throw new Error("invalid receipt schema version");
   if (typeof record.status !== "string" || !STATUSES.includes(record.status as MemoryReviewReceiptStatus)) throw new Error("invalid receipt status");
   const candidate = {
     session_id: record.session_id,
@@ -139,7 +150,16 @@ export function validateMemoryReviewReceiptShape(value: unknown): MemoryReviewRe
     created_at: record.created_at
   } as Omit<MemoryReviewReceipt, "schema" | "status">;
   assertBounds(candidate);
-  return { schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION, ...candidate, status: record.status as MemoryReviewReceiptStatus };
+  const attempts = record.schema === 2 ? 0 : record.attempts as number;
+  if (!Number.isSafeInteger(attempts) || attempts < 0 || attempts > MEMORY_REVIEW_MAX_ATTEMPTS) throw new Error("invalid receipt attempts");
+  const hasFailurePhase = record.schema === 3 && record.failure_phase !== undefined;
+  const hasFailureReason = record.schema === 3 && record.failure_reason !== undefined;
+  if (hasFailurePhase !== hasFailureReason) throw new Error("invalid receipt failure telemetry");
+  if (record.schema !== 2 && (record.failure_phase !== undefined && !MEMORY_REVIEW_FAILURE_PHASES.includes(record.failure_phase as MemoryReviewFailurePhase))) throw new Error("invalid receipt failure phase");
+  if (record.schema !== 2 && (record.failure_reason !== undefined && !MEMORY_REVIEW_FAILURE_REASONS.includes(record.failure_reason as MemoryReviewFailureReason))) throw new Error("invalid receipt failure reason");
+  return { schema: MEMORY_REVIEW_RECEIPT_SCHEMA_VERSION, ...candidate, status: record.status as MemoryReviewReceiptStatus, attempts,
+    ...(record.schema === 3 && record.failure_phase !== undefined ? { failure_phase: record.failure_phase as MemoryReviewFailurePhase } : {}),
+    ...(record.schema === 3 && record.failure_reason !== undefined ? { failure_reason: record.failure_reason as MemoryReviewFailureReason } : {}) };
 }
 
 function writeAll(fd: number, bytes: Buffer): void {
@@ -278,7 +298,8 @@ export function createMemoryReviewReceipt(
     release_sha: input.releaseSha,
     tool_iterations: input.toolIterations,
     created_at: createdAt,
-    status: "queued"
+    status: "queued",
+    attempts: 0
   };
   assertBounds(receipt);
 
@@ -380,6 +401,36 @@ export function transitionMemoryReviewReceipt(
     const readback = readLeaf(dirfd, name, expectedUid);
     return readback !== null && readback.status === status;
   });
+}
+
+function mutateQueuedReceipt(sessionId: string, promptId: string, updater: (receipt: MemoryReviewReceipt) => MemoryReviewReceipt | null, options: MemoryReviewReceiptStoreOptions = {}): MemoryReviewReceipt | null {
+  const key = memoryReviewReceiptKey(sessionId, promptId);
+  return withDirectory(options, (dirfd, expectedUid) => {
+    const name = `${key}.json`;
+    const current = readLeaf(dirfd, name, expectedUid);
+    if (current === null || current.status !== "queued") return null;
+    const next = updater(current);
+    if (next === null) return null;
+    validateMemoryReviewReceiptShape(next);
+    const temp = join(`/proc/self/fd/${dirfd}`, `.${key}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
+    const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, FILE_MODE);
+    try { writeAll(fd, canonicalBytes(next)); fsyncSync(fd); closeSync(fd); renameSync(temp, join(`/proc/self/fd/${dirfd}`, name)); fsyncSync(dirfd); }
+    catch (error) { try { closeSync(fd); } catch {} try { unlinkSync(temp); } catch {} throw error; }
+    return readLeaf(dirfd, name, expectedUid);
+  });
+}
+
+/** Atomically claims one model attempt, upgrading a legacy v2 receipt on write. */
+export function beginMemoryReviewAttempt(sessionId: string, promptId: string, options: MemoryReviewReceiptStoreOptions = {}): MemoryReviewReceipt | null {
+  return mutateQueuedReceipt(sessionId, promptId, receipt => {
+    if (receipt.attempts >= MEMORY_REVIEW_MAX_ATTEMPTS) return null;
+    return { ...receipt, attempts: receipt.attempts + 1 };
+  }, options);
+}
+
+/** Stores only allowlisted, privacy-safe failure telemetry. */
+export function recordMemoryReviewFailure(sessionId: string, promptId: string, phase: MemoryReviewFailurePhase, reason: MemoryReviewFailureReason, terminal: boolean, options: MemoryReviewReceiptStoreOptions = {}): MemoryReviewReceipt | null {
+  return mutateQueuedReceipt(sessionId, promptId, receipt => ({ ...receipt, status: terminal ? "failed" : "queued", failure_phase: phase, failure_reason: reason }), options);
 }
 
 // Re-exported so callers that only need a stable content digest do not need their own

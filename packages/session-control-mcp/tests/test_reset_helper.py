@@ -414,6 +414,24 @@ class TitleSessionTests(unittest.TestCase):
             self.assertNotIn("SHOULD_NOT_COPY", kwargs["env"])
             self.assertIsNotNone(kwargs["preexec_fn"])
 
+    def test_title_worker_exit_75_is_an_ordinary_title_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = _make_config(Path(td))
+            _write_transcript(config.project_sessions, NEW_SESSION)
+            bun, worker, manifest = self._title_assets(Path(td), Path(td) / "home")
+            account = SimpleNamespace(pw_dir=str(Path(td) / "home"), pw_gid=os.getgid())
+            completed = subprocess.CompletedProcess([], 75, b"", b"")
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_secure_regular_file", return_value=os.stat(bun)), \
+                    mock.patch.object(reset, "_read_secure_regular", return_value=manifest.read_text()), \
+                    mock.patch.object(reset, "ROOT_ASSET_MANIFEST", manifest), \
+                    mock.patch.object(reset, "TITLE_WORKER_PATH", worker), \
+                    mock.patch.object(reset, "_run_isolated_process_group", return_value=completed), \
+                    mock.patch.dict(reset.os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "opaque-test-token"}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "session title job failed"):
+                    reset.title_session(config, session_id=NEW_SESSION, timeout=30)
+
     def test_refuses_to_start_without_an_authenticated_title_source(self):
         with tempfile.TemporaryDirectory() as td:
             config = _make_config(Path(td))
@@ -463,6 +481,52 @@ class MemoryReviewSessionTests(unittest.TestCase):
         path.write_bytes(payload)
         path.chmod(mode)
         return path
+
+    def _retry_loop_fixture(self, root: Path):
+        config = _make_config(root)
+        _write_transcript(config.project_sessions, NEW_SESSION)
+        account = SimpleNamespace(pw_dir=str(root / "home"), pw_gid=os.getgid())
+        return config, account
+
+    def test_retries_exactly_once_after_fixed_tempfail_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as td:
+            config, account = self._retry_loop_fixture(Path(td))
+            run = mock.Mock(side_effect=[reset.RetryableMemoryReviewFailure("fixed"), None])
+            sleep = mock.Mock()
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_run_isolated_worker", run):
+                result = reset.memory_review_session(config, session_id=NEW_SESSION, prompt_id="prompt-1", timeout=30, sleep=sleep)
+            self.assertEqual(result["status"], "memory_review_complete")
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual([call.kwargs["retryable_exit_code"] for call in run.call_args_list], [75, 75])
+            sleep.assert_called_once_with(1.0)
+
+    def test_second_tempfail_is_terminal_and_never_runs_a_third_worker(self):
+        with tempfile.TemporaryDirectory() as td:
+            config, account = self._retry_loop_fixture(Path(td))
+            run = mock.Mock(side_effect=[reset.RetryableMemoryReviewFailure("fixed"), reset.RetryableMemoryReviewFailure("fixed")])
+            sleep = mock.Mock()
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_run_isolated_worker", run):
+                with self.assertRaisesRegex(RuntimeError, "memory review job failed"):
+                    reset.memory_review_session(config, session_id=NEW_SESSION, prompt_id="prompt-1", timeout=30, sleep=sleep)
+            self.assertEqual(run.call_count, 2)
+            sleep.assert_called_once_with(1.0)
+
+    def test_ordinary_worker_failure_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as td:
+            config, account = self._retry_loop_fixture(Path(td))
+            run = mock.Mock(side_effect=RuntimeError("memory review job failed"))
+            sleep = mock.Mock()
+            with mock.patch.object(reset.os, "geteuid", return_value=0), \
+                    mock.patch.object(reset.pwd, "getpwnam", return_value=account), \
+                    mock.patch.object(reset, "_run_isolated_worker", run):
+                with self.assertRaisesRegex(RuntimeError, "memory review job failed"):
+                    reset.memory_review_session(config, session_id=NEW_SESSION, prompt_id="prompt-1", timeout=30, sleep=sleep)
+            run.assert_called_once()
+            sleep.assert_not_called()
 
     def test_passes_only_allowlisted_auth_to_the_dropped_worker(self):
         with tempfile.TemporaryDirectory() as td:
