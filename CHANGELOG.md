@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Align both MCP servers on TypeScript SDK 1.32.0 and refresh the locked `qs`, `ip-address`, `proxy-addr`, `fast-uri`, and `hono` dependencies to patched compatible versions. The workspace lockfile now matches both manifests for frozen installs.
+
 ### Fixed
 
 - The public `examples/CLAUDE.md` template no longer leaks the deployment-specific `Claudio` identity or private formatting preference; it now contains only the generic Claude Code transport boundary.
