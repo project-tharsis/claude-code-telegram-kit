@@ -10,7 +10,7 @@
     "start": "bun run src/server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@project-tharsis/claude-code-telegram-shared": "workspace:*",
     "zod": "3.25.76"
   },
