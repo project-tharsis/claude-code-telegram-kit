@@ -136,11 +136,22 @@ export const FinishTurnInputSchema = z.discriminatedUnion("hook_event_name", [
   StopFailureInputSchema
 ]);
 
-export type BindTurnInput = z.infer<typeof BindTurnInputSchema>;
-export type RecordToolInput = z.infer<typeof RecordToolInputSchema>;
+/**
+ * Zod 4 keeps a key required in the output type when its transform may yield `undefined`.
+ * Parsed payloads omit such keys, so restore the optional-key shape for callers. Runtime
+ * validation is unchanged: the input schemas above still require every template field.
+ */
+type UndefinedKeysOptional<T> = T extends unknown
+  ? { [K in keyof T as undefined extends T[K] ? never : K]: T[K] }
+    & { [K in keyof T as undefined extends T[K] ? K : never]?: T[K] }
+  : never;
+type HookOutput<S extends z.ZodType> = UndefinedKeysOptional<z.infer<S>>;
 
-export type RecordToolSuccessInput = z.infer<typeof RecordToolSuccessInputSchema>;
-export type RecordToolFailureInput = z.infer<typeof RecordToolFailureInputSchema>;
-export type RecordSubagentStartInput = z.infer<typeof RecordSubagentStartInputSchema>;
-export type RecordSubagentStopInput = z.infer<typeof RecordSubagentStopInputSchema>;
-export type FinishTurnInput = z.infer<typeof FinishTurnInputSchema>;
+export type BindTurnInput = HookOutput<typeof BindTurnInputSchema>;
+export type RecordToolInput = HookOutput<typeof RecordToolInputSchema>;
+
+export type RecordToolSuccessInput = HookOutput<typeof RecordToolSuccessInputSchema>;
+export type RecordToolFailureInput = HookOutput<typeof RecordToolFailureInputSchema>;
+export type RecordSubagentStartInput = HookOutput<typeof RecordSubagentStartInputSchema>;
+export type RecordSubagentStopInput = HookOutput<typeof RecordSubagentStopInputSchema>;
+export type FinishTurnInput = HookOutput<typeof FinishTurnInputSchema>;

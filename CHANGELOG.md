@@ -8,6 +8,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Upgrade `zod` from 3.25.76 to 4.6.7 in all three workspaces (GHSA-mrhx-c7xc-m3w5) and refresh the locked `body-parser` to 2.4.0 (GHSA-27r3-jxmh-p828), so `bun audit` is clean again. Hook contract schemas and their strict runtime validation are unchanged; the exported hook input types keep their previous optional-key shape.
 - Align both MCP servers on TypeScript SDK 1.32.0 and refresh the locked `qs`, `ip-address`, `proxy-addr`, `fast-uri`, and `hono` dependencies to patched compatible versions. The workspace lockfile now matches both manifests for frozen installs.
 
 ### Fixed
